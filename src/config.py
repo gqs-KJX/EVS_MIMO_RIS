@@ -1,0 +1,54 @@
+"""Default parameters for the single proposed-method demo."""
+
+from __future__ import annotations
+
+import numpy as np
+
+
+def default_config() -> dict:
+    """Return a small, deterministic configuration for one fast run."""
+    c0 = 299_792_458.0
+    fc = 28.0e9
+    wavelength = c0 / fc
+
+    return {
+        "seed": 20260526,
+        "SNR_dB": 0.0,
+        "K": 2,
+        "M_A": 2,
+        "ris_shape": (32, 32),
+        "N": 24,
+        "P": 12,
+        "T": 18,
+        "c0": c0,
+        "fc": fc,
+        "wavelength": wavelength,
+        "delta_f": 20.0e6,
+        "delta_t_true": 1.5e-9,
+        "p_B": np.array([0.0, 0.0, 1.0]),
+        "p_u_true": np.array([1.25, 0.55, 0.75]),
+        "ris_centers": np.array(
+            [
+                [4.20, -2.20, 1.05],
+                [5.10, 2.10, 1.15],
+            ]
+        ),
+        "ue_bounds": np.array(
+            [
+                [0.30, 2.70],
+                [-1.40, 1.50],
+                [0.35, 1.45],
+            ]
+        ),
+        "delta_t_bounds": np.array([0.0, 4.0e-9]),
+        "ris_search": {
+            "range_bounds": (2.5, 6.5),
+            "elev_bounds": (-0.45, 0.25),
+            "az_bounds": (-np.pi, np.pi),
+            "num_range": 15,
+            "num_elev": 9,
+            "num_az": 25,
+        },
+        "num_structured_iters": 4,
+        "eps": 1.0e-10,
+    }
