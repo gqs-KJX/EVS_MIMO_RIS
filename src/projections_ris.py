@@ -295,29 +295,12 @@ def project_ris_factor(
     wavelength: float,
     search_config: dict,
     eps: float = 1e-10,
+    current_eta: np.ndarray | None = None,
 ) -> dict:
-    """Fit c_tilde by the compressed exact-spherical near-field model."""
+    """Project a compressed RIS factor according to the paper's Mode-4 rule."""
     assert c_tilde.ndim == 1, "c_tilde must be a vector"
     assert omega.shape[0] == c_tilde.size, "Omega rows must match c_tilde length"
     assert omega.shape[1] == a_rb.size, "Omega columns must match RIS response length"
-
-    r_grid = np.linspace(*search_config["range_bounds"], search_config["num_range"])
-    e_grid = np.linspace(*search_config["elev_bounds"], search_config["num_elev"])
-    a_grid = np.linspace(*search_config["az_bounds"], search_config["num_az"])
-
-    coarse_candidates = []
-    for range_m in r_grid:
-        for elevation in e_grid:
-            for azimuth in a_grid:
-                eta_local = np.array([range_m, elevation, azimuth])
-                h_model = compressed_exact_response(
-                    eta_local, omega, a_rb, ris_grid, wavelength
-                )
-                value, alpha = scaled_residual(c_tilde, h_model, eps)
-                coarse_candidates.append((float(value), eta_local, alpha))
-
-    coarse_candidates.sort(key=lambda item: item[0])
-    best_value, best_eta, best_alpha = coarse_candidates[0]
 
     lower = np.array(
         [
@@ -336,42 +319,90 @@ def project_ris_factor(
         dtype=float,
     )
 
+    projection_mode = str(search_config.get("projection_mode", "paper")).lower()
+    use_local_grid = current_eta is not None and projection_mode != "exact"
+    if use_local_grid:
+        center = np.clip(np.asarray(current_eta, dtype=float), lower, upper)
+        range_span = float(search_config.get("stage2_range_span", 0.45))
+        angle_span = float(search_config.get("stage2_angle_span", 0.12))
+        local_lower = np.maximum(
+            lower, center - np.array([range_span, angle_span, angle_span])
+        )
+        local_upper = np.minimum(
+            upper, center + np.array([range_span, angle_span, angle_span])
+        )
+        r_grid = np.linspace(
+            local_lower[0], local_upper[0], int(search_config.get("stage2_num_range", 5))
+        )
+        e_grid = np.linspace(
+            local_lower[1], local_upper[1], int(search_config.get("stage2_num_elev", 5))
+        )
+        a_grid = np.linspace(
+            local_lower[2], local_upper[2], int(search_config.get("stage2_num_az", 7))
+        )
+    else:
+        r_grid = np.linspace(*search_config["range_bounds"], search_config["num_range"])
+        e_grid = np.linspace(*search_config["elev_bounds"], search_config["num_elev"])
+        a_grid = np.linspace(*search_config["az_bounds"], search_config["num_az"])
+
+    grid_candidates = [
+        np.array([range_m, elevation, azimuth], dtype=float)
+        for range_m in r_grid
+        for elevation in e_grid
+        for azimuth in a_grid
+    ]
+
+    coarse_candidates = []
+    for eta_local in grid_candidates:
+        h_model = compressed_exact_response(eta_local, omega, a_rb, ris_grid, wavelength)
+        value, alpha = scaled_residual(c_tilde, h_model, eps)
+        coarse_candidates.append((float(value), eta_local, alpha))
+    coarse_candidates.sort(key=lambda item: item[0])
+    best_value, best_eta, _ = coarse_candidates[0]
+
     def exact_objective(eta_local: np.ndarray) -> float:
         h_model = compressed_exact_response(eta_local, omega, a_rb, ris_grid, wavelength)
         value, _ = scaled_residual(c_tilde, h_model, eps)
         return value / (np.linalg.norm(c_tilde) ** 2 + eps)
 
-    optimizer_message = "coarse grid only"
     num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
     num_lift_steps = int(search_config.get("num_lift_steps", 3))
     lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
     lifted_best = None
-    for _, eta_candidate, _ in coarse_candidates[:num_lift_candidates]:
-        lifted = _compressed_lifted_candidate(
-            c_tilde,
-            eta_candidate,
-            omega,
-            a_rb,
-            ris_grid,
-            wavelength,
-            eps,
-            num_lift_steps,
-            lambda_phys,
-        )
-        if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
-            lifted_best = lifted
 
-    if lifted_best is not None:
-        best_eta = lifted_best["eta_local"]
-        optimizer_message = "Fresnel dechirped rank-one lifting"
+    if projection_mode != "exact":
+        lift_candidates = grid_candidates if use_local_grid else [
+            eta for _, eta, _ in coarse_candidates[:num_lift_candidates]
+        ]
+        for eta_candidate in lift_candidates:
+            lifted = _compressed_lifted_candidate(
+                c_tilde,
+                eta_candidate,
+                omega,
+                a_rb,
+                ris_grid,
+                wavelength,
+                eps,
+                num_lift_steps,
+                lambda_phys,
+            )
+            if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
+                lifted_best = lifted
+        if lifted_best is not None:
+            best_eta = lifted_best["eta_local"]
+
+    optimizer_message = (
+        "physically anchored Fresnel dechirped rank-one candidate"
+        if lifted_best is not None
+        else "compressed exact spherical matching"
+    )
 
     refine_starts = [best_eta]
-    for _, eta_candidate, _ in coarse_candidates[
-        : int(search_config.get("num_exact_refine_starts", 6))
-    ]:
-        refine_starts.append(eta_candidate)
-    if lifted_best is not None:
-        refine_starts.append(lifted_best["eta_local"])
+    if projection_mode == "exact" or not use_local_grid:
+        for _, eta_candidate, _ in coarse_candidates[
+            : int(search_config.get("num_exact_refine_starts", 6))
+        ]:
+            refine_starts.append(eta_candidate)
 
     unique_starts = []
     for eta_start in refine_starts:
@@ -396,10 +427,8 @@ def project_ris_factor(
                 best_eta = np.asarray(result.x, dtype=float)
                 best_exact_value = float(result.fun)
                 best_exact_success = bool(result.success)
-        optimizer_message += f" + multistart exact spherical L-BFGS-B success={best_exact_success}"
+        optimizer_message += f" + exact spherical L-BFGS-B success={best_exact_success}"
     else:
-        x0_scaled = (best_eta - lower) / (upper - lower)
-
         best_info_message = ""
         for eta_start in unique_starts:
             x0_scaled = (eta_start - lower) / (upper - lower)
@@ -421,25 +450,49 @@ def project_ris_factor(
                 best_eta = lower + x_best * (upper - lower)
                 best_exact_value = float(value)
                 best_info_message = info["message"]
-        optimizer_message += f" + multistart exact spherical {best_info_message}"
+        optimizer_message += f" + exact spherical {best_info_message}"
 
+    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
     h_best = compressed_exact_response(best_eta, omega, a_rb, ris_grid, wavelength)
-    final_value, best_alpha = scaled_residual(c_tilde, h_best, eps)
-    relative_residual = np.sqrt(final_value / (np.linalg.norm(c_tilde) ** 2 + eps))
+    exact_value, exact_alpha = scaled_residual(c_tilde, h_best, eps)
+    c_projected = exact_alpha * h_best
+    c_projected_norm = np.linalg.norm(c_projected)
+    if c_projected_norm > eps:
+        c_projected = c_projected / c_projected_norm
+    else:
+        h_norm = np.linalg.norm(h_best)
+        c_projected = h_best / (h_norm + eps)
+
+    final_value, final_alpha = scaled_residual(c_tilde, c_projected, eps)
+    final_relative = float(np.sqrt(final_value / c_norm_sq))
+    candidates = {
+        "paper": {
+            "c": c_projected,
+            "eta_local": best_eta,
+            "alpha": final_alpha,
+            "data_residual": float(final_value),
+            "relative_residual": final_relative,
+        }
+    }
     return {
-        "c": h_best,
+        "c": c_projected,
         "eta_local": best_eta,
-        "alpha": best_alpha,
-        "relative_residual": float(relative_residual),
+        "alpha": final_alpha,
+        "relative_residual": final_relative,
+        "selected_model": "exact_refined_from_lifted"
+        if lifted_best is not None
+        else "exact",
+        "candidates": candidates,
         "coarse_eta_local": coarse_candidates[0][1],
         "coarse_relative_residual": float(
-            np.sqrt(best_value / (np.linalg.norm(c_tilde) ** 2 + eps))
+            np.sqrt(best_value / c_norm_sq)
         ),
+        "exact_relative_residual": float(np.sqrt(exact_value / c_norm_sq)),
+        "lifted_available": lifted_best is not None,
         "lifted_used": lifted_best is not None,
         "lifted_relative_residual": None
         if lifted_best is None
-        else float(
-            np.sqrt(lifted_best["data_residual"] / (np.linalg.norm(c_tilde) ** 2 + eps))
-        ),
+        else float(np.sqrt(lifted_best["data_residual"] / c_norm_sq)),
+        "lifted_objective": None if lifted_best is None else lifted_best["objective"],
         "optimizer_message": optimizer_message,
     }

@@ -40,6 +40,9 @@ def project_evs_factor(
 
     p_projected = theta @ polarization_vector(gamma, eta)
     a_model = np.kron(v_b, p_projected)
+    a_norm = np.linalg.norm(a_model)
+    if a_norm > eps:
+        a_model = a_model / a_norm
     scale = np.vdot(a_model, a_tilde) / (np.vdot(a_model, a_model) + eps)
     residual = np.linalg.norm(a_tilde - scale * a_model) / (
         np.linalg.norm(a_tilde) + eps
@@ -52,4 +55,3 @@ def project_evs_factor(
         "scale": scale,
         "residual": float(residual),
     }
-

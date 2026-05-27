@@ -10,9 +10,8 @@ from .geometry import position_from_local_geometry
 from .projections_delay import (
     bq_from_poles,
     delay_matrix_from_poles,
-    estimate_common_pole_from_factors,
     estimate_poles_esprit_from_hankel,
-    project_common_delay_from_proxies,
+    structured_delay_mother_pgd,
     tau_from_pole,
 )
 from .projections_evs import project_evs_factor
@@ -87,6 +86,20 @@ def _z_fit_error(
     return float(np.linalg.norm(z_hat - z_tensor) ** 2 / (np.linalg.norm(z_tensor) ** 2 + 1e-12))
 
 
+def _fit_z_model(
+    z_tensor: np.ndarray,
+    a_mat: np.ndarray,
+    b_mat: np.ndarray,
+    q_mat: np.ndarray,
+    c_mat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Estimate Z-domain weights and return reconstruction plus squared residual."""
+    beta = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
+    z_hat = reconstruct_z(beta, a_mat, b_mat, q_mat, c_mat)
+    residual_sse = float(np.linalg.norm(z_hat - z_tensor) ** 2)
+    return beta, z_hat, residual_sse
+
+
 def reconstruct_raw_from_structured_estimate(estimate: dict, scene: dict) -> np.ndarray:
     """Reconstruct raw Y from current structured CPD factors."""
     a_mat = estimate["A"]
@@ -144,13 +157,15 @@ def _assignment_by_projection(
             evs_proj = project_evs_factor(
                 a_proxy[:, col], scene["v_B"][ris], scene["Theta"][ris], eps
             )
+            ris_search = local_ris_search_config(scene, config, ris)
+            ris_search["projection_mode"] = "exact"
             ris_proj = project_ris_factor(
                 c_proxy[:, col],
                 scene["Omega"][ris],
                 scene["a_RB"][ris],
                 scene["ris_grid"],
                 scene["wavelength"],
-                local_ris_search_config(scene, config, ris),
+                ris_search,
                 eps,
             )
             evs_cache[col][ris] = evs_proj
@@ -186,6 +201,67 @@ def _assignment_by_projection(
     evs_selected = [evs_cache[col][ris] for col, ris in enumerate(best_perm)]
     ris_selected = [ris_cache[col][ris] for col, ris in enumerate(best_perm)]
     return best_perm, evs_selected, ris_selected
+
+
+def _mode4_assignment_from_proxy(
+    c_proxy: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> tuple[list[int], np.ndarray]:
+    """Return physical-panel column order from the exact compressed RIS score."""
+    k_paths = scene["K"]
+    costs = np.empty((k_paths, k_paths), dtype=float)
+    for col in range(k_paths):
+        for ris in range(k_paths):
+            ris_search = local_ris_search_config(scene, config, ris)
+            ris_search["projection_mode"] = "exact"
+            projection = project_ris_factor(
+                c_proxy[:, col],
+                scene["Omega"][ris],
+                scene["a_RB"][ris],
+                scene["ris_grid"],
+                scene["wavelength"],
+                ris_search,
+                config["eps"],
+            )
+            costs[col, ris] = projection["relative_residual"] ** 2
+
+    best_order = None
+    best_score = np.inf
+    for order in itertools.permutations(range(k_paths)):
+        score = sum(costs[order[ris], ris] for ris in range(k_paths))
+        if score < best_score:
+            best_score = score
+            best_order = list(order)
+    assert best_order is not None, "failed to solve RIS column assignment"
+    return best_order, costs
+
+
+def _apply_physical_order(
+    order: list[int],
+    a_mat: np.ndarray,
+    b_mat: np.ndarray,
+    q_mat: np.ndarray,
+    c_mat: np.ndarray,
+    poles: np.ndarray,
+    beta: np.ndarray,
+    gamma: np.ndarray,
+    eta_pol: np.ndarray,
+    ris_eta: np.ndarray,
+) -> tuple:
+    """Reorder all Stage-II columns so column k corresponds to physical RIS k."""
+    order_array = np.asarray(order, dtype=int)
+    return (
+        a_mat[:, order_array],
+        b_mat[:, order_array],
+        q_mat[:, order_array],
+        c_mat[:, order_array],
+        poles[order_array],
+        beta[order_array],
+        gamma[order_array],
+        eta_pol[order_array],
+        ris_eta[order_array],
+    )
 
 
 def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> dict:
@@ -287,87 +363,59 @@ def _update_delay_poles_from_z(
     z_tensor: np.ndarray,
     beta: np.ndarray,
     a_mat: np.ndarray,
-    b_mat: np.ndarray,
-    q_mat: np.ndarray,
     c_mat: np.ndarray,
+    poles_old: np.ndarray,
+    ris_eta: np.ndarray,
     scene: dict,
     config: dict,
-) -> np.ndarray:
-    """Mother-delay Hankel projection followed by direct common-pole refinement."""
-    k_paths = beta.size
+) -> tuple[np.ndarray, dict]:
+    """Structured mother-delay LS update with Hankel rank-one projection."""
+    r_dim = max(scene["P"], scene["L"])
+    update = structured_delay_mother_pgd(
+        z_tensor=z_tensor,
+        beta=beta,
+        a_mat=a_mat,
+        c_mat=c_mat,
+        poles_old=poles_old,
+        p_dim=scene["P"],
+        l_dim=scene["L"],
+        r_dim=r_dim,
+        lambda_d=float(config.get("delay_lambda", 1.0e-2)),
+        num_steps=int(config.get("delay_num_pgd_steps", 10)),
+        step_scale=float(config.get("delay_step_scale", 0.8)),
+        damping=float(config.get("delay_damping", 1.0)),
+        eps=config["eps"],
+    )
+    poles = update["poles"].copy()
+    update["geometry_correction_accepted"] = False
 
-    design_b = np.empty((a_mat.shape[0] * q_mat.shape[0] * c_mat.shape[0], k_paths), dtype=complex)
-    for k in range(k_paths):
-        design_b[:, k] = (
-            beta[k]
-            * a_mat[:, k, None, None]
-            * q_mat[None, :, k, None]
-            * c_mat[None, None, :, k]
-        ).reshape(-1)
-    target_b = np.moveaxis(z_tensor, 1, 0).reshape(b_mat.shape[0], -1).T
-    b_proxy = solve_lstsq(design_b, target_b, reg=1e-10).T
-
-    design_q = np.empty((a_mat.shape[0] * b_mat.shape[0] * c_mat.shape[0], k_paths), dtype=complex)
-    for k in range(k_paths):
-        design_q[:, k] = (
-            beta[k]
-            * a_mat[:, k, None, None]
-            * b_mat[None, :, k, None]
-            * c_mat[None, None, :, k]
-        ).reshape(-1)
-    target_q = np.moveaxis(z_tensor, 2, 0).reshape(q_mat.shape[0], -1).T
-    q_proxy = solve_lstsq(design_q, target_q, reg=1e-10).T
-
-    poles = project_common_delay_from_proxies(b_proxy, q_proxy, config["eps"])
-    phase_span = float(config.get("delay_refine_phase_span", 0.35))
-
-    for k in range(k_paths):
-        current_angle = float(np.angle(poles[k]))
-        best_angle = current_angle
-        best_error = _z_fit_error(
-            z_tensor, a_mat, poles, c_mat, scene["P"], scene["L"]
+    rho_g = float(config.get("delay_geometry_rho", 0.0))
+    if rho_g > 0.0:
+        rho_g = float(np.clip(rho_g, 0.0, 1.0))
+        tau_est = np.array([tau_from_pole(pole, scene["delta_f"]) for pole in poles])
+        ranges = ris_eta[:, 0]
+        weights = np.ones_like(tau_est)
+        delta_t = np.sum(weights * (tau_est - (ranges + scene["d_RB"]) / scene["c0"])) / (
+            np.sum(weights) + config["eps"]
         )
+        tau_geo = (ranges + scene["d_RB"]) / scene["c0"] + delta_t
+        tau_corrected = (1.0 - rho_g) * tau_est + rho_g * tau_geo
+        corrected = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau_corrected)
+        error_before = _z_fit_error(z_tensor, a_mat, poles, c_mat, scene["P"], scene["L"])
+        error_after = _z_fit_error(
+            z_tensor, a_mat, corrected, c_mat, scene["P"], scene["L"]
+        )
+        update["geometry_correction"] = {
+            "rho": rho_g,
+            "delta_t": float(delta_t),
+            "z_error_before": float(error_before),
+            "z_error_after": float(error_after),
+        }
+        if error_after <= error_before + float(config.get("stage2_accept_tol", 1e-9)):
+            poles = corrected
+            update["geometry_correction_accepted"] = True
 
-        def objective_from_angle(angle_value: float) -> float:
-            trial_poles = poles.copy()
-            trial_poles[k] = np.exp(1j * angle_value)
-            return _z_fit_error(z_tensor, a_mat, trial_poles, c_mat, scene["P"], scene["L"])
-
-        if scipy_is_available():
-            from scipy.optimize import minimize_scalar
-
-            result = minimize_scalar(
-                objective_from_angle,
-                bounds=(current_angle - phase_span, current_angle + phase_span),
-                method="bounded",
-                options={"xatol": 1e-5, "maxiter": 40},
-            )
-            if result.success and result.fun <= best_error:
-                best_angle = float(result.x)
-                best_error = float(result.fun)
-        else:
-            lower = np.array([0.0])
-            upper = np.array([1.0])
-
-            def scaled_objective(x_scaled: np.ndarray) -> float:
-                angle = current_angle + (2.0 * x_scaled[0] - 1.0) * phase_span
-                return objective_from_angle(float(angle))
-
-            x_best, value, _ = bounded_coordinate_search(
-                scaled_objective,
-                np.array([0.5]),
-                lower,
-                upper,
-                step0=0.18,
-                max_iter=18,
-                tol=1e-4,
-            )
-            if value <= best_error:
-                best_angle = current_angle + (2.0 * x_best[0] - 1.0) * phase_span
-                best_error = value
-
-        poles[k] = np.exp(1j * best_angle)
-    return poles
+    return poles, update
 
 
 def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estimate: dict) -> tuple[dict, dict]:
@@ -383,14 +431,25 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         "residuals_noisy_rmse": [],
         "updates": [],
     }
+    b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
+    beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+    safeguard = bool(config.get("stage2_global_safeguard", True))
+    accept_tol = float(config.get("stage2_accept_tol", 1e-9))
+    stop_tol = float(config.get("stage2_tol", 0.0))
 
     for _ in range(config["num_structured_iters"]):
         b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
-        beta_old = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
+        beta_old, z_hat_old, iter_start_sse = _fit_z_model(
+            z_tensor, a_mat, b_mat, q_mat, c_mat
+        )
         a_old = a_mat.copy()
         b_old = b_mat.copy()
         q_old = q_mat.copy()
         c_old = c_mat.copy()
+        poles_old = poles.copy()
+        gamma_old = gamma.copy()
+        eta_pol_old = eta_pol.copy()
+        ris_eta_old = ris_eta.copy()
 
         a_proxy = _update_a_from_z(z_tensor, beta_old, b_mat, q_mat, c_mat)
         evs_projection_details = []
@@ -411,12 +470,42 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 }
             )
 
-        beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
+        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
         c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
+        assignment_order, assignment_costs = _mode4_assignment_from_proxy(
+            c_proxy, scene, config
+        )
+        (
+            a_mat,
+            b_mat,
+            q_mat,
+            c_mat,
+            poles,
+            beta_z,
+            gamma,
+            eta_pol,
+            ris_eta,
+        ) = _apply_physical_order(
+            assignment_order,
+            a_mat,
+            b_mat,
+            q_mat,
+            c_mat,
+            poles,
+            beta_z,
+            gamma,
+            eta_pol,
+            ris_eta,
+        )
+        c_proxy = c_proxy[:, assignment_order]
+        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
         ris_projection_details = []
         for k in range(scene["K"]):
             c_before = c_mat[:, k].copy()
             before_value, _ = scaled_residual(c_proxy[:, k], c_before, config["eps"])
+            beta_before_c, z_hat_before_c, sse_before_c = _fit_z_model(
+                z_tensor, a_mat, b_mat, q_mat, c_mat
+            )
             ris_proj = project_ris_factor(
                 c_proxy[:, k],
                 scene["Omega"][k],
@@ -425,14 +514,27 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 scene["wavelength"],
                 local_ris_search_config(scene, config, k),
                 config["eps"],
+                current_eta=ris_eta[k],
             )
-            after_value = ris_proj["relative_residual"] ** 2 * (
-                np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]
+
+            trial_c = c_mat.copy()
+            trial_c[:, k] = ris_proj["c"]
+            beta_trial, z_hat_trial, sse_trial = _fit_z_model(
+                z_tensor, a_mat, b_mat, q_mat, trial_c
             )
-            accepted = bool(after_value <= before_value + 1e-9)
+            accepted = sse_trial <= sse_before_c + accept_tol
             if accepted:
-                c_mat[:, k] = ris_proj["c"]
+                c_mat = trial_c
                 ris_eta[k] = ris_proj["eta_local"]
+                beta_z = beta_trial
+                z_hat = z_hat_trial
+                current_sse = sse_trial
+            else:
+                beta_z = beta_before_c
+                z_hat = z_hat_before_c
+                current_sse = sse_before_c
+
+            after_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
             c_change = _relative_change(c_mat[:, k], c_before, config["eps"])
             ris_projection_details.append(
                 {
@@ -440,26 +542,67 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     "residual_before": float(
                         np.sqrt(before_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
                     ),
-                    "residual_after": ris_proj["relative_residual"],
-                    "selected_eta": ris_proj["eta_local"],
+                    "residual_after": float(
+                        np.sqrt(after_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
+                    ),
+                    "selected_eta": ris_eta[k].copy(),
                     "c_relative_change": c_change,
                     "accepted": accepted,
-                    "lifted_used": ris_proj.get("lifted_used", False),
+                    "selected_model": ris_proj["selected_model"] if accepted else "current",
+                    "global_sse_before": float(sse_before_c),
+                    "global_sse_after": float(current_sse),
+                    "exact_relative_residual": ris_proj.get("exact_relative_residual"),
+                    "lifted_used": bool(ris_proj.get("lifted_used", False) and accepted),
                     "lifted_relative_residual": ris_proj.get("lifted_relative_residual"),
                     "optimizer_message": ris_proj["optimizer_message"],
                 }
             )
 
-        beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
-        poles = _update_delay_poles_from_z(
-            z_tensor, beta_z, a_mat, b_mat, q_mat, c_mat, scene, config
+        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+        poles_candidate, delay_projection_details = _update_delay_poles_from_z(
+            z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
         )
-        b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
-        beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
-        z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+        b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
+        beta_candidate, z_hat_candidate, delay_sse_after = _fit_z_model(
+            z_tensor, a_mat, b_candidate, q_candidate, c_mat
+        )
+        delay_accepted = delay_sse_after <= current_sse + accept_tol
+        delay_projection_details.update(
+            {
+                "accepted": bool(delay_accepted),
+                "global_sse_before": float(current_sse),
+                "global_sse_after": float(delay_sse_after),
+            }
+        )
+        if delay_accepted:
+            poles = poles_candidate
+            b_mat = b_candidate
+            q_mat = q_candidate
+            beta_z = beta_candidate
+            z_hat = z_hat_candidate
+            current_sse = delay_sse_after
+
+        proposed_sse = current_sse
+        iteration_accepted = (not safeguard) or (proposed_sse <= iter_start_sse + accept_tol)
+        if not iteration_accepted:
+            a_mat = a_old
+            b_mat = b_old
+            q_mat = q_old
+            c_mat = c_old
+            poles = poles_old
+            gamma = gamma_old
+            eta_pol = eta_pol_old
+            ris_eta = ris_eta_old
+            beta_z = beta_old
+            z_hat = z_hat_old
+            current_sse = iter_start_sse
+
         diagnostics["z_hat_history"].append(z_hat)
         diagnostics["residuals_noisy_rmse"].append(
             float(np.linalg.norm(z_hat - z_tensor) / np.sqrt(z_tensor.size))
+        )
+        relative_residual_change = abs(iter_start_sse - current_sse) / max(
+            iter_start_sse, config["eps"]
         )
         diagnostics["updates"].append(
             {
@@ -474,9 +617,21 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 "nonfinite_C": _count_nonfinite(c_mat),
                 "nonfinite_beta": _count_nonfinite(beta_z),
                 "evs_projection_details": evs_projection_details,
+                "mode4_assignment_order": assignment_order,
+                "mode4_assignment_costs": assignment_costs,
                 "ris_projection_details": ris_projection_details,
+                "delay_projection_details": delay_projection_details,
+                "iteration_accepted": bool(iteration_accepted),
+                "iteration_sse_before": float(iter_start_sse),
+                "iteration_sse_proposed": float(proposed_sse),
+                "iteration_sse_after": float(current_sse),
+                "relative_residual_change": float(relative_residual_change),
             }
         )
+        if not iteration_accepted:
+            break
+        if stop_tol > 0.0 and relative_residual_change < stop_tol:
+            break
 
     estimate.update(
         {

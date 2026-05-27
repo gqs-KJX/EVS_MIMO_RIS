@@ -201,7 +201,8 @@ def run_ris_projection_self_test(scene: dict, config: dict, true_components: dic
         scene["ris_grid"],
         scene["wavelength"],
     )
-    assert np.allclose(projection["c"], c_check), "RIS c_hat is not Omega @ g_hat"
+    projection_error, _ = scaled_residual(projection["c"], c_check, config["eps"])
+    assert projection_error <= 1e-8, "RIS c_hat is not proportional to Omega @ g_hat"
     range_error = abs(projection["eta_local"][0] - eta_true[0])
     angle_error = np.linalg.norm(
         np.array(
