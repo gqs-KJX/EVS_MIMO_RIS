@@ -6,8 +6,13 @@ import numpy as np
 
 from .geometry import position_from_local_geometry
 from .metrics import position_rmse, relative_nmse, rmse_abs
-from .projections_delay import bq_from_poles, estimate_common_pole_from_factors, tau_from_pole
-from .projections_ris import compressed_exact_response, project_ris_factor, scaled_residual
+from .projections_delay import bq_from_poles, project_common_delay_from_proxies, tau_from_pole
+from .projections_ris import (
+    compressed_exact_response,
+    local_ris_search_config,
+    project_ris_factor,
+    scaled_residual,
+)
 from .tensor_utils import (
     hankelize_frequency,
     khatri_rao_columns,
@@ -141,7 +146,9 @@ def run_delay_projection_self_test(delta_f: float) -> dict:
     q_noisy = q_true[:, 0] + noise_scale * (
         rng.standard_normal(l_dim) + 1j * rng.standard_normal(l_dim)
     )
-    z_hat = estimate_common_pole_from_factors(b_noisy, q_noisy)
+    z_hat = project_common_delay_from_proxies(
+        b_noisy[:, None], q_noisy[:, None], eps=1e-12
+    )[0]
     b_hat, q_hat = bq_from_poles(np.array([z_hat]), p_dim, l_dim)
     assert np.allclose(b_hat[:, 0], z_hat ** np.arange(p_dim)), "B does not use z_hat"
     assert np.allclose(q_hat[:, 0], z_hat ** np.arange(l_dim)), "Q does not use z_hat"
@@ -183,7 +190,7 @@ def run_ris_projection_self_test(scene: dict, config: dict, true_components: dic
         scene["a_RB"][path],
         scene["ris_grid"],
         scene["wavelength"],
-        config["ris_search"],
+        local_ris_search_config(scene, config, path),
         config["eps"],
     )
     phi_after, _ = scaled_residual(c_noisy, projection["c"], config["eps"])

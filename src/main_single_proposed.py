@@ -204,6 +204,12 @@ def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: floa
 
     print(f"RMSE_Y_hat_initial_abs = {initial_metrics['rmse_abs']:.6e}")
     print(f"NMSE_Y_hat_initial = {initial_metrics['nmse']:.6e}")
+    print(f"RMSE_Y_hat_after_structured_abs = {structured_metrics['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat_after_structured = {structured_metrics['nmse']:.6e}")
+    print(f"RMSE_Y_hat_after_VP_abs = {vp_metrics['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat_after_VP = {vp_metrics['nmse']:.6e}")
+    print(f"RMSE_Y_hat_abs = {vp_metrics['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat = {vp_metrics['nmse']:.6e}")
     print(f"after_structured_Y_RMSE_abs = {structured_metrics['rmse_abs']:.6e}")
     print(f"after_structured_Y_NMSE = {structured_metrics['nmse']:.6e}")
     print(f"after_VP_Y_RMSE_abs = {vp_metrics['rmse_abs']:.6e}")
@@ -241,10 +247,10 @@ def _print_z_stage_metrics(results: dict) -> list[dict]:
     for idx, z_hat in enumerate(results["structured_diag"]["z_hat_history"], start=1):
         metrics = z_metric_summary(z_hat, z_true, z_noisy)
         history_metrics.append(metrics)
-        print(f"iter_{idx}_Z_RMSE_noisy = {metrics['rmse_noisy']:.6e}")
-        print(f"iter_{idx}_Z_RMSE_true = {metrics['rmse_true']:.6e}")
-        print(f"iter_{idx}_Z_NMSE_noisy = {metrics['nmse_noisy']:.6e}")
-        print(f"iter_{idx}_Z_NMSE_true = {metrics['nmse_true']:.6e}")
+        print(f"structured_iter_{idx}_Z_RMSE_noisy = {metrics['rmse_noisy']:.6e}")
+        print(f"structured_iter_{idx}_Z_RMSE_true = {metrics['rmse_true']:.6e}")
+        print(f"structured_iter_{idx}_Z_NMSE_noisy = {metrics['nmse_noisy']:.6e}")
+        print(f"structured_iter_{idx}_Z_NMSE_true = {metrics['nmse_true']:.6e}")
 
     if history_metrics and history_metrics[-1]["nmse_true"] >= initial_metrics["nmse_true"]:
         print("WARNING: Stage-II did not reduce true-domain Z NMSE in this run.")
@@ -311,7 +317,8 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
                 f"res_before={detail['residual_before']:.3e}, "
                 f"res_after={detail['residual_after']:.3e}, "
                 f"range/elev/az=({eta[0]:.3f}, {eta[1]:.3f}, {eta[2]:.3f}), "
-                f"c_delta={detail['c_relative_change']:.3e}"
+                f"c_delta={detail['c_relative_change']:.3e}, "
+                f"lifted_used={detail.get('lifted_used', False)}"
             )
             if detail["c_relative_change"] < 1e-8:
                 unchanged_ris_count += 1
