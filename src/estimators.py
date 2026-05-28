@@ -764,6 +764,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         x_scaled_best = result.x
         optimizer_info = {
             "success": bool(result.success),
+            "status": int(result.status),
             "message": result.message,
             "n_eval": int(result.nfev),
             "method": "scipy.optimize.least_squares",
@@ -785,6 +786,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         )
         optimizer_info = {
             "success": info["success"],
+            "status": 1 if info["success"] else 0,
             "message": info["message"],
             "n_eval": info["n_eval"],
             "method": "bounded coordinate search",
