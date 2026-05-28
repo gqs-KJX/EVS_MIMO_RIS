@@ -385,6 +385,8 @@ def _update_delay_poles_from_z(
         step_scale=float(config.get("delay_step_scale", 0.8)),
         damping=float(config.get("delay_damping", 1.0)),
         eps=config["eps"],
+        phase_refine_span=config.get("delay_refine_phase_span", 0.0),
+        phase_refine_grid=config.get("delay_refine_phase_grid", 0),
     )
     poles = update["poles"].copy()
     update["geometry_correction_accepted"] = False

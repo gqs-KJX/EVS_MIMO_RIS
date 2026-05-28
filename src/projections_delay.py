@@ -29,6 +29,31 @@ def bq_from_poles(poles: np.ndarray, p_dim: int, l_dim: int) -> tuple[np.ndarray
     return delay_matrix_from_poles(poles, p_dim), delay_matrix_from_poles(poles, l_dim)
 
 
+def _hankel_shape(length: int) -> tuple[int, int]:
+    """Return the ES-CPD balanced Hankel shape for a length-n vector."""
+    if length <= 0:
+        raise ValueError("length must be positive")
+    rows = (length + 1) // 2
+    cols = length + 1 - rows
+    return rows, cols
+
+
+def _hankel_antidiagonal_counts(length: int) -> np.ndarray:
+    """Return anti-diagonal multiplicities for the ES-CPD Hankel shape."""
+    rows, cols = _hankel_shape(length)
+    counts = np.zeros(length, dtype=float)
+    for row in range(rows):
+        for col in range(cols):
+            counts[row + col] += 1.0
+    return counts
+
+
+def _hankel_inverse_weights(length: int) -> np.ndarray:
+    """Return ES-CPD W = 1 / anti-diagonal-counts as a length vector."""
+    counts = _hankel_antidiagonal_counts(length)
+    return 1.0 / np.maximum(counts, 1.0)
+
+
 def _hankel_1d(vector: np.ndarray, rows: int, cols: int) -> np.ndarray:
     """Build a 1-D Hankel matrix from a mother delay vector."""
     assert rows + cols - 1 <= vector.size, "Hankel window is longer than vector"
@@ -54,8 +79,7 @@ def _dehankel_1d(hankel: np.ndarray, length: int) -> np.ndarray:
 def _project_delay_vector_hankel_rank_one(delay_proxy: np.ndarray, eps: float) -> np.ndarray:
     """Project one mother delay vector through Hankel rank-one lifting."""
     length = delay_proxy.size
-    rows = max(2, length // 2)
-    cols = length - rows + 1
+    rows, cols = _hankel_shape(length)
     lifted = _hankel_1d(delay_proxy, rows, cols)
     u_vec, s_val, vh = np.linalg.svd(lifted, full_matrices=False)
     lifted_rank_one = s_val[0] * np.outer(u_vec[:, 0], vh[0, :])
@@ -68,8 +92,7 @@ def _project_delay_vector_hankel_rank_one(delay_proxy: np.ndarray, eps: float) -
 def _hankel_rank_one_dehankel(delay_proxy: np.ndarray) -> np.ndarray:
     """Apply H, frontal rank-one projection, and H-dagger anti-diagonal averaging."""
     length = delay_proxy.size
-    rows = max(2, length // 2)
-    cols = length - rows + 1
+    rows, cols = _hankel_shape(length)
     lifted = _hankel_1d(delay_proxy, rows, cols)
     u_vec, s_val, vh = np.linalg.svd(lifted, full_matrices=False)
     lifted_rank_one = s_val[0] * np.outer(u_vec[:, 0], vh[0, :])
@@ -125,6 +148,8 @@ def structured_delay_mother_pgd(
     step_scale: float,
     damping: float,
     eps: float = 1e-12,
+    phase_refine_span: float = 0.0,
+    phase_refine_grid: int = 0,
 ) -> dict:
     """Projected-gradient update for the shared mother Vandermonde delay factor.
 
@@ -184,6 +209,7 @@ def structured_delay_mother_pgd(
     spectral_b = np.linalg.norm(design_b, ord=2) ** 2
     spectral_q = np.linalg.norm(design_q, ord=2) ** 2
     step = step_scale / (spectral_b + spectral_q + lambda_d + eps)
+    hankel_weight = _hankel_inverse_weights(r_dim)[:, None]
 
     delay_current = d_old.copy()
     best_delay = delay_current.copy()
@@ -199,7 +225,7 @@ def structured_delay_mother_pgd(
         residual_q = design_q @ delay_current[:l_dim].T - target_q
         gradient[:l_dim] += (design_q.conj().T @ residual_q).T
 
-        delay_trial = delay_current - step * gradient
+        delay_trial = delay_current - step * hankel_weight * gradient
         delay_projected = project_delay_mother_hankel_rank_one(delay_trial)
         delay_current = (1.0 - damping) * delay_current + damping * delay_projected
         value = objective(delay_current)
@@ -209,6 +235,47 @@ def structured_delay_mother_pgd(
 
     final_delay, final_poles = project_delay_mother_matrix(best_delay, eps)
     final_objective = objective(final_delay)
+    accept_tol = 1.0e-10 * max(1.0, initial_objective)
+    unit_circle_accepted = True
+    if final_objective > initial_objective + accept_tol:
+        final_delay = d_old.copy()
+        final_poles = poles_old.copy()
+        final_objective = initial_objective
+        unit_circle_accepted = False
+
+    phase_refine_enabled = bool(phase_refine_span > 0.0 and phase_refine_grid >= 3)
+    phase_refine_objective = final_objective
+
+    if phase_refine_enabled:
+        poles_refined = final_poles.copy()
+        current_objective = final_objective
+        offsets = np.linspace(
+            -float(phase_refine_span),
+            float(phase_refine_span),
+            int(phase_refine_grid),
+        )
+        for k in range(k_paths):
+            base_phase = np.angle(poles_refined[k])
+            best_local_pole = poles_refined[k]
+            best_local_objective = current_objective
+            for offset in offsets:
+                trial_poles = poles_refined.copy()
+                trial_poles[k] = np.exp(1j * (base_phase + offset))
+                trial_delay = delay_matrix_from_poles(trial_poles, r_dim)
+                trial_objective = objective(trial_delay)
+                if trial_objective + eps < best_local_objective:
+                    best_local_objective = trial_objective
+                    best_local_pole = trial_poles[k]
+            poles_refined[k] = best_local_pole
+            current_objective = best_local_objective
+
+        refined_delay = delay_matrix_from_poles(poles_refined, r_dim)
+        refined_objective = objective(refined_delay)
+        if refined_objective <= final_objective:
+            final_poles = poles_refined
+            final_delay = refined_delay
+            final_objective = refined_objective
+            phase_refine_objective = refined_objective
 
     return {
         "delay_mother": final_delay,
@@ -216,6 +283,9 @@ def structured_delay_mother_pgd(
         "initial_objective": float(initial_objective),
         "projected_objective": float(best_objective),
         "final_objective": float(final_objective),
+        "unit_circle_accepted": bool(unit_circle_accepted),
+        "phase_refine_enabled": bool(phase_refine_enabled),
+        "phase_refine_objective": float(phase_refine_objective),
         "step": float(step),
         "damping": float(damping),
         "num_steps": int(num_steps),

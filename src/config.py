@@ -71,5 +71,6 @@ def default_config() -> dict:
         "assignment_clock_weight": 0.5,
         "assignment_clock_scale_s": 1.0e-9,
         "delay_refine_phase_span": 0.35,
+        "delay_refine_phase_grid": 9,
         "eps": 1.0e-10,
     }
