@@ -14,6 +14,7 @@ def default_config() -> dict:
     return {
         "seed": 20260526,
         "SNR_dB": 0.0,
+        "enable_global_vp": False,
         "K": 2,
         "M_A": 2,
         "ris_shape": (32, 32),

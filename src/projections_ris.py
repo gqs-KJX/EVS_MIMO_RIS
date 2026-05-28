@@ -340,10 +340,14 @@ def project_ris_factor(
         a_grid = np.linspace(
             local_lower[2], local_upper[2], int(search_config.get("stage2_num_az", 7))
         )
+        refine_lower = local_lower
+        refine_upper = local_upper
     else:
         r_grid = np.linspace(*search_config["range_bounds"], search_config["num_range"])
         e_grid = np.linspace(*search_config["elev_bounds"], search_config["num_elev"])
         a_grid = np.linspace(*search_config["az_bounds"], search_config["num_az"])
+        refine_lower = lower
+        refine_upper = upper
 
     grid_candidates = [
         np.array([range_m, elevation, azimuth], dtype=float)
@@ -406,7 +410,7 @@ def project_ris_factor(
 
     unique_starts = []
     for eta_start in refine_starts:
-        eta_clipped = np.clip(np.asarray(eta_start, dtype=float), lower, upper)
+        eta_clipped = np.clip(np.asarray(eta_start, dtype=float), refine_lower, refine_upper)
         if not any(np.linalg.norm(eta_clipped - old) < 1e-9 for old in unique_starts):
             unique_starts.append(eta_clipped)
 
@@ -420,7 +424,7 @@ def project_ris_factor(
                 exact_objective,
                 eta_start,
                 method="L-BFGS-B",
-                bounds=list(zip(lower, upper)),
+                bounds=list(zip(refine_lower, refine_upper)),
                 options={"maxiter": 100, "ftol": 1e-12},
             )
             if result.fun <= best_exact_value:
@@ -431,10 +435,11 @@ def project_ris_factor(
     else:
         best_info_message = ""
         for eta_start in unique_starts:
-            x0_scaled = (eta_start - lower) / (upper - lower)
+            span = np.maximum(refine_upper - refine_lower, eps)
+            x0_scaled = (eta_start - refine_lower) / span
 
             def scaled_objective(x_scaled: np.ndarray) -> float:
-                eta_local = lower + np.clip(x_scaled, 0.0, 1.0) * (upper - lower)
+                eta_local = refine_lower + np.clip(x_scaled, 0.0, 1.0) * span
                 return exact_objective(eta_local)
 
             x_best, value, info = bounded_coordinate_search(
@@ -447,7 +452,7 @@ def project_ris_factor(
                 tol=1e-4,
             )
             if value <= best_exact_value:
-                best_eta = lower + x_best * (upper - lower)
+                best_eta = refine_lower + x_best * span
                 best_exact_value = float(value)
                 best_info_message = info["message"]
         optimizer_message += f" + exact spherical {best_info_message}"

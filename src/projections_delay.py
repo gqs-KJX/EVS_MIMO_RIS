@@ -97,8 +97,7 @@ def project_delay_mother_matrix(
     poles = np.empty(k_paths, dtype=complex)
     projected = np.empty_like(delay_mother, dtype=complex)
     for k in range(k_paths):
-        hankel_projected = _project_delay_vector_hankel_rank_one(delay_mother[:, k], eps)
-        poles[k] = _best_pole_from_delay_vector(hankel_projected, eps)
+        poles[k] = _best_pole_from_delay_vector(delay_mother[:, k], eps)
         projected[:, k] = poles[k] ** np.arange(length)
     return projected, poles
 

@@ -23,6 +23,7 @@ if __package__ in (None, ""):
         format_float_list,
         hankel_metric_summary,
         noise_metric_summary,
+        estimate_position_from_ris_eta,
         parameter_errors_for_structured,
         parameter_errors_for_vp,
         run_delay_projection_self_test,
@@ -52,6 +53,7 @@ else:
         format_float_list,
         hankel_metric_summary,
         noise_metric_summary,
+        estimate_position_from_ris_eta,
         parameter_errors_for_structured,
         parameter_errors_for_vp,
         run_delay_projection_self_test,
@@ -149,7 +151,7 @@ def _print_self_tests(scene: dict, config: dict, true_components: dict) -> None:
 
 
 def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
-    """Run initialization, optional Stage-II, and final raw-domain VP."""
+    """Run initialization, optional Stage-II, and optional raw-domain VP."""
     data = _make_data(config)
     scene = data["scene"]
     estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, config)
@@ -160,7 +162,36 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
     else:
         estimate_used = copy.deepcopy(estimate_initial)
         structured_diag = {"z_hat_history": [], "residuals_noisy_rmse": [], "updates": []}
-    final = refine_global_raw(data["Y_noisy"], scene, config, estimate_used)
+    if config.get("enable_global_vp", True):
+        final = refine_global_raw(data["Y_noisy"], scene, config, estimate_used)
+        final["vp_enabled"] = True
+    else:
+        y_hat = reconstruct_raw_tensor_from_structured_estimate(estimate_used, scene)
+        tau_hat = np.array(
+            [
+                ((-np.angle(pole)) % (2.0 * np.pi))
+                / (2.0 * np.pi * scene["delta_f"])
+                for pole in estimate_used["poles"]
+            ]
+        )
+        final = {
+            "Y_hat": y_hat,
+            "p_u": estimate_position_from_ris_eta(scene, estimate_used),
+            "components": {
+                "taus": tau_hat,
+                "ranges": estimate_used["ris_eta"][:, 0],
+            },
+            "raw_residual_rmse_noisy": float(
+                np.linalg.norm(y_hat - data["Y_noisy"]) / np.sqrt(data["Y_noisy"].size)
+            ),
+            "optimizer": {
+                "success": True,
+                "message": "global VP disabled by config",
+                "n_eval": 0,
+                "method": "skipped_global_vp",
+            },
+            "vp_enabled": False,
+        }
     return {
         **data,
         "estimate_initial": estimate_initial,
@@ -175,13 +206,14 @@ def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: floa
     scene = results["scene"]
     y_true = results["Y_true"]
     y_noisy = results["Y_noisy"]
+    vp_enabled = bool(results["final"].get("vp_enabled", True))
     initial_y_hat = reconstruct_raw_tensor_from_structured_estimate(
         results["estimate_initial"], scene
     )
     structured_y_hat = reconstruct_raw_tensor_from_structured_estimate(
         results["estimate_used"], scene
     )
-    vp_y_hat = results["final"]["Y_hat"]
+    final_y_hat = results["final"]["Y_hat"]
 
     noise_metrics = noise_metric_summary(y_true, y_noisy, snr_db)
     print("\n=== Noise and Y-domain metrics ===")
@@ -199,25 +231,30 @@ def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: floa
 
     initial_metrics = y_metric_summary(initial_y_hat, y_true)
     structured_metrics = y_metric_summary(structured_y_hat, y_true)
-    vp_metrics = y_metric_summary(vp_y_hat, y_true)
-    direct_vp_metrics = y_metric_summary(direct_results["final"]["Y_hat"], y_true)
+    final_metrics = y_metric_summary(final_y_hat, y_true)
+    direct_final_metrics = y_metric_summary(direct_results["final"]["Y_hat"], y_true)
 
     print(f"RMSE_Y_hat_initial_abs = {initial_metrics['rmse_abs']:.6e}")
     print(f"NMSE_Y_hat_initial = {initial_metrics['nmse']:.6e}")
     print(f"RMSE_Y_hat_after_structured_abs = {structured_metrics['rmse_abs']:.6e}")
     print(f"NMSE_Y_hat_after_structured = {structured_metrics['nmse']:.6e}")
-    print(f"RMSE_Y_hat_after_VP_abs = {vp_metrics['rmse_abs']:.6e}")
-    print(f"NMSE_Y_hat_after_VP = {vp_metrics['nmse']:.6e}")
-    print(f"RMSE_Y_hat_abs = {vp_metrics['rmse_abs']:.6e}")
-    print(f"NMSE_Y_hat = {vp_metrics['nmse']:.6e}")
+    if vp_enabled:
+        print(f"RMSE_Y_hat_after_VP_abs = {final_metrics['rmse_abs']:.6e}")
+        print(f"NMSE_Y_hat_after_VP = {final_metrics['nmse']:.6e}")
+    else:
+        print(f"RMSE_Y_hat_final_stage2_only_abs = {final_metrics['rmse_abs']:.6e}")
+        print(f"NMSE_Y_hat_final_stage2_only = {final_metrics['nmse']:.6e}")
+    print(f"RMSE_Y_hat_abs = {final_metrics['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat = {final_metrics['nmse']:.6e}")
     print(f"after_structured_Y_RMSE_abs = {structured_metrics['rmse_abs']:.6e}")
     print(f"after_structured_Y_NMSE = {structured_metrics['nmse']:.6e}")
-    print(f"after_VP_Y_RMSE_abs = {vp_metrics['rmse_abs']:.6e}")
-    print(f"after_VP_Y_NMSE = {vp_metrics['nmse']:.6e}")
+    if vp_enabled:
+        print(f"after_VP_Y_RMSE_abs = {final_metrics['rmse_abs']:.6e}")
+        print(f"after_VP_Y_NMSE = {final_metrics['nmse']:.6e}")
 
     if not 0.70 <= noise_metrics["NMSE_Y_noisy"] <= 1.30:
         print("WARNING: NMSE_Y_noisy is not close to 1 at 0 dB; check AWGN scaling.")
-    if vp_metrics["nmse"] > structured_metrics["nmse"]:
+    if vp_enabled and final_metrics["nmse"] > structured_metrics["nmse"]:
         print(
             "WARNING: Raw VP-WNLS worsened true-domain Y NMSE after Stage-II in this run; "
             "likely cause is noisy-domain fitting or weak nonlinear initialization."
@@ -226,8 +263,10 @@ def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: floa
     return {
         "initial": initial_metrics,
         "structured": structured_metrics,
-        "vp": vp_metrics,
-        "direct_vp": direct_vp_metrics,
+        "final": final_metrics,
+        "direct_final": direct_final_metrics,
+        "vp": final_metrics,
+        "direct_vp": direct_final_metrics,
         "noise": noise_metrics,
     }
 
@@ -262,31 +301,47 @@ def _print_parameter_diagnostics(results: dict) -> dict:
     print("\n=== Parameter diagnostics ===")
     scene = results["scene"]
     true_components = results["true_components"]
+    vp_enabled = bool(results["final"].get("vp_enabled", True))
     initial = parameter_errors_for_structured(scene, results["estimate_initial"], true_components)
     structured = parameter_errors_for_structured(scene, results["estimate_used"], true_components)
-    vp = parameter_errors_for_vp(scene, results["final"], true_components)
+    final = parameter_errors_for_vp(scene, results["final"], true_components)
 
     print(f"tau_RMSE_initial = {initial['tau_rmse']:.6e}")
     print(f"tau_RMSE_after_structured = {structured['tau_rmse']:.6e}")
-    print(f"tau_RMSE_after_VP = {vp['tau_rmse']:.6e}")
+    if vp_enabled:
+        print(f"tau_RMSE_after_VP = {final['tau_rmse']:.6e}")
+    else:
+        print(f"tau_RMSE_final_stage2_only = {final['tau_rmse']:.6e}")
     print(f"range_RMSE_initial = {initial['range_rmse']:.6e}")
     print(f"range_RMSE_after_structured = {structured['range_rmse']:.6e}")
-    print(f"range_RMSE_after_VP = {vp['range_rmse']:.6e}")
+    if vp_enabled:
+        print(f"range_RMSE_after_VP = {final['range_rmse']:.6e}")
+    else:
+        print(f"range_RMSE_final_stage2_only = {final['range_rmse']:.6e}")
     print(f"position_RMSE_initial = {initial['position_rmse']:.6e}")
     print(f"position_RMSE_after_structured = {structured['position_rmse']:.6e}")
-    print(f"position_RMSE_after_VP = {vp['position_rmse']:.6e}")
+    if vp_enabled:
+        print(f"position_RMSE_after_VP = {final['position_rmse']:.6e}")
+    else:
+        print(f"position_RMSE_final_stage2_only = {final['position_rmse']:.6e}")
 
     print(f"true_tau_ns = {format_float_list(true_components['taus'], scale=1e9)}")
     print(f"initial_tau_ns = {format_float_list(initial['tau_hat'], scale=1e9)}")
     print(f"structured_tau_ns = {format_float_list(structured['tau_hat'], scale=1e9)}")
-    print(f"VP_tau_ns = {format_float_list(vp['tau_hat'], scale=1e9)}")
+    if vp_enabled:
+        print(f"VP_tau_ns = {format_float_list(final['tau_hat'], scale=1e9)}")
+    else:
+        print(f"final_stage2_tau_ns = {format_float_list(final['tau_hat'], scale=1e9)}")
     print(f"true_range_m = {format_float_list(true_components['ranges'])}")
     print(f"initial_range_m = {format_float_list(initial['range_hat'])}")
     print(f"structured_range_m = {format_float_list(structured['range_hat'])}")
-    print(f"VP_range_m = {format_float_list(vp['range_hat'])}")
+    if vp_enabled:
+        print(f"VP_range_m = {format_float_list(final['range_hat'])}")
+    else:
+        print(f"final_stage2_range_m = {format_float_list(final['range_hat'])}")
     print(f"true_RIS_panel_assignment = {list(range(scene['K']))}")
     print(f"estimated_col_to_panel_assignment = {results['estimate_initial']['assignment']}")
-    return {"initial": initial, "structured": structured, "vp": vp}
+    return {"initial": initial, "structured": structured, "final": final, "vp": final}
 
 
 def _print_stage_two_update_diagnostics(results: dict) -> None:
@@ -309,6 +364,18 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
         evs_accept = [detail["accepted"] for detail in update["evs_projection_details"]]
         ris_accept = [detail["accepted"] for detail in update["ris_projection_details"]]
         print(f"  EVS projection accepted = {evs_accept}")
+        delay_detail = update["delay_projection_details"]
+        print(
+            "  delay structured LS: "
+            f"accepted={delay_detail['accepted']}, "
+            f"obj_initial={delay_detail['initial_objective']:.3e}, "
+            f"obj_projected={delay_detail['projected_objective']:.3e}, "
+            f"obj_final={delay_detail['final_objective']:.3e}, "
+            f"global_sse_before={delay_detail['global_sse_before']:.3e}, "
+            f"global_sse_after={delay_detail['global_sse_after']:.3e}, "
+            f"geom_accepted={delay_detail.get('geometry_correction_accepted', False)}"
+        )
+        print(f"  Mode-4 assignment order = {update.get('mode4_assignment_order')}")
         print(f"  RIS projection accepted = {ris_accept}")
         for detail in update["ris_projection_details"]:
             eta = detail["selected_eta"]
@@ -318,6 +385,7 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
                 f"res_after={detail['residual_after']:.3e}, "
                 f"range/elev/az=({eta[0]:.3f}, {eta[1]:.3f}, {eta[2]:.3f}), "
                 f"c_delta={detail['c_relative_change']:.3e}, "
+                f"selected_model={detail.get('selected_model')}, "
                 f"lifted_used={detail.get('lifted_used', False)}"
             )
             if detail["c_relative_change"] < 1e-8:
@@ -331,25 +399,39 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
 
 
 def _print_structured_comparison(results: dict, direct_results: dict, y_metrics: dict) -> None:
-    """Print direct VP versus structured+VP comparison."""
+    """Print final estimates with versus without the structured stage."""
     y_true = results["Y_true"]
-    direct_nmse = y_metrics["direct_vp"]["nmse"]
-    with_nmse = y_metrics["vp"]["nmse"]
+    _ = y_true
+    vp_enabled = bool(results["final"].get("vp_enabled", True))
+    direct_nmse = y_metrics["direct_final"]["nmse"]
+    with_nmse = y_metrics["final"]["nmse"]
     direct_pos = position_rmse(direct_results["final"]["p_u"], results["scene"]["p_u_true"])
     with_pos = position_rmse(results["final"]["p_u"], results["scene"]["p_u_true"])
     improvement = direct_nmse - with_nmse
 
     print("\n=== With vs without structured stage ===")
-    print(f"NMSE_Y_after_VP_without_structured = {direct_nmse:.6e}")
+    if vp_enabled:
+        print(f"NMSE_Y_after_VP_without_structured = {direct_nmse:.6e}")
+    else:
+        print(f"NMSE_Y_final_without_structured_no_VP = {direct_nmse:.6e}")
     print(f"position_RMSE_without_structured = {direct_pos:.6e}")
-    print(f"NMSE_Y_after_VP_with_structured = {with_nmse:.6e}")
+    if vp_enabled:
+        print(f"NMSE_Y_after_VP_with_structured = {with_nmse:.6e}")
+    else:
+        print(f"NMSE_Y_final_with_structured_no_VP = {with_nmse:.6e}")
     print(f"position_RMSE_with_structured = {with_pos:.6e}")
     print(f"improvement_from_structured = {improvement:.6e}")
     if abs(improvement) < 1e-4 and abs(direct_pos - with_pos) < 1e-3:
-        print(
-            "WARNING: Structured HP-R1P-CPD stage currently gives little improvement "
-            "over direct VP-WNLS."
-        )
+        if vp_enabled:
+            print(
+                "WARNING: Structured HP-R1P-CPD stage currently gives little improvement "
+                "over direct VP-WNLS."
+            )
+        else:
+            print(
+                "WARNING: Structured HP-R1P-CPD stage currently gives little improvement "
+                "over initialization-only output."
+            )
 
 
 def run_default_diagnostic() -> None:
@@ -383,9 +465,10 @@ def run_default_diagnostic() -> None:
     print(f"Y_true shape = {results['Y_true'].shape}")
     print(f"Y_noisy shape = {results['Y_noisy'].shape}")
     print(f"Y_hat shape = {results['final']['Y_hat'].shape}")
-    print(f"RMSE_Y_abs = {y_metrics['vp']['rmse_abs']:.6e}")
-    print(f"NMSE_Y_hat = {y_metrics['vp']['nmse']:.6e}")
-    print(f"UE_position_RMSE_m = {param_metrics['vp']['position_rmse']:.6e}")
+    print(f"global_VP_enabled = {results['final'].get('vp_enabled', True)}")
+    print(f"RMSE_Y_abs = {y_metrics['final']['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat = {y_metrics['final']['nmse']:.6e}")
+    print(f"UE_position_RMSE_m = {param_metrics['final']['position_rmse']:.6e}")
 
 
 def _run_compact(config: dict) -> dict:
@@ -395,14 +478,15 @@ def _run_compact(config: dict) -> dict:
     y_noisy = results["Y_noisy"]
     final_y = results["final"]["Y_hat"]
     true_components = results["true_components"]
-    vp_params = parameter_errors_for_vp(results["scene"], results["final"], true_components)
+    final_params = parameter_errors_for_vp(results["scene"], results["final"], true_components)
     structured_params = parameter_errors_for_structured(
         results["scene"], results["estimate_used"], true_components
     )
     return {
         "NMSE_Y_noisy": relative_nmse(y_noisy, y_true),
-        "NMSE_Y_hat_after_VP": relative_nmse(final_y, y_true),
-        "position_RMSE_after_VP": vp_params["position_rmse"],
+        "NMSE_Y_hat_final": relative_nmse(final_y, y_true),
+        "position_RMSE_final": final_params["position_rmse"],
+        "global_VP_enabled": bool(results["final"].get("vp_enabled", True)),
         "range_RMSE_after_structured": structured_params["range_rmse"],
     }
 
@@ -416,12 +500,13 @@ def run_snr_sweep() -> None:
         config = default_config()
         config["SNR_dB"] = snr
         metrics = _run_compact(config)
-        position_errors.append(metrics["position_RMSE_after_VP"])
+        position_errors.append(metrics["position_RMSE_final"])
         print(
             f"SNR_dB={snr:.1f}, "
             f"NMSE_Y_noisy={metrics['NMSE_Y_noisy']:.6e}, "
-            f"NMSE_Y_hat_after_VP={metrics['NMSE_Y_hat_after_VP']:.6e}, "
-            f"position_RMSE_after_VP={metrics['position_RMSE_after_VP']:.6e}"
+            f"NMSE_Y_hat_final={metrics['NMSE_Y_hat_final']:.6e}, "
+            f"position_RMSE_final={metrics['position_RMSE_final']:.6e}, "
+            f"global_VP_enabled={metrics['global_VP_enabled']}"
         )
     if position_errors[-1] > position_errors[0]:
         print("WARNING: UE position RMSE did not improve from -10 dB to 30 dB.")
@@ -440,7 +525,8 @@ def run_mr_sweep() -> None:
             f"M_Rx={ris_shape[0]}, M_Ry={ris_shape[1]}, M_R={ris_shape[0] * ris_shape[1]}, "
             f"T={t_dim}, "
             f"range_RMSE_after_structured={metrics['range_RMSE_after_structured']:.6e}, "
-            f"position_RMSE_after_VP={metrics['position_RMSE_after_VP']:.6e}"
+            f"position_RMSE_final={metrics['position_RMSE_final']:.6e}, "
+            f"global_VP_enabled={metrics['global_VP_enabled']}"
         )
 
 

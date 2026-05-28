@@ -471,6 +471,29 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
             )
 
         beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+        poles_candidate, delay_projection_details = _update_delay_poles_from_z(
+            z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
+        )
+        b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
+        beta_candidate, z_hat_candidate, delay_sse_after = _fit_z_model(
+            z_tensor, a_mat, b_candidate, q_candidate, c_mat
+        )
+        delay_accepted = delay_sse_after <= current_sse + accept_tol
+        delay_projection_details.update(
+            {
+                "accepted": bool(delay_accepted),
+                "global_sse_before": float(current_sse),
+                "global_sse_after": float(delay_sse_after),
+            }
+        )
+        if delay_accepted:
+            poles = poles_candidate
+            b_mat = b_candidate
+            q_mat = q_candidate
+            beta_z = beta_candidate
+            z_hat = z_hat_candidate
+            current_sse = delay_sse_after
+
         c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
         assignment_order, assignment_costs = _mode4_assignment_from_proxy(
             c_proxy, scene, config
@@ -557,30 +580,6 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     "optimizer_message": ris_proj["optimizer_message"],
                 }
             )
-
-        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
-        poles_candidate, delay_projection_details = _update_delay_poles_from_z(
-            z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
-        )
-        b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
-        beta_candidate, z_hat_candidate, delay_sse_after = _fit_z_model(
-            z_tensor, a_mat, b_candidate, q_candidate, c_mat
-        )
-        delay_accepted = delay_sse_after <= current_sse + accept_tol
-        delay_projection_details.update(
-            {
-                "accepted": bool(delay_accepted),
-                "global_sse_before": float(current_sse),
-                "global_sse_after": float(delay_sse_after),
-            }
-        )
-        if delay_accepted:
-            poles = poles_candidate
-            b_mat = b_candidate
-            q_mat = q_candidate
-            beta_z = beta_candidate
-            z_hat = z_hat_candidate
-            current_sse = delay_sse_after
 
         proposed_sse = current_sse
         iteration_accepted = (not safeguard) or (proposed_sse <= iter_start_sse + accept_tol)
