@@ -92,10 +92,40 @@ def _infer_ris_shape(ris_grid: np.ndarray) -> tuple[int, int]:
 
 
 def _hankel_window(length: int) -> tuple[int, int]:
-    """Choose P and L such that P + L - 1 = length."""
-    p_dim = max(2, length // 2)
-    l_dim = length - p_dim + 1
+    """ES-CPD balanced Hankel window: P + L - 1 = length."""
+    if length <= 0:
+        raise ValueError("length must be positive")
+    p_dim = (length + 1) // 2
+    l_dim = length + 1 - p_dim
     return p_dim, l_dim
+
+
+def _hankel_counts_1d(length: int) -> np.ndarray:
+    p_dim, l_dim = _hankel_window(length)
+    counts = np.zeros(length, dtype=float)
+    for p_idx in range(p_dim):
+        for l_idx in range(l_dim):
+            counts[p_idx + l_idx] += 1.0
+    return counts
+
+
+def _block_hankel_counts_2d(
+    mx: int, my: int, px: int, lx: int, py: int, ly: int
+) -> np.ndarray:
+    counts = np.zeros((mx, my), dtype=float)
+    for ix in range(px):
+        for iy in range(py):
+            for jx in range(lx):
+                for jy in range(ly):
+                    counts[ix + jx, iy + jy] += 1.0
+    return counts
+
+
+def _block_hankel_inverse_weights_2d(
+    mx: int, my: int, px: int, lx: int, py: int, ly: int
+) -> np.ndarray:
+    counts = _block_hankel_counts_2d(mx, my, px, lx, py, ly)
+    return 1.0 / np.maximum(counts, 1.0)
 
 
 def _block_hankel_2d(matrix: np.ndarray, px: int, lx: int, py: int, ly: int) -> np.ndarray:
@@ -149,6 +179,21 @@ def _block_dehankel_adjoint_2d(
                     col = jx * ly + jy
                     lifted[row, col] = matrix[ix + jx, iy + jy] / counts[ix + jx, iy + jy]
     return lifted
+
+
+def _block_hankel_adjoint_sum_2d(
+    lifted: np.ndarray, mx: int, my: int, px: int, lx: int, py: int, ly: int
+) -> np.ndarray:
+    """Adjoint of the 2D block-Hankel lifting H_2D, using summation over repeats."""
+    matrix = np.zeros((mx, my), dtype=lifted.dtype)
+    for ix in range(px):
+        for iy in range(py):
+            row = ix * py + iy
+            for jx in range(lx):
+                for jy in range(ly):
+                    col = jx * ly + jy
+                    matrix[ix + jx, iy + jy] += lifted[row, col]
+    return matrix
 
 
 def _rank_one_projection(matrix: np.ndarray) -> np.ndarray:
@@ -256,6 +301,7 @@ def _compressed_lifted_candidate(
     eps: float,
     num_steps: int,
     lambda_phys: float,
+    pgd_step_scale: float = 0.5,
 ) -> dict:
     """Solve the fixed-geometry compressed dechirped rank-one subproblem."""
     mx, my = _infer_ris_shape(ris_grid)
@@ -263,20 +309,80 @@ def _compressed_lifted_candidate(
     py, ly = _hankel_window(my)
     shape_info = (mx, my, px, lx, py, ly)
     x_phys, dechirp = _physical_lifted_matrix(eta_local, ris_grid, wavelength, shape_info)
-    x_lift = x_phys.copy()
+    u_elem = _block_dehankel_2d(
+        np.conj(dechirp) * x_phys, mx, my, px, lx, py, ly
+    )
 
-    norm_omega = np.linalg.norm(omega)
-    step = 0.8 / (norm_omega**2 + lambda_phys + eps)
+    def lift_from_element(u_matrix: np.ndarray) -> np.ndarray:
+        return dechirp * _block_hankel_2d(u_matrix, px, lx, py, ly)
+
+    def compressed_from_element(u_matrix: np.ndarray) -> np.ndarray:
+        return omega @ (a_rb * u_matrix.reshape(-1))
+
+    def pgd_objective_unscaled(u_matrix: np.ndarray) -> float:
+        model = compressed_from_element(u_matrix)
+        data = np.linalg.norm(model - c_tilde) ** 2
+        lifted = lift_from_element(u_matrix)
+        regularizer = lambda_phys * np.linalg.norm(lifted - x_phys) ** 2
+        return float(data + regularizer)
+
+    weights_2d = _block_hankel_inverse_weights_2d(mx, my, px, lx, py, ly)
+    counts_2d = _block_hankel_counts_2d(mx, my, px, lx, py, ly)
+    omega_eff = omega * a_rb[None, :]
+    omega_norm = np.linalg.norm(omega_eff, 2)
+    max_count = float(np.max(counts_2d))
+    lambda_phys = max(float(lambda_phys), 0.0)
+    step_scale = max(float(pgd_step_scale), eps)
+    step = step_scale / (omega_norm**2 + lambda_phys * max_count + eps)
+
+    current_obj = pgd_objective_unscaled(u_elem)
+    accepted_steps = 0
+    num_steps = max(int(num_steps), 0)
+
     for _ in range(num_steps):
-        model = _lifted_forward(x_lift, dechirp, omega, a_rb, shape_info)
-        residual = c_tilde - model
-        grad = -_lifted_adjoint(residual, dechirp, omega, a_rb, shape_info)
-        grad += lambda_phys * (x_lift - x_phys)
-        x_lift = _rank_one_projection(x_lift - step * grad)
+        trial_step = step
+        accepted = False
+        for _ in range(3):
+            model = compressed_from_element(u_elem)
+            residual = model - c_tilde
+            grad_vec = np.conj(a_rb) * (omega.conj().T @ residual)
+            grad_elem = grad_vec.reshape(mx, my)
 
-    c_lifted = _lifted_forward(x_lift, dechirp, omega, a_rb, shape_info)
+            lifted_current = lift_from_element(u_elem)
+            lifted_anchor_residual = lifted_current - x_phys
+            anchor_grad_elem = _block_hankel_adjoint_sum_2d(
+                np.conj(dechirp) * lifted_anchor_residual,
+                mx,
+                my,
+                px,
+                lx,
+                py,
+                ly,
+            )
+            grad_elem = grad_elem + lambda_phys * anchor_grad_elem
+
+            u_trial = u_elem - trial_step * weights_2d * grad_elem
+            z_lift = lift_from_element(u_trial)
+            z_rank1 = _rank_one_projection(z_lift)
+            u_next = _block_dehankel_2d(
+                np.conj(dechirp) * z_rank1, mx, my, px, lx, py, ly
+            )
+            next_obj = pgd_objective_unscaled(u_next)
+            accept_tol = 1.0e-10 * max(1.0, current_obj)
+            if next_obj <= current_obj + accept_tol:
+                u_elem = u_next
+                current_obj = next_obj
+                accepted_steps += 1
+                accepted = True
+                break
+            trial_step *= 0.5
+        if not accepted:
+            break
+
+    c_lifted = compressed_from_element(u_elem)
     data_residual, alpha = scaled_residual(c_tilde, c_lifted, eps)
-    regularizer = lambda_phys * np.linalg.norm(x_lift - x_phys) ** 2
+    lifted_final = lift_from_element(u_elem)
+    regularizer = lambda_phys * np.linalg.norm(lifted_final - x_phys) ** 2
     objective = data_residual + float(regularizer)
     return {
         "c_lifted": c_lifted,
@@ -284,6 +390,9 @@ def _compressed_lifted_candidate(
         "objective": float(objective),
         "data_residual": float(data_residual),
         "alpha": alpha,
+        "pgd_unscaled_objective": float(current_obj),
+        "pgd_accepted_steps": int(accepted_steps),
+        "pgd_step": float(step),
     }
 
 
@@ -372,7 +481,9 @@ def project_ris_factor(
     num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
     num_lift_steps = int(search_config.get("num_lift_steps", 3))
     lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
+    ris_pgd_step_scale = float(search_config.get("ris_pgd_step_scale", 0.5))
     lifted_best = None
+    lifted_used_for_start = False
 
     if projection_mode != "exact":
         lift_candidates = grid_candidates if use_local_grid else [
@@ -389,11 +500,16 @@ def project_ris_factor(
                 eps,
                 num_lift_steps,
                 lambda_phys,
+                ris_pgd_step_scale,
             )
             if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
                 lifted_best = lifted
-        if lifted_best is not None:
+        if (
+            lifted_best is not None
+            and lifted_best["data_residual"] <= best_value * (1.0 + 1.0e-8) + eps
+        ):
             best_eta = lifted_best["eta_local"]
+            lifted_used_for_start = True
 
     optimizer_message = (
         "physically anchored Fresnel dechirped rank-one candidate"
@@ -401,12 +517,15 @@ def project_ris_factor(
         else "compressed exact spherical matching"
     )
 
-    refine_starts = [best_eta]
-    if projection_mode == "exact" or not use_local_grid:
-        for _, eta_candidate, _ in coarse_candidates[
-            : int(search_config.get("num_exact_refine_starts", 6))
-        ]:
-            refine_starts.append(eta_candidate)
+    refine_starts = [coarse_candidates[0][1]]
+    if lifted_best is not None:
+        refine_starts.append(lifted_best["eta_local"])
+    if current_eta is not None:
+        refine_starts.append(current_eta)
+    for _, eta_candidate, _ in coarse_candidates[
+        : int(search_config.get("num_exact_refine_starts", 6))
+    ]:
+        refine_starts.append(eta_candidate)
 
     unique_starts = []
     for eta_start in refine_starts:
@@ -495,9 +614,16 @@ def project_ris_factor(
         "exact_relative_residual": float(np.sqrt(exact_value / c_norm_sq)),
         "lifted_available": lifted_best is not None,
         "lifted_used": lifted_best is not None,
+        "lifted_used_for_start": bool(lifted_used_for_start),
         "lifted_relative_residual": None
         if lifted_best is None
         else float(np.sqrt(lifted_best["data_residual"] / c_norm_sq)),
         "lifted_objective": None if lifted_best is None else lifted_best["objective"],
+        "ris_pgd_accepted_steps": None
+        if lifted_best is None
+        else lifted_best.get("pgd_accepted_steps"),
+        "ris_pgd_unscaled_objective": None
+        if lifted_best is None
+        else lifted_best.get("pgd_unscaled_objective"),
         "optimizer_message": optimizer_message,
     }

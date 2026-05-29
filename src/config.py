@@ -57,6 +57,7 @@ def default_config() -> dict:
             "num_lift_candidates": 4,
             "num_lift_steps": 4,
             "lambda_phys": 1.0e-2,
+            "ris_pgd_step_scale": 0.5,
             "num_exact_refine_starts": 6,
             "projection_mode": "paper",
         },
