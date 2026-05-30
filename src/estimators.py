@@ -132,6 +132,87 @@ def _fit_z_model_fast_sse(
     return beta, float(max(sse, 0.0))
 
 
+def _accept_strict_sse(new_sse: float, old_sse: float, abs_tol: float, rel_tol: float) -> bool:
+    threshold = old_sse - abs_tol - rel_tol * max(1.0, old_sse)
+    return bool(new_sse <= threshold)
+
+
+def _normalize_column(x: np.ndarray, eps: float) -> np.ndarray:
+    norm = np.linalg.norm(x)
+    if not np.isfinite(norm) or norm <= eps:
+        return x.copy()
+    return x / norm
+
+
+def _choose_damped_column_update(
+    z_tensor: np.ndarray,
+    a_mat: np.ndarray,
+    b_mat: np.ndarray,
+    q_mat: np.ndarray,
+    c_mat: np.ndarray,
+    factor_name: str,
+    col: int,
+    projected_col: np.ndarray,
+    damping_grid: tuple,
+    old_sse: float,
+    eps: float,
+    accept_tol: float,
+    strict_accept_rel: float,
+    guarded: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, bool, float]:
+    """
+    Try damped replacement for one column of A or C.
+
+    factor_name must be "A" or "C". Returns:
+        new_A, new_C, beta_new, new_sse, best_rho, accepted, best_sse
+    """
+    if factor_name not in ("A", "C"):
+        raise ValueError("factor_name must be 'A' or 'C'")
+
+    beta_old, _, fitted_old_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+    old_sse = float(old_sse)
+    if not np.isfinite(old_sse):
+        old_sse = float(fitted_old_sse)
+
+    best_a = a_mat
+    best_c = c_mat
+    best_beta = beta_old
+    best_sse = np.inf
+    best_rho = float("nan")
+
+    for rho_raw in damping_grid:
+        rho = float(rho_raw)
+        if factor_name == "A":
+            trial_a = a_mat.copy()
+            trial_a[:, col] = _normalize_column(
+                (1.0 - rho) * a_mat[:, col] + rho * projected_col, eps
+            )
+            trial_c = c_mat
+        else:
+            trial_c = c_mat.copy()
+            trial_c[:, col] = _normalize_column(
+                (1.0 - rho) * c_mat[:, col] + rho * projected_col, eps
+            )
+            trial_a = a_mat
+
+        beta_trial, _, sse_trial = _fit_z_model(z_tensor, trial_a, b_mat, q_mat, trial_c)
+        if sse_trial < best_sse:
+            best_a = trial_a
+            best_c = trial_c
+            best_beta = beta_trial
+            best_sse = float(sse_trial)
+            best_rho = rho
+
+    if guarded:
+        accepted = _accept_strict_sse(best_sse, old_sse, accept_tol, strict_accept_rel)
+    else:
+        accepted = bool(best_sse <= old_sse + accept_tol)
+
+    if accepted:
+        return best_a, best_c, best_beta, best_sse, best_rho, True, best_sse
+    return a_mat, c_mat, beta_old, old_sse, best_rho, False, best_sse
+
+
 def reconstruct_raw_from_structured_estimate(estimate: dict, scene: dict) -> np.ndarray:
     """Reconstruct raw Y from current structured CPD factors."""
     a_mat = estimate["A"]
@@ -460,6 +541,15 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
     gamma = estimate["gamma"].copy()
     eta_pol = estimate["eta_pol"].copy()
     ris_eta = estimate["ris_eta"].copy()
+    enable_evs = bool(config.get("stage2_enable_evs", True))
+    enable_delay = bool(config.get("stage2_enable_delay", True))
+    enable_ris = bool(config.get("stage2_enable_ris", True))
+    guarded = bool(config.get("stage2_guarded", False))
+    strict_accept_rel = float(config.get("stage2_strict_accept_rel", 0.0))
+    ris_min_rel_improvement = float(config.get("ris_min_relative_improvement", 0.0))
+    damping_grid = tuple(config.get("stage2_damping_grid", (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)))
+    if not damping_grid:
+        damping_grid = (1.0,)
     diagnostics = {
         "z_hat_history": [],
         "residuals_noisy_rmse": [],
@@ -470,6 +560,25 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
     safeguard = bool(config.get("stage2_global_safeguard", True))
     accept_tol = float(config.get("stage2_accept_tol", 1e-9))
     stop_tol = float(config.get("stage2_tol", 0.0))
+
+    if not (enable_evs or enable_delay or enable_ris):
+        estimate.update(
+            {
+                "poles": poles,
+                "A": a_mat,
+                "B": b_mat,
+                "Q": q_mat,
+                "C": c_mat,
+                "beta_z": beta_z,
+                "gamma": gamma,
+                "eta_pol": eta_pol,
+                "ris_eta": ris_eta,
+                "Z_hat": z_hat,
+            }
+        )
+        check_finite("structured A", a_mat)
+        check_finite("structured C", c_mat)
+        return estimate, diagnostics
 
     for _ in range(config["num_structured_iters"]):
         b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
@@ -485,141 +594,321 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         eta_pol_old = eta_pol.copy()
         ris_eta_old = ris_eta.copy()
 
-        a_proxy = _update_a_from_z(z_tensor, beta_old, b_mat, q_mat, c_mat)
         evs_projection_details = []
-        for k in range(scene["K"]):
-            a_before = a_mat[:, k].copy()
-            evs_proj = project_evs_factor(
-                a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
-            )
-            a_mat[:, k] = evs_proj["a"]
-            gamma[k] = evs_proj["gamma"]
-            eta_pol[k] = evs_proj["eta"]
-            evs_projection_details.append(
-                {
-                    "path": k,
-                    "accepted": bool(np.all(np.isfinite(a_mat[:, k]))),
-                    "relative_change": _relative_change(a_mat[:, k], a_before, config["eps"]),
-                    "projection_residual": evs_proj["residual"],
-                }
-            )
-
-        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
-        poles_candidate, delay_projection_details = _update_delay_poles_from_z(
-            z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
-        )
-        b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
-        beta_candidate, delay_sse_after = _fit_z_model_fast_sse(
-            z_tensor, a_mat, b_candidate, q_candidate, c_mat
-        )
-        delay_accepted = delay_sse_after <= current_sse + accept_tol
-        delay_projection_details.update(
-            {
-                "accepted": bool(delay_accepted),
-                "global_sse_before": float(current_sse),
-                "global_sse_after": float(delay_sse_after),
-            }
-        )
-        if delay_accepted:
-            poles = poles_candidate
-            b_mat = b_candidate
-            q_mat = q_candidate
-            beta_z = beta_candidate
-            z_hat_candidate = reconstruct_z(beta_candidate, a_mat, b_mat, q_mat, c_mat)
-            z_hat = z_hat_candidate
-            current_sse = delay_sse_after
-
-        c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
-        assignment_order, assignment_costs = _mode4_assignment_from_proxy(
-            c_proxy, scene, config
-        )
-        (
-            a_mat,
-            b_mat,
-            q_mat,
-            c_mat,
-            poles,
-            beta_z,
-            gamma,
-            eta_pol,
-            ris_eta,
-        ) = _apply_physical_order(
-            assignment_order,
-            a_mat,
-            b_mat,
-            q_mat,
-            c_mat,
-            poles,
-            beta_z,
-            gamma,
-            eta_pol,
-            ris_eta,
-        )
-        c_proxy = c_proxy[:, assignment_order]
-        beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
-        ris_projection_details = []
-        for k in range(scene["K"]):
-            c_before = c_mat[:, k].copy()
-            before_value, _ = scaled_residual(c_proxy[:, k], c_before, config["eps"])
-            beta_before_c, sse_before_c = _fit_z_model_fast_sse(
-                z_tensor, a_mat, b_mat, q_mat, c_mat
-            )
-            ris_proj = project_ris_factor(
-                c_proxy[:, k],
-                scene["Omega"][k],
-                scene["a_RB"][k],
-                scene["ris_grid"],
-                scene["wavelength"],
-                local_ris_search_config(scene, config, k),
-                config["eps"],
-                current_eta=ris_eta[k],
-            )
-
-            trial_c = c_mat.copy()
-            trial_c[:, k] = ris_proj["c"]
-            beta_trial, sse_trial = _fit_z_model_fast_sse(
-                z_tensor, a_mat, b_mat, q_mat, trial_c
-            )
-            accepted = sse_trial <= sse_before_c + accept_tol
-            if accepted:
-                c_mat = trial_c
-                ris_eta[k] = ris_proj["eta_local"]
-                beta_z = beta_trial
-                z_hat_trial = reconstruct_z(beta_trial, a_mat, b_mat, q_mat, c_mat)
-                z_hat = z_hat_trial
-                current_sse = sse_trial
+        if enable_evs:
+            a_proxy = _update_a_from_z(z_tensor, beta_old, b_mat, q_mat, c_mat)
+            if guarded:
+                current_sse = iter_start_sse
+                beta_z = beta_old
+                z_hat = z_hat_old
+                for k in range(scene["K"]):
+                    a_before = a_mat[:, k].copy()
+                    evs_proj = project_evs_factor(
+                        a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                    )
+                    sse_before_a = current_sse
+                    (
+                        a_candidate,
+                        c_candidate,
+                        beta_candidate,
+                        sse_after_a,
+                        best_rho,
+                        accepted,
+                        best_sse,
+                    ) = _choose_damped_column_update(
+                        z_tensor,
+                        a_mat,
+                        b_mat,
+                        q_mat,
+                        c_mat,
+                        "A",
+                        k,
+                        evs_proj["a"],
+                        damping_grid,
+                        sse_before_a,
+                        config["eps"],
+                        accept_tol,
+                        strict_accept_rel,
+                        guarded,
+                    )
+                    if accepted:
+                        a_mat = a_candidate
+                        c_mat = c_candidate
+                        beta_z = beta_candidate
+                        current_sse = sse_after_a
+                        z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+                        gamma[k] = evs_proj["gamma"]
+                        eta_pol[k] = evs_proj["eta"]
+                    evs_projection_details.append(
+                        {
+                            "path": k,
+                            "accepted": bool(accepted),
+                            "skipped": False,
+                            "guarded": True,
+                            "best_rho": float(best_rho),
+                            "best_sse": float(best_sse),
+                            "global_sse_before": float(sse_before_a),
+                            "global_sse_after": float(current_sse),
+                            "relative_change": _relative_change(a_mat[:, k], a_before, config["eps"]),
+                            "projection_residual": evs_proj["residual"],
+                        }
+                    )
             else:
-                beta_z = beta_before_c
-                z_hat_before_c = reconstruct_z(beta_before_c, a_mat, b_mat, q_mat, c_mat)
-                z_hat = z_hat_before_c
-                current_sse = sse_before_c
+                for k in range(scene["K"]):
+                    a_before = a_mat[:, k].copy()
+                    evs_proj = project_evs_factor(
+                        a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                    )
+                    a_mat[:, k] = evs_proj["a"]
+                    gamma[k] = evs_proj["gamma"]
+                    eta_pol[k] = evs_proj["eta"]
+                    evs_projection_details.append(
+                        {
+                            "path": k,
+                            "accepted": bool(np.all(np.isfinite(a_mat[:, k]))),
+                            "skipped": False,
+                            "guarded": False,
+                            "best_rho": 1.0,
+                            "global_sse_before": "",
+                            "global_sse_after": "",
+                            "relative_change": _relative_change(a_mat[:, k], a_before, config["eps"]),
+                            "projection_residual": evs_proj["residual"],
+                        }
+                    )
+                beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+        else:
+            for k in range(scene["K"]):
+                evs_projection_details.append(
+                    {
+                        "path": k,
+                        "accepted": False,
+                        "skipped": True,
+                        "guarded": guarded,
+                        "best_rho": float("nan"),
+                        "global_sse_before": float(current_sse),
+                        "global_sse_after": float(current_sse),
+                        "relative_change": 0.0,
+                        "projection_residual": float("nan"),
+                    }
+                )
 
-            after_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
-            c_change = _relative_change(c_mat[:, k], c_before, config["eps"])
-            ris_projection_details.append(
+        if enable_delay:
+            poles_candidate, delay_projection_details = _update_delay_poles_from_z(
+                z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
+            )
+            b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
+            beta_candidate, delay_sse_after = _fit_z_model_fast_sse(
+                z_tensor, a_mat, b_candidate, q_candidate, c_mat
+            )
+            if guarded:
+                delay_accepted = _accept_strict_sse(
+                    delay_sse_after, current_sse, accept_tol, strict_accept_rel
+                )
+            else:
+                delay_accepted = delay_sse_after <= current_sse + accept_tol
+            delay_projection_details.update(
                 {
-                    "path": k,
-                    "residual_before": float(
-                        np.sqrt(before_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
-                    ),
-                    "residual_after": float(
-                        np.sqrt(after_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
-                    ),
-                    "selected_eta": ris_eta[k].copy(),
-                    "c_relative_change": c_change,
-                    "accepted": accepted,
-                    "selected_model": ris_proj["selected_model"] if accepted else "current",
-                    "global_sse_before": float(sse_before_c),
-                    "global_sse_after": float(current_sse),
-                    "exact_relative_residual": ris_proj.get("exact_relative_residual"),
-                    "lifted_used": bool(ris_proj.get("lifted_used", False) and accepted),
-                    "lifted_relative_residual": ris_proj.get("lifted_relative_residual"),
-                    "optimizer_message": ris_proj["optimizer_message"],
+                    "accepted": bool(delay_accepted),
+                    "skipped": False,
+                    "guarded": bool(guarded),
+                    "global_sse_before": float(current_sse),
+                    "global_sse_after": float(delay_sse_after),
                 }
             )
+            if delay_accepted:
+                poles = poles_candidate
+                b_mat = b_candidate
+                q_mat = q_candidate
+                beta_z = beta_candidate
+                z_hat_candidate = reconstruct_z(beta_candidate, a_mat, b_mat, q_mat, c_mat)
+                z_hat = z_hat_candidate
+                current_sse = delay_sse_after
+        else:
+            delay_projection_details = {
+                "accepted": False,
+                "skipped": True,
+                "guarded": bool(guarded),
+                "global_sse_before": float(current_sse),
+                "global_sse_after": float(current_sse),
+            }
+
+        assignment_order = list(range(scene["K"]))
+        assignment_costs = np.full((scene["K"], scene["K"]), np.nan)
+        ris_projection_details = []
+        if enable_ris:
+            c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
+            assignment_order, assignment_costs = _mode4_assignment_from_proxy(
+                c_proxy, scene, config
+            )
+            (
+                a_mat,
+                b_mat,
+                q_mat,
+                c_mat,
+                poles,
+                beta_z,
+                gamma,
+                eta_pol,
+                ris_eta,
+            ) = _apply_physical_order(
+                assignment_order,
+                a_mat,
+                b_mat,
+                q_mat,
+                c_mat,
+                poles,
+                beta_z,
+                gamma,
+                eta_pol,
+                ris_eta,
+            )
+            c_proxy = c_proxy[:, assignment_order]
+            beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+            for k in range(scene["K"]):
+                c_before = c_mat[:, k].copy()
+                before_value, _ = scaled_residual(c_proxy[:, k], c_before, config["eps"])
+                beta_before_c, sse_before_c = _fit_z_model_fast_sse(
+                    z_tensor, a_mat, b_mat, q_mat, c_mat
+                )
+                ris_proj = project_ris_factor(
+                    c_proxy[:, k],
+                    scene["Omega"][k],
+                    scene["a_RB"][k],
+                    scene["ris_grid"],
+                    scene["wavelength"],
+                    local_ris_search_config(scene, config, k),
+                    config["eps"],
+                    current_eta=ris_eta[k],
+                )
+
+                candidate_value, _ = scaled_residual(c_proxy[:, k], ris_proj["c"], config["eps"])
+                local_relative_improvement = float(
+                    (before_value - candidate_value) / max(before_value, config["eps"])
+                )
+                best_rho = 1.0
+                best_sse = float("nan")
+                if guarded:
+                    if local_relative_improvement < ris_min_rel_improvement:
+                        accepted = False
+                        beta_z = beta_before_c
+                        z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+                        current_sse = sse_before_c
+                        best_rho = float("nan")
+                    else:
+                        (
+                            a_candidate,
+                            c_candidate,
+                            beta_trial,
+                            sse_trial,
+                            best_rho,
+                            accepted,
+                            best_sse,
+                        ) = _choose_damped_column_update(
+                            z_tensor,
+                            a_mat,
+                            b_mat,
+                            q_mat,
+                            c_mat,
+                            "C",
+                            k,
+                            ris_proj["c"],
+                            damping_grid,
+                            sse_before_c,
+                            config["eps"],
+                            accept_tol,
+                            strict_accept_rel,
+                            guarded,
+                        )
+                        if accepted:
+                            a_mat = a_candidate
+                            c_mat = c_candidate
+                            ris_eta[k] = ris_proj["eta_local"]
+                            beta_z = beta_trial
+                            z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+                            current_sse = sse_trial
+                        else:
+                            beta_z = beta_trial
+                            z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+                            current_sse = sse_trial
+                else:
+                    trial_c = c_mat.copy()
+                    trial_c[:, k] = ris_proj["c"]
+                    beta_trial, sse_trial = _fit_z_model_fast_sse(
+                        z_tensor, a_mat, b_mat, q_mat, trial_c
+                    )
+                    best_sse = float(sse_trial)
+                    accepted = sse_trial <= sse_before_c + accept_tol
+                    if accepted:
+                        c_mat = trial_c
+                        ris_eta[k] = ris_proj["eta_local"]
+                        beta_z = beta_trial
+                        z_hat_trial = reconstruct_z(beta_trial, a_mat, b_mat, q_mat, c_mat)
+                        z_hat = z_hat_trial
+                        current_sse = sse_trial
+                    else:
+                        beta_z = beta_before_c
+                        z_hat_before_c = reconstruct_z(beta_before_c, a_mat, b_mat, q_mat, c_mat)
+                        z_hat = z_hat_before_c
+                        current_sse = sse_before_c
+                        best_rho = 0.0
+
+                after_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
+                c_change = _relative_change(c_mat[:, k], c_before, config["eps"])
+                ris_projection_details.append(
+                    {
+                        "path": k,
+                        "skipped": False,
+                        "guarded": bool(guarded),
+                        "local_relative_improvement": local_relative_improvement,
+                        "best_rho": float(best_rho),
+                        "best_sse": float(best_sse),
+                        "residual_before": float(
+                            np.sqrt(before_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
+                        ),
+                        "residual_after": float(
+                            np.sqrt(after_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
+                        ),
+                        "selected_eta": ris_eta[k].copy(),
+                        "c_relative_change": c_change,
+                        "accepted": bool(accepted),
+                        "selected_model": ris_proj["selected_model"] if accepted else "current",
+                        "global_sse_before": float(sse_before_c),
+                        "global_sse_after": float(current_sse),
+                        "exact_relative_residual": ris_proj.get("exact_relative_residual"),
+                        "lifted_used": bool(ris_proj.get("lifted_used", False) and accepted),
+                        "lifted_relative_residual": ris_proj.get("lifted_relative_residual"),
+                        "optimizer_message": ris_proj["optimizer_message"],
+                    }
+                )
+        else:
+            for k in range(scene["K"]):
+                ris_projection_details.append(
+                    {
+                        "path": k,
+                        "skipped": True,
+                        "guarded": bool(guarded),
+                        "local_relative_improvement": float("nan"),
+                        "best_rho": float("nan"),
+                        "residual_before": float("nan"),
+                        "residual_after": float("nan"),
+                        "selected_eta": ris_eta[k].copy(),
+                        "c_relative_change": 0.0,
+                        "accepted": False,
+                        "selected_model": "skipped",
+                        "global_sse_before": float(current_sse),
+                        "global_sse_after": float(current_sse),
+                    }
+                )
 
         proposed_sse = current_sse
-        iteration_accepted = (not safeguard) or (proposed_sse <= iter_start_sse + accept_tol)
+        if not safeguard:
+            iteration_accepted = True
+        elif guarded:
+            iteration_accepted = _accept_strict_sse(
+                proposed_sse, iter_start_sse, accept_tol, strict_accept_rel
+            )
+        else:
+            iteration_accepted = proposed_sse <= iter_start_sse + accept_tol
         if not iteration_accepted:
             a_mat = a_old
             b_mat = b_old
@@ -680,6 +969,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
             "gamma": gamma,
             "eta_pol": eta_pol,
             "ris_eta": ris_eta,
+            "Z_hat": z_hat,
         }
     )
     check_finite("structured A", a_mat)

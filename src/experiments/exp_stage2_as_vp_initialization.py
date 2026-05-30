@@ -15,6 +15,7 @@ import sys
 import traceback
 import warnings
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
 import numpy as np
@@ -1001,6 +1002,89 @@ def _run_trial(config: dict, trial: int, seed: int) -> list[dict]:
     return rows
 
 
+def _trial_options_from_args(args: argparse.Namespace) -> dict:
+    return {
+        "seed_base": int(args.seed_base),
+        "k": int(args.k),
+        "n": int(args.n),
+        "init_mode": str(args.init_mode),
+        "range_perturb_std_m": float(args.range_perturb_std),
+        "angle_perturb_std_rad": float(np.deg2rad(args.angle_perturb_std)),
+        "delay_perturb_std_s": float(args.delay_perturb_std * 1.0e-9),
+        "pol_perturb_std_rad": float(np.deg2rad(args.pol_perturb_std)),
+    }
+
+
+def _config_for_trial(
+    *,
+    setting_index: int,
+    snr_db: float,
+    t_dim: int,
+    ris_shape: tuple[int, int],
+    trial: int,
+    options: dict,
+) -> tuple[dict, int]:
+    seed = int(options["seed_base"] + setting_index * 100_000 + trial)
+    config = _make_config(
+        snr_db=snr_db,
+        t_dim=t_dim,
+        ris_shape=ris_shape,
+        seed=seed,
+        k_paths=options["k"],
+        n_dim=options["n"],
+    )
+    config["init_mode"] = options["init_mode"]
+    config["init_mode_effective"] = options["init_mode"]
+    config["init_warning"] = (
+        "TODO: unstructured CPD/ALS initialization is not available; trial skipped."
+        if options["init_mode"] == "unstructured"
+        else ""
+    )
+    config["range_perturb_std_m"] = float(options["range_perturb_std_m"])
+    config["angle_perturb_std_rad"] = float(options["angle_perturb_std_rad"])
+    config["delay_perturb_std_s"] = float(options["delay_perturb_std_s"])
+    config["pol_perturb_std_rad"] = float(options["pol_perturb_std_rad"])
+    return config, seed
+
+
+def _failed_rows_for_trial_task(task: tuple, error: BaseException) -> tuple[int, int, list[dict]]:
+    setting_index, snr_db, t_dim, ris_shape, trial, options = task
+    config, seed = _config_for_trial(
+        setting_index=setting_index,
+        snr_db=snr_db,
+        t_dim=t_dim,
+        ris_shape=ris_shape,
+        trial=trial,
+        options=options,
+    )
+    rows = [
+        _failed_row(config, pipeline, trial, seed, error)
+        for pipeline in (
+            PIPELINE_STAGE1,
+            PIPELINE_STAGE1_VP,
+            PIPELINE_STAGE1_STAGE2,
+            PIPELINE_STAGE1_STAGE2_VP,
+        )
+    ]
+    return setting_index, trial, rows
+
+
+def _run_trial_task(task: tuple) -> tuple[int, int, list[dict]]:
+    setting_index, snr_db, t_dim, ris_shape, trial, options = task
+    try:
+        config, seed = _config_for_trial(
+            setting_index=setting_index,
+            snr_db=snr_db,
+            t_dim=t_dim,
+            ris_shape=ris_shape,
+            trial=trial,
+            options=options,
+        )
+        return setting_index, trial, _run_trial(config, trial, seed)
+    except Exception as exc:  # noqa: BLE001 - worker setup failures should be recorded.
+        return _failed_rows_for_trial_task(task, exc)
+
+
 def _as_float(value: Any) -> float | None:
     if value in ("", None):
         return None
@@ -1291,6 +1375,12 @@ def parse_args() -> argparse.Namespace:
         description="Evaluate Stage-II HP-R1P-CPD as an initializer for raw-domain VP-WNLS."
     )
     parser.add_argument("--mc", type=int, default=50, help="Monte Carlo trials per grid point.")
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes for Monte Carlo trials.",
+    )
     parser.add_argument("--seed-base", type=int, default=2026052800)
     parser.add_argument(
         "--init-mode",
@@ -1357,6 +1447,8 @@ def main() -> None:
     args = parse_args()
     if args.mc <= 0:
         raise ValueError("--mc must be positive")
+    if args.n_jobs <= 0:
+        raise ValueError("--n-jobs must be positive")
     for name in (
         "range_perturb_std",
         "angle_perturb_std",
@@ -1371,9 +1463,9 @@ def main() -> None:
         raise ValueError("This experiment currently assumes N=24, as requested.")
 
     grid = list(itertools.product(args.snr_db, args.t_values, args.ris_shapes))
-    rows: list[dict] = []
+    options = _trial_options_from_args(args)
+    trial_tasks = []
     total_trials = len(grid) * args.mc
-    completed_trials = 0
     for setting_index, (snr_db, t_dim, ris_shape) in enumerate(grid):
         print(
             f"Running init={args.init_mode}, SNR={snr_db:g} dB, "
@@ -1381,30 +1473,34 @@ def main() -> None:
             f"({setting_index + 1}/{len(grid)})"
         )
         for trial in range(args.mc):
-            seed = int(args.seed_base + setting_index * 100_000 + trial)
-            config = _make_config(
-                snr_db=snr_db,
-                t_dim=t_dim,
-                ris_shape=ris_shape,
-                seed=seed,
-                k_paths=args.k,
-                n_dim=args.n,
-            )
-            config["init_mode"] = args.init_mode
-            config["init_mode_effective"] = args.init_mode
-            config["init_warning"] = (
-                "TODO: unstructured CPD/ALS initialization is not available; trial skipped."
-                if args.init_mode == "unstructured"
-                else ""
-            )
-            config["range_perturb_std_m"] = float(args.range_perturb_std)
-            config["angle_perturb_std_rad"] = float(np.deg2rad(args.angle_perturb_std))
-            config["delay_perturb_std_s"] = float(args.delay_perturb_std * 1.0e-9)
-            config["pol_perturb_std_rad"] = float(np.deg2rad(args.pol_perturb_std))
-            rows.extend(_run_trial(config, trial, seed))
+            trial_tasks.append((setting_index, snr_db, t_dim, ris_shape, trial, options))
+
+    results: list[tuple[int, int, list[dict]]] = []
+    completed_trials = 0
+    progress_interval = max(1, min(args.mc, 10))
+
+    if args.n_jobs == 1:
+        for task in trial_tasks:
+            results.append(_run_trial_task(task))
             completed_trials += 1
-            if completed_trials % max(1, min(args.mc, 10)) == 0:
+            if completed_trials % progress_interval == 0:
                 print(f"  completed {completed_trials}/{total_trials} trials")
+    else:
+        print(f"Using {args.n_jobs} worker processes for {total_trials} trials")
+        with ProcessPoolExecutor(max_workers=args.n_jobs) as executor:
+            futures = {executor.submit(_run_trial_task, task): task for task in trial_tasks}
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:  # noqa: BLE001 - record hard worker failures.
+                    results.append(_failed_rows_for_trial_task(task, exc))
+                completed_trials += 1
+                if completed_trials % progress_interval == 0:
+                    print(f"  completed {completed_trials}/{total_trials} trials")
+
+    results.sort(key=lambda item: (item[0], item[1]))
+    rows = [row for _, _, trial_rows in results for row in trial_rows]
 
     summary_rows = _summarize(rows)
     raw_path = args.output_dir / "raw_results.csv"
