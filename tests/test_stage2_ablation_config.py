@@ -2,6 +2,7 @@ import numpy as np
 
 from src.config import default_config
 from src.estimators import _accept_strict_sse, structured_refinement
+from src.main_single_proposed import _weak_reasonable_stage1_config
 from src.projections_delay import bq_from_poles
 
 
@@ -72,6 +73,23 @@ def test_structured_refinement_all_modules_disabled_keeps_factors_unchanged():
     np.testing.assert_allclose(refined["C"], c_mat)
     np.testing.assert_allclose(refined["poles"], poles)
     assert refined["Z_hat"].shape == z_tensor.shape
+
+
+def test_main_single_weak_reasonable_stage1_config():
+    config = default_config()
+    weak_config = _weak_reasonable_stage1_config(config)
+    weak_search = weak_config["ris_search"]
+    original_search = config["ris_search"]
+
+    assert weak_search["num_range"] == 9
+    assert weak_search["num_elev"] == 5
+    assert weak_search["num_az"] == 13
+    assert weak_search["num_exact_refine_starts"] == 3
+    assert weak_search["num_lift_candidates"] == 3
+    assert weak_search["num_lift_steps"] == 3
+    assert original_search["num_range"] == 15
+    assert original_search["num_elev"] == 9
+    assert original_search["num_az"] == 25
 
 
 def test_accept_strict_sse_requires_strict_relative_decrease():

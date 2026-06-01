@@ -150,11 +150,41 @@ def _print_self_tests(scene: dict, config: dict, true_components: dict) -> None:
         print(f"WARNING: {ris_test['warning']}")
 
 
+def _weak_reasonable_stage1_config(config: dict) -> dict:
+    """Return a moderately weakened Stage-I RIS search for main_single_proposed."""
+    weak_config = copy.deepcopy(config)
+    ris_search = dict(weak_config["ris_search"])
+    ris_search["num_range"] = min(int(ris_search.get("num_range", 15)), 9)
+    ris_search["num_elev"] = min(int(ris_search.get("num_elev", 9)), 5)
+    ris_search["num_az"] = min(int(ris_search.get("num_az", 25)), 13)
+    ris_search["num_exact_refine_starts"] = min(
+        int(ris_search.get("num_exact_refine_starts", 6)), 3
+    )
+    ris_search["num_lift_candidates"] = min(int(ris_search.get("num_lift_candidates", 4)), 3)
+    ris_search["num_lift_steps"] = min(int(ris_search.get("num_lift_steps", 4)), 3)
+    weak_config["ris_search"] = ris_search
+    return weak_config
+
+
+def _print_stage1_initialization_diagnostics(results: dict) -> None:
+    """Print the Stage-I initialization mode and RIS search strength."""
+    ris_search = results["stage1_initialization"]["ris_search"]
+    print("stage1_init_mode = weak_reasonable")
+    print(
+        f"range/elev/az = ({ris_search['num_range']}, "
+        f"{ris_search['num_elev']}, {ris_search['num_az']})"
+    )
+    print(f"exact_refine_starts = {ris_search['num_exact_refine_starts']}")
+    print(f"lift_candidates = {ris_search['num_lift_candidates']}")
+    print(f"lift_steps = {ris_search['num_lift_steps']}")
+
+
 def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
     """Run initialization, optional Stage-II, and optional raw-domain VP."""
     data = _make_data(config)
     scene = data["scene"]
-    estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, config)
+    stage1_config = _weak_reasonable_stage1_config(config)
+    estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, stage1_config)
     if use_structured:
         estimate_used, structured_diag = structured_refinement(
             data["Z_noisy"], scene, config, copy.deepcopy(estimate_initial)
@@ -197,6 +227,10 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         "estimate_initial": estimate_initial,
         "estimate_used": estimate_used,
         "structured_diag": structured_diag,
+        "stage1_initialization": {
+            "mode": "weak_reasonable",
+            "ris_search": dict(stage1_config["ris_search"]),
+        },
         "final": final,
     }
 
@@ -443,13 +477,24 @@ def run_default_diagnostic() -> None:
 
     print("=== Single proposed diagnostic run ===")
     print(f"seed = {config['seed']}")
+    print(f"trials = {config.get('trials', 1)}")
     print(f"SNR_dB = {config['SNR_dB']:.1f}")
+    print(f"fc_GHz = {config['fc'] / 1.0e9:.1f}")
+    print(f"delta_f_MHz = {config['delta_f'] / 1.0e6:.1f}")
+    print(f"delta_t_true_ns = {config['delta_t_true'] / 1.0e-9:.1f}")
     print(f"K = {scene['K']}")
     print(f"I = {scene['I']}")
+    print(f"M_A = {scene['M_A']}")
     print(f"N = {scene['N']}")
     print(f"P = {scene['P']}")
     print(f"L = {scene['L']}")
     print(f"T = {scene['T']}")
+    print(f"num_structured_iters = {config['num_structured_iters']}")
+    print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
+    print(f"vp_max_nfev = {config.get('vp_max_nfev', '')}")
+    print(f"vp_max_iter = {config.get('vp_max_iter', '')}")
+    print(f"stage2_guarded = {config.get('stage2_guarded', False)}")
+    _print_stage1_initialization_diagnostics(results)
     _print_ris_dimension_diagnostics(scene, results["true_components"])
     if not scipy_is_available():
         print("optimizer_note = scipy.optimize not found; using deterministic fallback optimizer")

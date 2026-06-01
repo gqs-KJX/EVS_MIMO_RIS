@@ -81,7 +81,7 @@ def _z_fit_error(
 ) -> float:
     """Return normalized Z-domain LS fitting error for a set of delay poles."""
     b_mat, q_mat = bq_from_poles(poles, p_dim, l_dim)
-    _, residual_sse = _fit_z_model_fast_sse(z_tensor, a_mat, b_mat, q_mat, c_mat)
+    _, _, residual_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
     return float(residual_sse / (np.linalg.norm(z_tensor) ** 2 + 1e-12))
 
 
@@ -97,39 +97,6 @@ def _fit_z_model(
     z_hat = reconstruct_z(beta, a_mat, b_mat, q_mat, c_mat)
     residual_sse = float(np.linalg.norm(z_hat - z_tensor) ** 2)
     return beta, z_hat, residual_sse
-
-
-def _fit_z_model_fast_sse(
-    z_tensor: np.ndarray,
-    a_mat: np.ndarray,
-    b_mat: np.ndarray,
-    q_mat: np.ndarray,
-    c_mat: np.ndarray,
-    reg: float = 1e-12,
-) -> tuple[np.ndarray, float]:
-    """Estimate Z-domain weights and SSE without materializing the CP design or Z_hat."""
-    gram = (
-        (a_mat.conj().T @ a_mat)
-        * (b_mat.conj().T @ b_mat)
-        * (q_mat.conj().T @ q_mat)
-        * (c_mat.conj().T @ c_mat)
-    )
-    rhs = np.einsum(
-        "ik,iplt,pk,lk,tk->k",
-        np.conj(a_mat),
-        z_tensor,
-        np.conj(b_mat),
-        np.conj(q_mat),
-        np.conj(c_mat),
-        optimize=True,
-    )
-    k_paths = a_mat.shape[1]
-    beta = np.linalg.solve(gram + float(reg) * np.eye(k_paths, dtype=complex), rhs)
-    z_norm_sq = float(np.vdot(z_tensor, z_tensor).real)
-    beta_rhs = np.vdot(beta, rhs)
-    beta_gram_beta = np.vdot(beta, gram @ beta)
-    sse = z_norm_sq - 2.0 * float(np.real(beta_rhs)) + float(np.real(beta_gram_beta))
-    return beta, float(max(sse, 0.0))
 
 
 def _accept_strict_sse(new_sse: float, old_sse: float, abs_tol: float, rel_tol: float) -> bool:
@@ -697,7 +664,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
             )
             b_candidate, q_candidate = bq_from_poles(poles_candidate, scene["P"], scene["L"])
-            beta_candidate, delay_sse_after = _fit_z_model_fast_sse(
+            beta_candidate, z_hat_candidate, delay_sse_after = _fit_z_model(
                 z_tensor, a_mat, b_candidate, q_candidate, c_mat
             )
             if guarded:
@@ -720,7 +687,6 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 b_mat = b_candidate
                 q_mat = q_candidate
                 beta_z = beta_candidate
-                z_hat_candidate = reconstruct_z(beta_candidate, a_mat, b_mat, q_mat, c_mat)
                 z_hat = z_hat_candidate
                 current_sse = delay_sse_after
         else:
@@ -767,7 +733,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
             for k in range(scene["K"]):
                 c_before = c_mat[:, k].copy()
                 before_value, _ = scaled_residual(c_proxy[:, k], c_before, config["eps"])
-                beta_before_c, sse_before_c = _fit_z_model_fast_sse(
+                beta_before_c, z_hat_before_c, sse_before_c = _fit_z_model(
                     z_tensor, a_mat, b_mat, q_mat, c_mat
                 )
                 ris_proj = project_ris_factor(
@@ -791,7 +757,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     if local_relative_improvement < ris_min_rel_improvement:
                         accepted = False
                         beta_z = beta_before_c
-                        z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
+                        z_hat = z_hat_before_c
                         current_sse = sse_before_c
                         best_rho = float("nan")
                     else:
@@ -833,7 +799,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 else:
                     trial_c = c_mat.copy()
                     trial_c[:, k] = ris_proj["c"]
-                    beta_trial, sse_trial = _fit_z_model_fast_sse(
+                    beta_trial, z_hat_trial, sse_trial = _fit_z_model(
                         z_tensor, a_mat, b_mat, q_mat, trial_c
                     )
                     best_sse = float(sse_trial)
@@ -842,12 +808,10 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         c_mat = trial_c
                         ris_eta[k] = ris_proj["eta_local"]
                         beta_z = beta_trial
-                        z_hat_trial = reconstruct_z(beta_trial, a_mat, b_mat, q_mat, c_mat)
                         z_hat = z_hat_trial
                         current_sse = sse_trial
                     else:
                         beta_z = beta_before_c
-                        z_hat_before_c = reconstruct_z(beta_before_c, a_mat, b_mat, q_mat, c_mat)
                         z_hat = z_hat_before_c
                         current_sse = sse_before_c
                         best_rho = 0.0
