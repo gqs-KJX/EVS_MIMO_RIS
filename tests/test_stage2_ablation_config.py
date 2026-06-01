@@ -5,12 +5,30 @@ from src.estimators import _accept_strict_sse, structured_refinement
 from src.projections_delay import bq_from_poles
 
 
-def test_default_config_has_guarded_stage2_keys_disabled_by_default():
+def test_default_config_matches_single_diagnostic_defaults():
     config = default_config()
+    assert config["fc"] == 60.0e9
+    assert config["delta_f"] == 5.0e6
+    assert config["N"] == 63
+    assert config["P"] == 32
+    assert config["N"] - config["P"] + 1 == 32
+    assert config["K"] == 3
+    assert config["M_A"] == 16
+    assert config["ris_shape"] == (64, 64)
+    assert config["T"] == 256
+    assert config["SNR_dB"] == 0.0
+    assert config["trials"] == 1
+    assert config["num_structured_iters"] == 2
+    assert config["enable_global_vp"] is True
+    assert config["vp_max_nfev"] == 10
+    assert config["vp_max_iter"] == 10
+    assert config["delta_t_true"] == 5.0e-9
+    assert config["delta_t_bounds"][1] == 10.0e-9
+    assert config["ris_centers"].shape == (3, 3)
     assert config["stage2_enable_evs"] is True
     assert config["stage2_enable_delay"] is True
     assert config["stage2_enable_ris"] is True
-    assert config["stage2_guarded"] is False
+    assert config["stage2_guarded"] is True
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
     assert tuple(config["stage2_damping_grid"]) == (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)
