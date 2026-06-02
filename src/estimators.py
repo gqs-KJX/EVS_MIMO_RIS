@@ -10,6 +10,7 @@ from .geometry import position_from_local_geometry
 from .projections_delay import (
     bq_from_poles,
     delay_matrix_from_poles,
+    estimate_poles_aimdf_tls_from_hankel,
     estimate_poles_esprit_from_hankel,
     structured_delay_mother_pgd,
     tau_from_pole,
@@ -217,6 +218,39 @@ def _rank_one_snapshot_initialization(
     return a_proxy, c_proxy
 
 
+def _coupled_hankel_factor_initialization(
+    z_tensor: np.ndarray,
+    poles: np.ndarray,
+    reg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Initialize A/C proxies by LS with coupled Hankel B/Q delay factors."""
+    assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
+    i_dim, p_dim, l_dim, t_dim = z_tensor.shape
+    k_paths = poles.size
+    b_mat, q_mat = bq_from_poles(poles, p_dim, l_dim)
+    z14_23 = np.transpose(z_tensor, (0, 3, 1, 2)).reshape(i_dim * t_dim, p_dim * l_dim)
+    d_delay = np.empty((p_dim * l_dim, k_paths), dtype=complex)
+    for k in range(k_paths):
+        d_delay[:, k] = (b_mat[:, k, None] * q_mat[None, :, k]).reshape(-1)
+
+    gram = d_delay.T @ d_delay.conj() + float(reg) * np.eye(k_paths, dtype=complex)
+    rhs = z14_23 @ d_delay.conj()
+    try:
+        h_mat = np.linalg.solve(gram.T, rhs.T).T
+    except np.linalg.LinAlgError:
+        h_mat = rhs @ np.linalg.pinv(gram)
+
+    a_proxy = np.empty((i_dim, k_paths), dtype=complex)
+    c_proxy = np.empty((t_dim, k_paths), dtype=complex)
+    for k in range(k_paths):
+        snapshot = h_mat[:, k].reshape(i_dim, t_dim)
+        u_mat, s_val, vh = np.linalg.svd(snapshot, full_matrices=False)
+        scale = np.sqrt(s_val[0])
+        a_proxy[:, k] = u_mat[:, 0] * scale
+        c_proxy[:, k] = vh[0, :].T * scale
+    return a_proxy, c_proxy
+
+
 def _assignment_by_projection(
     a_proxy: np.ndarray,
     c_proxy: np.ndarray,
@@ -347,8 +381,29 @@ def _apply_physical_order(
 def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> dict:
     """Stage 1: HOSVD/ESPRIT-style initialization from the Hankelized tensor."""
     assert z_tensor.shape == (scene["I"], scene["P"], scene["L"], scene["T"])
-    poles_raw = estimate_poles_esprit_from_hankel(z_tensor, scene["K"])
-    a_proxy, c_proxy = _rank_one_snapshot_initialization(z_tensor, poles_raw)
+    delay_method = str(config.get("stage1_delay_method", "aimdf_tls"))
+    forward_backward = bool(config.get("stage1_forward_backward", True))
+    tls = bool(config.get("stage1_tls", True))
+    if delay_method == "aimdf_tls":
+        poles_raw = estimate_poles_aimdf_tls_from_hankel(
+            z_tensor,
+            scene["K"],
+            forward_backward=forward_backward,
+            tls=tls,
+            eps=config["eps"],
+        )
+    elif delay_method == "esprit_ls":
+        poles_raw = estimate_poles_esprit_from_hankel(z_tensor, scene["K"])
+    else:
+        raise ValueError(f"unknown stage1_delay_method {delay_method!r}")
+
+    factor_init = str(config.get("stage1_factor_init", "hankel_coupled_ls"))
+    if factor_init == "hankel_coupled_ls":
+        a_proxy, c_proxy = _coupled_hankel_factor_initialization(
+            z_tensor, poles_raw, config.get("stage1_factor_reg", 1e-10)
+        )
+    else:
+        a_proxy, c_proxy = _rank_one_snapshot_initialization(z_tensor, poles_raw)
     assignment, evs_selected, ris_selected = _assignment_by_projection(
         a_proxy, c_proxy, poles_raw, scene, config
     )
@@ -388,6 +443,10 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         "assignment": assignment,
         "initial_z_residual": initial_residual,
         "Z_hat": z_hat,
+        "stage1_delay_method": delay_method,
+        "stage1_factor_init": factor_init,
+        "stage1_forward_backward": forward_backward,
+        "stage1_tls": tls,
     }
 
 

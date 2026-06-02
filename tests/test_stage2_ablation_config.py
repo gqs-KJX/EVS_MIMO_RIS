@@ -25,6 +25,11 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["vp_max_iter"] == 10
     assert config["delta_t_true"] == 5.0e-9
     assert config["delta_t_bounds"][1] == 10.0e-9
+    assert config["stage1_delay_method"] == "aimdf_tls"
+    assert config["stage1_forward_backward"] is True
+    assert config["stage1_tls"] is True
+    assert config["stage1_factor_init"] == "hankel_coupled_ls"
+    assert config["stage1_factor_reg"] == 1.0e-10
     assert config["ris_centers"].shape == (3, 3)
     assert config["stage2_enable_evs"] is True
     assert config["stage2_enable_delay"] is True

@@ -337,6 +337,46 @@ def estimate_poles_esprit_from_hankel(z_tensor: np.ndarray, k_paths: int) -> np.
     return poles
 
 
+def estimate_poles_aimdf_tls_from_hankel(
+    z_tensor: np.ndarray,
+    k_paths: int,
+    forward_backward: bool = True,
+    tls: bool = True,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    """Estimate delay poles by RIS-aware A-IMDF-style FB/TLS ESPRIT."""
+    assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
+    _, p_dim, l_dim, _ = z_tensor.shape
+    n_dim = p_dim + l_dim - 1
+    y_like = dehankelize_frequency(z_tensor, n_dim)
+    y_freq = np.transpose(y_like, (1, 0, 2)).reshape(n_dim, -1)
+
+    if forward_backward:
+        reversal = np.fliplr(np.eye(n_dim))
+        y_aug = np.concatenate([y_freq, reversal @ y_freq.conj()], axis=1)
+    else:
+        y_aug = y_freq
+
+    u_mat, _, _ = np.linalg.svd(y_aug, full_matrices=False)
+    signal_subspace = u_mat[:, :k_paths]
+    upper = signal_subspace[:-1, :]
+    lower = signal_subspace[1:, :]
+
+    if tls:
+        stacked = np.concatenate([upper, lower], axis=1)
+        _, _, vh = np.linalg.svd(stacked, full_matrices=False)
+        v_mat = vh.conj().T
+        v12 = v_mat[:k_paths, k_paths:]
+        v22 = v_mat[k_paths:, k_paths:]
+        psi = -v12 @ np.linalg.pinv(v22)
+    else:
+        psi = np.linalg.lstsq(upper, lower, rcond=None)[0]
+
+    poles = np.linalg.eigvals(psi)
+    magnitudes = np.maximum(np.abs(poles), eps)
+    return poles[:k_paths] / magnitudes[:k_paths]
+
+
 def estimate_common_pole_from_factors(
     b_col: np.ndarray, q_col: np.ndarray, eps: float = 1e-12
 ) -> complex:

@@ -44,6 +44,11 @@ def default_config() -> dict:
             ]
         ),
         "delta_t_bounds": np.array([0.0, 10.0e-9]),
+        "stage1_delay_method": "aimdf_tls",
+        "stage1_forward_backward": True,
+        "stage1_tls": True,
+        "stage1_factor_init": "hankel_coupled_ls",
+        "stage1_factor_reg": 1.0e-10,
         "ris_search": {
             "range_bounds": (2.5, 6.5),
             "elev_bounds": (-0.45, 0.25),
