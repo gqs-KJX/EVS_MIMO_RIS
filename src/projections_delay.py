@@ -362,6 +362,9 @@ def estimate_poles_aimdf_tls_from_hankel(
     upper = signal_subspace[:-1, :]
     lower = signal_subspace[1:, :]
 
+    if tls and upper.shape[0] < 2 * k_paths:
+        tls = False
+
     if tls:
         stacked = np.concatenate([upper, lower], axis=1)
         _, _, vh = np.linalg.svd(stacked, full_matrices=False)

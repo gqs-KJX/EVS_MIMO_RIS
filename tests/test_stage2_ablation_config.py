@@ -2,7 +2,10 @@ import numpy as np
 
 from src.config import default_config
 from src.estimators import _accept_strict_sse, structured_refinement
-from src.main_single_proposed import _weak_reasonable_stage1_config
+from src.main_single_proposed import (
+    _print_stage_two_update_diagnostics,
+    _weak_reasonable_stage1_config,
+)
 from src.projections_delay import bq_from_poles
 
 
@@ -20,7 +23,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["SNR_dB"] == 0.0
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 2
-    assert config["enable_global_vp"] is True
+    assert config["enable_global_vp"] is False
     assert config["vp_max_nfev"] == 10
     assert config["vp_max_iter"] == 10
     assert config["delta_t_true"] == 5.0e-9
@@ -32,8 +35,8 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage1_factor_reg"] == 1.0e-10
     assert config["ris_centers"].shape == (3, 3)
     assert config["stage2_enable_evs"] is True
-    assert config["stage2_enable_delay"] is True
-    assert config["stage2_enable_ris"] is True
+    assert config["stage2_enable_delay"] is False
+    assert config["stage2_enable_ris"] is False
     assert config["stage2_guarded"] is True
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
@@ -101,3 +104,57 @@ def test_accept_strict_sse_requires_strict_relative_decrease():
     assert _accept_strict_sse(9.0, 10.0, 0.0, 1.0e-3)
     assert not _accept_strict_sse(10.0, 10.0, 0.0, 1.0e-3)
     assert not _accept_strict_sse(10.1, 10.0, 0.0, 1.0e-3)
+
+
+def test_stage_two_diagnostics_prints_skipped_submodules(capsys):
+    results = {
+        "structured_diag": {
+            "updates": [
+                {
+                    "delta_A": 1.0e-3,
+                    "delta_B": 0.0,
+                    "delta_Q": 0.0,
+                    "delta_C": 0.0,
+                    "delta_beta": 1.0e-4,
+                    "nonfinite_A": 0,
+                    "nonfinite_B": 0,
+                    "nonfinite_Q": 0,
+                    "nonfinite_C": 0,
+                    "nonfinite_beta": 0,
+                    "evs_projection_details": [
+                        {"accepted": True, "skipped": False},
+                        {"accepted": False, "skipped": False},
+                    ],
+                    "delay_projection_details": {
+                        "accepted": False,
+                        "skipped": True,
+                        "guarded": True,
+                        "global_sse_before": 12.5,
+                        "global_sse_after": 12.5,
+                    },
+                    "mode4_assignment_order": [0, 1],
+                    "ris_projection_details": [
+                        {
+                            "path": 0,
+                            "accepted": False,
+                            "skipped": True,
+                            "selected_eta": np.array([0.0, 0.0, 0.0]),
+                        },
+                        {
+                            "path": 1,
+                            "accepted": False,
+                            "skipped": True,
+                            "selected_eta": np.array([1.0, 0.1, -0.1]),
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    _print_stage_two_update_diagnostics(results)
+
+    output = capsys.readouterr().out
+    assert "delay structured LS: skipped=True" in output
+    assert "RIS projection accepted = ['skipped', 'skipped']" in output
+    assert "RIS path 0: skipped=True" in output

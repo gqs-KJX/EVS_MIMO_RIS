@@ -395,24 +395,45 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
             f"{update['nonfinite_Q']},{update['nonfinite_C']},"
             f"{update['nonfinite_beta']})"
         )
-        evs_accept = [detail["accepted"] for detail in update["evs_projection_details"]]
-        ris_accept = [detail["accepted"] for detail in update["ris_projection_details"]]
+        evs_accept = [
+            "skipped" if detail.get("skipped", False) else detail["accepted"]
+            for detail in update["evs_projection_details"]
+        ]
+        ris_accept = [
+            "skipped" if detail.get("skipped", False) else detail["accepted"]
+            for detail in update["ris_projection_details"]
+        ]
         print(f"  EVS projection accepted = {evs_accept}")
         delay_detail = update["delay_projection_details"]
-        print(
-            "  delay structured LS: "
-            f"accepted={delay_detail['accepted']}, "
-            f"obj_initial={delay_detail['initial_objective']:.3e}, "
-            f"obj_projected={delay_detail['projected_objective']:.3e}, "
-            f"obj_final={delay_detail['final_objective']:.3e}, "
-            f"global_sse_before={delay_detail['global_sse_before']:.3e}, "
-            f"global_sse_after={delay_detail['global_sse_after']:.3e}, "
-            f"geom_accepted={delay_detail.get('geometry_correction_accepted', False)}"
-        )
+        if delay_detail.get("skipped", False):
+            print(
+                "  delay structured LS: "
+                "skipped=True, "
+                f"global_sse_before={delay_detail['global_sse_before']:.3e}, "
+                f"global_sse_after={delay_detail['global_sse_after']:.3e}"
+            )
+        else:
+            print(
+                "  delay structured LS: "
+                f"accepted={delay_detail['accepted']}, "
+                f"obj_initial={delay_detail['initial_objective']:.3e}, "
+                f"obj_projected={delay_detail['projected_objective']:.3e}, "
+                f"obj_final={delay_detail['final_objective']:.3e}, "
+                f"global_sse_before={delay_detail['global_sse_before']:.3e}, "
+                f"global_sse_after={delay_detail['global_sse_after']:.3e}, "
+                f"geom_accepted={delay_detail.get('geometry_correction_accepted', False)}"
+            )
         print(f"  Mode-4 assignment order = {update.get('mode4_assignment_order')}")
         print(f"  RIS projection accepted = {ris_accept}")
         for detail in update["ris_projection_details"]:
             eta = detail["selected_eta"]
+            if detail.get("skipped", False):
+                print(
+                    f"  RIS path {detail['path']}: "
+                    f"skipped=True, "
+                    f"range/elev/az=({eta[0]:.3f}, {eta[1]:.3f}, {eta[2]:.3f})"
+                )
+                continue
             print(
                 f"  RIS path {detail['path']}: "
                 f"res_before={detail['residual_before']:.3e}, "
@@ -493,6 +514,9 @@ def run_default_diagnostic() -> None:
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
     print(f"vp_max_nfev = {config.get('vp_max_nfev', '')}")
     print(f"vp_max_iter = {config.get('vp_max_iter', '')}")
+    print(f"stage2_enable_evs = {config.get('stage2_enable_evs', True)}")
+    print(f"stage2_enable_delay = {config.get('stage2_enable_delay', True)}")
+    print(f"stage2_enable_ris = {config.get('stage2_enable_ris', True)}")
     print(f"stage2_guarded = {config.get('stage2_guarded', False)}")
     _print_stage1_initialization_diagnostics(results)
     _print_ris_dimension_diagnostics(scene, results["true_components"])

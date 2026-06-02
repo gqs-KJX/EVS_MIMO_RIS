@@ -379,7 +379,7 @@ def _apply_physical_order(
 
 
 def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> dict:
-    """Stage 1: HOSVD/ESPRIT-style initialization from the Hankelized tensor."""
+    """RIS-aware A-IMDF/TLS delay initialization with coupled EVS-RIS factor recovery."""
     assert z_tensor.shape == (scene["I"], scene["P"], scene["L"], scene["T"])
     delay_method = str(config.get("stage1_delay_method", "aimdf_tls"))
     forward_backward = bool(config.get("stage1_forward_backward", True))
@@ -402,8 +402,10 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         a_proxy, c_proxy = _coupled_hankel_factor_initialization(
             z_tensor, poles_raw, config.get("stage1_factor_reg", 1e-10)
         )
-    else:
+    elif factor_init in ("raw_snapshot", "snapshot_ls"):
         a_proxy, c_proxy = _rank_one_snapshot_initialization(z_tensor, poles_raw)
+    else:
+        raise ValueError(f"unknown stage1_factor_init {factor_init!r}")
     assignment, evs_selected, ris_selected = _assignment_by_projection(
         a_proxy, c_proxy, poles_raw, scene, config
     )
@@ -428,7 +430,10 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
     b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
     beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
     z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
-    initial_residual = float(np.linalg.norm(z_hat - z_tensor) / np.sqrt(z_tensor.size))
+    initial_residual = float(
+        np.linalg.norm(z_hat - z_tensor) ** 2
+        / (np.linalg.norm(z_tensor) ** 2 + config["eps"])
+    )
 
     return {
         "poles": poles,
