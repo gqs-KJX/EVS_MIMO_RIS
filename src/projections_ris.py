@@ -1,4 +1,10 @@
-"""Compressed near-field RIS projection with dechirped rank-one lifting."""
+"""Compressed near-field RIS projection helpers.
+
+The default Stage-II RIS projection is a weighted exact spherical variable
+projection with optional quadratic-distance initialization. Quadratic-distance
+and Fresnel/dechirped rank-one lifting are warm starts only; the returned RIS
+factor is reconstructed from the exact compressed spherical-wave response.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +30,60 @@ def compressed_exact_response(
     a_ur = near_field_spherical_response(range_m, elevation, azimuth, ris_grid, wavelength)
     g_elem = a_rb * a_ur
     return omega @ g_elem
+
+
+def exact_spherical_response_and_jacobian(
+    eta_local: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact compressed spherical response and eta Jacobian.
+
+    The Jacobian columns are derivatives with respect to
+    ``[range, elevation, azimuth]`` under the phase-dominant spherical model.
+    No amplitude factor is used, matching ``near_field_spherical_response``.
+    """
+    assert omega.ndim == 2, "omega must have shape T x M_R"
+    assert a_rb.ndim == 1, "a_rb must have shape M_R"
+    assert ris_grid.ndim == 2 and ris_grid.shape[1] == 3, "ris_grid must be M_R x 3"
+    assert omega.shape[1] == a_rb.size == ris_grid.shape[0]
+    range_m, elevation, azimuth = np.asarray(eta_local, dtype=float)
+    kappa = 2.0 * np.pi / wavelength
+
+    ce = np.cos(elevation)
+    se = np.sin(elevation)
+    ca = np.cos(azimuth)
+    sa = np.sin(azimuth)
+    unit_vec = np.array([ce * ca, ce * sa, se], dtype=float)
+    ds_delev = np.array([-se * ca, -se * sa, ce], dtype=float)
+    ds_daz = np.array([-ce * sa, ce * ca, 0.0], dtype=float)
+
+    q_local = range_m * unit_vec
+    diff = q_local[None, :] - ris_grid
+    distances = np.linalg.norm(diff, axis=1)
+    safe_distances = np.maximum(distances, eps)
+    safe_range = max(float(range_m), eps)
+    delta = distances - range_m
+    u_vec = np.exp(-1j * kappa * delta)
+
+    geom_grad = diff / safe_distances[:, None] - q_local[None, :] / safe_range
+    dq = np.column_stack(
+        [
+            unit_vec,
+            range_m * ds_delev,
+            range_m * ds_daz,
+        ]
+    )
+    ddelta = geom_grad @ dq
+    du = -1j * kappa * u_vec[:, None] * ddelta
+
+    a_eff = omega * a_rb[None, :]
+    h_vec = a_eff @ u_vec
+    jac = a_eff @ du
+    return h_vec, jac
 
 
 def local_ris_search_config(scene: dict, config: dict, path: int) -> dict:
@@ -80,6 +140,231 @@ def scaled_residual(c_tilde: np.ndarray, h_model: np.ndarray, eps: float) -> tup
     alpha = np.vdot(h_model, c_tilde) / denom
     residual = np.linalg.norm(c_tilde - alpha * h_model) ** 2
     return float(residual), alpha
+
+
+def _apply_weight(vec: np.ndarray, weight: np.ndarray | None) -> np.ndarray:
+    """Apply identity, diagonal, or full Hermitian sample weight."""
+    vec = np.asarray(vec)
+    if weight is None:
+        return vec
+    weight_array = np.asarray(weight)
+    if weight_array.ndim == 1:
+        if weight_array.shape[0] != vec.shape[0]:
+            raise ValueError("weight vector length must match response length")
+        return weight_array * vec
+    if weight_array.ndim == 2:
+        if weight_array.shape != (vec.shape[0], vec.shape[0]):
+            raise ValueError("weight matrix must have shape T x T")
+        return weight_array @ vec
+    raise ValueError("weight must be None, a vector, or a matrix")
+
+
+def _weighted_inner(x_vec: np.ndarray, y_vec: np.ndarray, weight: np.ndarray | None) -> complex:
+    """Return x^H W y for identity, diagonal, or full sample weight."""
+    return np.vdot(x_vec, _apply_weight(y_vec, weight))
+
+
+def _weighted_norm_sq(x_vec: np.ndarray, weight: np.ndarray | None) -> float:
+    """Return real part of x^H W x."""
+    return float(np.real(_weighted_inner(x_vec, x_vec, weight)))
+
+
+def _vp_alpha(
+    c_tilde: np.ndarray,
+    h_model: np.ndarray,
+    weight: np.ndarray | None,
+    eps: float,
+) -> complex:
+    """Return weighted variable-projection gain for a fixed response."""
+    return _weighted_inner(h_model, c_tilde, weight) / (
+        _weighted_inner(h_model, h_model, weight) + eps
+    )
+
+
+def _wesvp_objective_and_grad(
+    eta_local: np.ndarray,
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    weight: np.ndarray | None = None,
+    eps: float = 1e-10,
+) -> tuple[float, np.ndarray]:
+    """Weighted exact spherical VP objective and analytic gradient."""
+    eta_local = np.clip(np.asarray(eta_local, dtype=float), lower, upper)
+    h_vec, jac = exact_spherical_response_and_jacobian(
+        eta_local, omega, a_rb, ris_grid, wavelength, eps
+    )
+    s_val = _weighted_inner(h_vec, c_tilde, weight)
+    n_val = float(np.real(_weighted_inner(h_vec, h_vec, weight))) + eps
+    const = _weighted_norm_sq(c_tilde, weight)
+    objective = const - (abs(s_val) ** 2) / n_val
+
+    grad = np.empty(3, dtype=float)
+    for dim in range(3):
+        h_x = jac[:, dim]
+        s_x = _weighted_inner(h_x, c_tilde, weight)
+        n_x = 2.0 * float(np.real(_weighted_inner(h_x, h_vec, weight)))
+        numerator = 2.0 * float(np.real(np.conj(s_val) * s_x)) * n_val
+        numerator -= (abs(s_val) ** 2) * n_x
+        grad[dim] = -numerator / (n_val**2)
+    return float(np.real(objective)), grad
+
+
+def _element_domain_proxy(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    weight: np.ndarray | None = None,
+    reg: float = 1e-6,
+    eps: float = 1e-10,
+) -> tuple[np.ndarray, float]:
+    """Estimate an element-domain phase proxy by weighted ridge LS."""
+    a_eff = omega * a_rb[None, :]
+    reg = max(float(reg), eps)
+    t_dim, m_dim = a_eff.shape
+
+    if weight is None:
+        system = a_eff @ a_eff.conj().T + reg * np.eye(t_dim, dtype=complex)
+        try:
+            y_vec = np.linalg.solve(system, c_tilde)
+        except np.linalg.LinAlgError:
+            y_vec = np.linalg.pinv(system) @ c_tilde
+        u_proxy = a_eff.conj().T @ y_vec
+    elif np.asarray(weight).ndim == 1:
+        weight_vec = np.asarray(weight)
+        if weight_vec.shape[0] != t_dim:
+            raise ValueError("weight vector length must match response length")
+        sqrt_weight = np.sqrt(np.maximum(np.real(weight_vec), 0.0))
+        a_weighted = sqrt_weight[:, None] * a_eff
+        c_weighted = sqrt_weight * c_tilde
+        system = a_weighted @ a_weighted.conj().T + reg * np.eye(t_dim, dtype=complex)
+        try:
+            y_vec = np.linalg.solve(system, c_weighted)
+        except np.linalg.LinAlgError:
+            y_vec = np.linalg.pinv(system) @ c_weighted
+        u_proxy = a_weighted.conj().T @ y_vec
+    else:
+        weight_mat = np.asarray(weight)
+        if weight_mat.shape != (t_dim, t_dim):
+            raise ValueError("weight matrix must have shape T x T")
+        if m_dim <= 512:
+            gram = a_eff.conj().T @ (weight_mat @ a_eff)
+            rhs = a_eff.conj().T @ (weight_mat @ c_tilde)
+            system = gram + reg * np.eye(m_dim, dtype=complex)
+            try:
+                u_proxy = np.linalg.solve(system, rhs)
+            except np.linalg.LinAlgError:
+                u_proxy = np.linalg.pinv(system) @ rhs
+        else:
+            try:
+                weight_inv = np.linalg.inv(weight_mat)
+            except np.linalg.LinAlgError:
+                weight_inv = np.linalg.pinv(weight_mat)
+            system = a_eff @ a_eff.conj().T + reg * weight_inv
+            try:
+                y_vec = np.linalg.solve(system, c_tilde)
+            except np.linalg.LinAlgError:
+                y_vec = np.linalg.pinv(system) @ c_tilde
+            u_proxy = a_eff.conj().T @ y_vec
+
+    residual = c_tilde - a_eff @ u_proxy
+    denom = max(_weighted_norm_sq(c_tilde, weight), eps)
+    rel_residual = float(np.sqrt(max(_weighted_norm_sq(residual, weight), 0.0) / denom))
+    return u_proxy, rel_residual
+
+
+def _azimuth_in_bounds(azimuth: float, bounds: tuple[float, float]) -> float | None:
+    """Return an equivalent azimuth inside possibly unwrapped bounds."""
+    lower, upper = bounds
+    for shift in range(-2, 3):
+        candidate = float(azimuth + 2.0 * np.pi * shift)
+        if lower <= candidate <= upper:
+            return candidate
+    return None
+
+
+def _qd_initializer_from_element_proxy(
+    u_proxy: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float = 1e-10,
+) -> dict | None:
+    """Quadratic-distance geometry warm start from an element-domain proxy.
+
+    The result is only a warm start for exact spherical VP; it is never returned
+    as the final RIS projection.
+    """
+    mx, my = _infer_ris_shape(ris_grid)
+    if u_proxy.size != mx * my:
+        raise ValueError("u_proxy length must match RIS grid size")
+    grid = ris_grid.reshape(mx, my, 3)
+    radii = np.linalg.norm(ris_grid, axis=1)
+    ref_index = int(np.argmin(radii))
+    ref_is_center = bool(radii[ref_index] <= eps)
+    ref_value = u_proxy[ref_index]
+    if abs(ref_value) <= eps:
+        return None
+
+    relative_phase = np.angle(u_proxy * np.conj(ref_value))
+    phase_grid = relative_phase.reshape(mx, my)
+    unwrapped = np.unwrap(np.unwrap(phase_grid, axis=0), axis=1)
+    delta = -unwrapped.reshape(-1) / (2.0 * np.pi / wavelength)
+
+    x_coord = ris_grid[:, 0]
+    y_coord = ris_grid[:, 1]
+    design = np.column_stack([2.0 * x_coord, 2.0 * y_coord])
+    range_min, range_max = search_config["range_bounds"]
+    elev_bounds = search_config["elev_bounds"]
+    az_bounds = search_config["az_bounds"]
+    qd_num_range = max(int(search_config.get("qd_num_range", 41)), 3)
+    max_ls_rel = float(search_config.get("qd_max_ls_relative_residual", 1.0))
+
+    best = None
+    for range_m in np.linspace(range_min, range_max, qd_num_range):
+        if range_m <= eps:
+            continue
+        rhs = x_coord**2 + y_coord**2 - 2.0 * range_m * delta - delta**2
+        try:
+            q_xy = np.linalg.lstsq(design, rhs, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            continue
+        qx, qy = float(q_xy[0]), float(q_xy[1])
+        radial_sq = qx**2 + qy**2
+        if radial_sq >= range_m**2:
+            continue
+        predicted = design @ q_xy
+        ls_rel = float(
+            np.linalg.norm(predicted - rhs)
+            / max(np.linalg.norm(rhs), eps)
+        )
+        if not np.isfinite(ls_rel) or ls_rel > max_ls_rel:
+            continue
+
+        qz_abs = float(np.sqrt(max(range_m**2 - radial_sq, 0.0)))
+        for qz in (qz_abs, -qz_abs):
+            elevation = float(np.arcsin(np.clip(qz / range_m, -1.0, 1.0)))
+            if not (elev_bounds[0] <= elevation <= elev_bounds[1]):
+                continue
+            azimuth = _azimuth_in_bounds(np.arctan2(qy, qx), az_bounds)
+            if azimuth is None:
+                continue
+            eta_local = np.array([range_m, elevation, azimuth], dtype=float)
+            if best is None or ls_rel < best["qd_ls_relative_residual"]:
+                best = {
+                    "eta_local": eta_local,
+                    "qd_ls_relative_residual": ls_rel,
+                    "reference_index": ref_index,
+                    "reference_is_center": ref_is_center,
+                    "warning": ""
+                    if ref_is_center
+                    else "QD reference is nearest element; global phase is absorbed by alpha",
+                }
+    return best
 
 
 def _infer_ris_shape(ris_grid: np.ndarray) -> tuple[int, int]:
@@ -396,7 +681,325 @@ def _compressed_lifted_candidate(
     }
 
 
-def project_ris_factor(
+def _ris_search_bounds(search_config: dict) -> tuple[np.ndarray, np.ndarray]:
+    lower = np.array(
+        [
+            search_config["range_bounds"][0],
+            search_config["elev_bounds"][0],
+            search_config["az_bounds"][0],
+        ],
+        dtype=float,
+    )
+    upper = np.array(
+        [
+            search_config["range_bounds"][1],
+            search_config["elev_bounds"][1],
+            search_config["az_bounds"][1],
+        ],
+        dtype=float,
+    )
+    return lower, upper
+
+
+def _ris_grid_candidates(
+    search_config: dict,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    current_eta: np.ndarray | None,
+    use_local_grid: bool,
+) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+    if use_local_grid and current_eta is not None:
+        center = np.clip(np.asarray(current_eta, dtype=float), lower, upper)
+        range_span = float(search_config.get("stage2_range_span", 0.45))
+        angle_span = float(search_config.get("stage2_angle_span", 0.12))
+        refine_lower = np.maximum(
+            lower, center - np.array([range_span, angle_span, angle_span])
+        )
+        refine_upper = np.minimum(
+            upper, center + np.array([range_span, angle_span, angle_span])
+        )
+        r_grid = np.linspace(
+            refine_lower[0], refine_upper[0], int(search_config.get("stage2_num_range", 5))
+        )
+        e_grid = np.linspace(
+            refine_lower[1], refine_upper[1], int(search_config.get("stage2_num_elev", 5))
+        )
+        a_grid = np.linspace(
+            refine_lower[2], refine_upper[2], int(search_config.get("stage2_num_az", 7))
+        )
+    else:
+        r_grid = np.linspace(*search_config["range_bounds"], int(search_config["num_range"]))
+        e_grid = np.linspace(*search_config["elev_bounds"], int(search_config["num_elev"]))
+        a_grid = np.linspace(*search_config["az_bounds"], int(search_config["num_az"]))
+        refine_lower = lower
+        refine_upper = upper
+
+    candidates = [
+        np.array([range_m, elevation, azimuth], dtype=float)
+        for range_m in r_grid
+        for elevation in e_grid
+        for azimuth in a_grid
+    ]
+    return candidates, refine_lower, refine_upper
+
+
+def _project_ris_factor_wesvp_qd(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float = 1e-10,
+    current_eta: np.ndarray | None = None,
+    weight: np.ndarray | None = None,
+) -> dict:
+    """Weighted exact spherical variable projection with QD warm start."""
+    lower, upper = _ris_search_bounds(search_config)
+    projection_mode = str(search_config.get("projection_mode", "wesvp_qd")).lower()
+    use_local_grid = current_eta is not None
+    grid_candidates, refine_lower, refine_upper = _ris_grid_candidates(
+        search_config, lower, upper, current_eta, use_local_grid
+    )
+    c_norm_sq = max(_weighted_norm_sq(c_tilde, weight), eps)
+
+    coarse_candidates = []
+    for eta_local in grid_candidates:
+        value, _ = _wesvp_objective_and_grad(
+            eta_local,
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            refine_lower,
+            refine_upper,
+            weight,
+            eps,
+        )
+        coarse_candidates.append((float(value), eta_local))
+    coarse_candidates.sort(key=lambda item: item[0])
+    best_coarse_value, best_coarse_eta = coarse_candidates[0]
+
+    starts: list[tuple[np.ndarray, str]] = [(best_coarse_eta, "exact_grid")]
+    if current_eta is not None:
+        starts.append((np.asarray(current_eta, dtype=float), "current_eta"))
+
+    use_qd = bool(search_config.get("use_qd_init", True)) and projection_mode == "wesvp_qd"
+    qd_available = False
+    qd_used_as_start = False
+    qd_proxy_relative_residual = float("nan")
+    qd_diag = None
+    if use_qd:
+        u_proxy, qd_proxy_relative_residual = _element_domain_proxy(
+            c_tilde,
+            omega,
+            a_rb,
+            weight=weight,
+            reg=float(search_config.get("qd_proxy_reg", 1.0e-6)),
+            eps=eps,
+        )
+        if qd_proxy_relative_residual <= float(
+            search_config.get("qd_proxy_max_rel_residual", 0.8)
+        ):
+            qd_diag = _qd_initializer_from_element_proxy(
+                u_proxy, ris_grid, wavelength, search_config, eps
+            )
+            if qd_diag is not None:
+                qd_available = True
+                starts.append((qd_diag["eta_local"], "qd"))
+                qd_used_as_start = True
+
+    use_fresnel = bool(search_config.get("use_fresnel_warm_start", True))
+    use_fresnel = use_fresnel and projection_mode == "wesvp_qd"
+    lifted_best = None
+    fresnel_used_as_start = False
+    if use_fresnel:
+        num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
+        num_lift_steps = int(search_config.get("num_lift_steps", 3))
+        lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
+        ris_pgd_step_scale = float(search_config.get("ris_pgd_step_scale", 0.5))
+        for _, eta_candidate in coarse_candidates[:num_lift_candidates]:
+            lifted = _compressed_lifted_candidate(
+                c_tilde,
+                eta_candidate,
+                omega,
+                a_rb,
+                ris_grid,
+                wavelength,
+                eps,
+                num_lift_steps,
+                lambda_phys,
+                ris_pgd_step_scale,
+            )
+            if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
+                lifted_best = lifted
+        if lifted_best is not None:
+            starts.append((lifted_best["eta_local"], "fresnel"))
+            fresnel_used_as_start = True
+
+    for _, eta_candidate in coarse_candidates[
+        : int(search_config.get("num_exact_refine_starts", 6))
+    ]:
+        starts.append((eta_candidate, "exact_grid_extra"))
+
+    unique_starts: list[tuple[np.ndarray, str]] = []
+    for eta_start, source in starts:
+        eta_clipped = np.clip(np.asarray(eta_start, dtype=float), refine_lower, refine_upper)
+        if not any(np.linalg.norm(eta_clipped - old_eta) < 1e-9 for old_eta, _ in unique_starts):
+            unique_starts.append((eta_clipped, source))
+
+    def objective(eta_local: np.ndarray) -> float:
+        value, _ = _wesvp_objective_and_grad(
+            eta_local,
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            refine_lower,
+            refine_upper,
+            weight,
+            eps,
+        )
+        return value
+
+    def objective_grad(eta_local: np.ndarray) -> tuple[float, np.ndarray]:
+        return _wesvp_objective_and_grad(
+            eta_local,
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            refine_lower,
+            refine_upper,
+            weight,
+            eps,
+        )
+
+    best_eta = np.asarray(best_coarse_eta, dtype=float)
+    best_value = float(best_coarse_value)
+    best_eta_source = "exact_grid"
+    optimizer_messages = []
+    analytic_jacobian_used = False
+    if scipy_is_available():
+        from scipy.optimize import minimize
+
+        analytic_jacobian_used = True
+        for eta_start, source in unique_starts:
+            result = minimize(
+                lambda eta: objective_grad(eta)[0],
+                eta_start,
+                jac=lambda eta: objective_grad(eta)[1],
+                method="L-BFGS-B",
+                bounds=list(zip(refine_lower, refine_upper)),
+                options={
+                    "maxiter": int(search_config.get("wesvp_max_iter", 100)),
+                    "ftol": float(search_config.get("wesvp_ftol", 1.0e-12)),
+                    "gtol": float(search_config.get("wesvp_gtol", 1.0e-8)),
+                },
+            )
+            optimizer_messages.append(f"{source}: L-BFGS-B success={bool(result.success)}")
+            if float(result.fun) <= best_value:
+                best_eta = np.asarray(result.x, dtype=float)
+                best_value = float(result.fun)
+                best_eta_source = source
+    else:
+        for eta_start, source in unique_starts:
+            span = np.maximum(refine_upper - refine_lower, eps)
+            x0_scaled = (eta_start - refine_lower) / span
+
+            def scaled_objective(x_scaled: np.ndarray) -> float:
+                eta_local = refine_lower + np.clip(x_scaled, 0.0, 1.0) * span
+                return objective(eta_local)
+
+            x_best, value, info = bounded_coordinate_search(
+                scaled_objective,
+                x0_scaled,
+                np.zeros(3),
+                np.ones(3),
+                step0=0.10,
+                max_iter=45,
+                tol=1e-4,
+            )
+            optimizer_messages.append(f"{source}: {info['message']}")
+            if float(value) <= best_value:
+                best_eta = refine_lower + x_best * span
+                best_value = float(value)
+                best_eta_source = source
+
+    h_best = compressed_exact_response(best_eta, omega, a_rb, ris_grid, wavelength)
+    alpha_raw = _vp_alpha(c_tilde, h_best, weight, eps)
+    c_raw = alpha_raw * h_best
+    raw_norm = float(np.linalg.norm(c_raw))
+    if raw_norm > eps:
+        c_projected = c_raw / raw_norm
+        absorbed_norm = raw_norm
+    else:
+        h_norm = np.linalg.norm(h_best)
+        c_projected = h_best / (h_norm + eps)
+        absorbed_norm = 1.0
+
+    final_value = _weighted_norm_sq(c_tilde - _vp_alpha(c_tilde, c_projected, weight, eps) * c_projected, weight)
+    alpha_final = _vp_alpha(c_tilde, c_projected, weight, eps)
+    final_relative = float(np.sqrt(max(final_value, 0.0) / c_norm_sq))
+    coarse_relative = float(np.sqrt(max(best_coarse_value, 0.0) / c_norm_sq))
+    exact_relative = float(np.sqrt(max(best_value, 0.0) / c_norm_sq))
+    candidates = {
+        "wesvp_qd": {
+            "c": c_projected,
+            "eta_local": best_eta,
+            "alpha": alpha_final,
+            "data_residual": float(final_value),
+            "relative_residual": final_relative,
+        }
+    }
+    if qd_diag is not None:
+        candidates["qd"] = qd_diag
+    if lifted_best is not None:
+        candidates["fresnel_warm_start"] = lifted_best
+
+    optimizer_message = "; ".join(optimizer_messages) if optimizer_messages else "grid only"
+    return {
+        "c": c_projected,
+        "eta_local": best_eta,
+        "alpha": alpha_final,
+        "relative_residual": final_relative,
+        "selected_model": "wesvp_qd",
+        "candidates": candidates,
+        "coarse_eta_local": best_coarse_eta,
+        "coarse_relative_residual": coarse_relative,
+        "exact_relative_residual": exact_relative,
+        "optimizer_message": optimizer_message,
+        "raw_alpha": alpha_raw,
+        "raw_norm": raw_norm,
+        "absorbed_norm": absorbed_norm,
+        "wesvp_objective": float(best_value),
+        "wesvp_relative_residual": exact_relative,
+        "best_eta_source": best_eta_source,
+        "qd_available": bool(qd_available),
+        "qd_used_as_start": bool(qd_used_as_start),
+        "qd_proxy_relative_residual": float(qd_proxy_relative_residual),
+        "fresnel_used_as_start": bool(fresnel_used_as_start),
+        "analytic_jacobian_used": bool(analytic_jacobian_used),
+        "lifted_available": lifted_best is not None,
+        "lifted_used": False,
+        "lifted_used_for_start": bool(fresnel_used_as_start),
+        "lifted_relative_residual": None
+        if lifted_best is None
+        else float(np.sqrt(lifted_best["data_residual"] / c_norm_sq)),
+        "lifted_objective": None if lifted_best is None else lifted_best["objective"],
+        "ris_pgd_accepted_steps": None
+        if lifted_best is None
+        else lifted_best.get("pgd_accepted_steps"),
+        "ris_pgd_unscaled_objective": None
+        if lifted_best is None
+        else lifted_best.get("pgd_unscaled_objective"),
+    }
+
+
+def _project_ris_factor_legacy(
     c_tilde: np.ndarray,
     omega: np.ndarray,
     a_rb: np.ndarray,
@@ -627,3 +1230,56 @@ def project_ris_factor(
         else lifted_best.get("pgd_unscaled_objective"),
         "optimizer_message": optimizer_message,
     }
+
+
+def project_ris_factor(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float = 1e-10,
+    current_eta: np.ndarray | None = None,
+    weight: np.ndarray | None = None,
+) -> dict:
+    """Project a compressed RIS factor onto a spherical-wave manifold.
+
+    The default mode is weighted exact spherical variable projection with
+    optional quadratic-distance initialization. The legacy ``paper`` mode keeps
+    the previous Fresnel/dechirped rank-one baseline, while ``exact`` keeps the
+    previous exact-only baseline.
+    """
+    assert c_tilde.ndim == 1, "c_tilde must be a vector"
+    assert omega.shape[0] == c_tilde.size, "Omega rows must match c_tilde length"
+    assert omega.shape[1] == a_rb.size, "Omega columns must match RIS response length"
+
+    projection_mode = str(search_config.get("projection_mode", "wesvp_qd")).lower()
+    if projection_mode in ("wesvp_qd", "exact_vp", "spherical_vp"):
+        local_config = dict(search_config)
+        if projection_mode in ("exact_vp", "spherical_vp"):
+            local_config["use_qd_init"] = False
+            local_config["use_fresnel_warm_start"] = False
+        return _project_ris_factor_wesvp_qd(
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            local_config,
+            eps=eps,
+            current_eta=current_eta,
+            weight=weight,
+        )
+    if projection_mode in ("paper", "exact"):
+        return _project_ris_factor_legacy(
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            eps=eps,
+            current_eta=current_eta,
+        )
+    raise ValueError(f"unknown RIS projection_mode {projection_mode!r}")
