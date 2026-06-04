@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import time
 import numpy as np
 
 from .channel_model import channel_components, synthesize_raw_tensor
@@ -24,6 +25,14 @@ from .utils import bounded_coordinate_search, check_finite, solve_lstsq, scipy_i
 def _relative_change(new_value: np.ndarray, old_value: np.ndarray, eps: float) -> float:
     """Return a safe relative change between two arrays."""
     return float(np.linalg.norm(new_value - old_value) / (np.linalg.norm(old_value) + eps))
+
+
+def _relative_scaled_residual(
+    target: np.ndarray, model: np.ndarray, eps: float
+) -> float:
+    """Return min_alpha ||target - alpha model|| / ||target||."""
+    scale = np.vdot(model, target) / (np.vdot(model, model) + eps)
+    return float(np.linalg.norm(target - scale * model) / (np.linalg.norm(target) + eps))
 
 
 def _count_nonfinite(array: np.ndarray) -> int:
@@ -257,7 +266,7 @@ def _assignment_by_projection(
     poles_raw: np.ndarray,
     scene: dict,
     config: dict,
-) -> tuple[list[int], list[dict], list[dict]]:
+) -> tuple[list[int], list[dict], list[dict], np.ndarray]:
     """Align CP columns to RIS panels using projection and clock consistency."""
     k_paths = scene["K"]
     scores = np.zeros((k_paths, k_paths), dtype=float)
@@ -314,7 +323,7 @@ def _assignment_by_projection(
     assert best_perm is not None, "failed to find a column association"
     evs_selected = [evs_cache[col][ris] for col, ris in enumerate(best_perm)]
     ris_selected = [ris_cache[col][ris] for col, ris in enumerate(best_perm)]
-    return best_perm, evs_selected, ris_selected
+    return best_perm, evs_selected, ris_selected, scores
 
 
 def _mode4_assignment_from_proxy(
@@ -406,7 +415,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         a_proxy, c_proxy = _rank_one_snapshot_initialization(z_tensor, poles_raw)
     else:
         raise ValueError(f"unknown stage1_factor_init {factor_init!r}")
-    assignment, evs_selected, ris_selected = _assignment_by_projection(
+    assignment, evs_selected, ris_selected, assignment_costs = _assignment_by_projection(
         a_proxy, c_proxy, poles_raw, scene, config
     )
 
@@ -446,6 +455,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         "eta_pol": eta_pol,
         "ris_eta": ris_eta,
         "assignment": assignment,
+        "assignment_costs": assignment_costs,
         "initial_z_residual": initial_residual,
         "Z_hat": z_hat,
         "stage1_delay_method": delay_method,
@@ -501,6 +511,85 @@ def _update_c_from_z(
     target = np.moveaxis(z_tensor, 3, 0).reshape(t_dim, -1).T
     solution = solve_lstsq(design, target, reg=1e-10)
     return solution.T
+
+
+def _c_update_design_and_target(
+    z_tensor: np.ndarray,
+    beta: np.ndarray,
+    a_mat: np.ndarray,
+    b_mat: np.ndarray,
+    q_mat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the common C-mode LS design and T-column target."""
+    t_dim = z_tensor.shape[3]
+    k_paths = beta.size
+    design = np.empty((a_mat.shape[0] * b_mat.shape[0] * q_mat.shape[0], k_paths), dtype=complex)
+    for k in range(k_paths):
+        design[:, k] = (
+            beta[k]
+            * a_mat[:, k, None, None]
+            * b_mat[None, :, k, None]
+            * q_mat[None, None, :, k]
+        ).reshape(-1)
+    target = np.moveaxis(z_tensor, 3, 0).reshape(t_dim, -1).T
+    return design, target
+
+
+def _ris_projection_weight_from_c_residual(
+    z_tensor: np.ndarray,
+    beta: np.ndarray,
+    a_mat: np.ndarray,
+    b_mat: np.ndarray,
+    q_mat: np.ndarray,
+    c_proxy: np.ndarray,
+    config: dict,
+) -> tuple[np.ndarray | None, dict]:
+    """Estimate diagonal WESVP sample weights from C-mode LS residuals."""
+    mode = str(config.get("stage2_ris_weight_mode", "residual_diag")).lower()
+    if mode in ("none", "identity", "unit"):
+        return None, {
+            "mode": mode,
+            "enabled": False,
+            "min": 1.0,
+            "max": 1.0,
+            "mean": 1.0,
+            "std": 0.0,
+        }
+    if mode != "residual_diag":
+        raise ValueError(f"unknown stage2_ris_weight_mode {mode!r}")
+
+    design, target = _c_update_design_and_target(z_tensor, beta, a_mat, b_mat, q_mat)
+    residual = target - design @ c_proxy.T
+    residual_power = np.mean(np.abs(residual) ** 2, axis=0)
+    finite = np.isfinite(residual_power)
+    if not np.any(finite):
+        weights = np.ones(z_tensor.shape[3], dtype=float)
+    else:
+        positive = residual_power[finite & (residual_power > config["eps"])]
+        reference = float(np.median(positive)) if positive.size else 0.0
+        if reference <= config["eps"]:
+            weights = np.ones_like(residual_power, dtype=float)
+        else:
+            floor = max(
+                config["eps"],
+                float(config.get("stage2_ris_weight_floor_rel", 5.0e-2)) * reference,
+            )
+            weights = reference / (residual_power + floor)
+            weights[~finite] = 1.0
+
+    clip_min, clip_max = config.get("stage2_ris_weight_clip", (0.25, 4.0))
+    weights = np.clip(weights, float(clip_min), float(clip_max))
+    if bool(config.get("stage2_ris_weight_normalize", True)):
+        weights = weights / max(float(np.mean(weights)), config["eps"])
+    weights = np.asarray(weights, dtype=float)
+    return weights, {
+        "mode": mode,
+        "enabled": True,
+        "min": float(np.min(weights)),
+        "max": float(np.max(weights)),
+        "mean": float(np.mean(weights)),
+        "std": float(np.std(weights)),
+    }
 
 
 def _update_delay_poles_from_z(
@@ -585,7 +674,9 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         "z_hat_history": [],
         "residuals_noisy_rmse": [],
         "updates": [],
+        "ris_projection_total_s": 0.0,
     }
+    ris_projection_time_total = 0.0
     b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
     beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
     safeguard = bool(config.get("stage2_global_safeguard", True))
@@ -634,8 +725,13 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 z_hat = z_hat_old
                 for k in range(scene["K"]):
                     a_before = a_mat[:, k].copy()
+                    gamma_before = float(gamma[k])
+                    eta_pol_before = float(eta_pol[k])
                     evs_proj = project_evs_factor(
                         a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                    )
+                    local_res_before = _relative_scaled_residual(
+                        a_proxy[:, k], a_before, config["eps"]
                     )
                     sse_before_a = current_sse
                     (
@@ -676,33 +772,75 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                             "accepted": bool(accepted),
                             "skipped": False,
                             "guarded": True,
+                            "reason": "accepted_guarded_damped_sse"
+                            if accepted
+                            else "rejected_guarded_global_sse",
                             "best_rho": float(best_rho),
                             "best_sse": float(best_sse),
                             "global_sse_before": float(sse_before_a),
                             "global_sse_after": float(current_sse),
+                            "local_res_before": float(local_res_before),
+                            "local_res_after": float(
+                                _relative_scaled_residual(
+                                    a_proxy[:, k], a_mat[:, k], config["eps"]
+                                )
+                            ),
+                            "candidate_local_residual": float(evs_proj["residual"]),
+                            "relative_improvement": float(
+                                (local_res_before - _relative_scaled_residual(
+                                    a_proxy[:, k], a_mat[:, k], config["eps"]
+                                ))
+                                / max(local_res_before, config["eps"])
+                            ),
                             "relative_change": _relative_change(a_mat[:, k], a_before, config["eps"]),
+                            "gamma_before": gamma_before,
+                            "gamma_after": float(gamma[k]),
+                            "eta_pol_before": eta_pol_before,
+                            "eta_pol_after": float(eta_pol[k]),
                             "projection_residual": evs_proj["residual"],
                         }
                     )
             else:
                 for k in range(scene["K"]):
                     a_before = a_mat[:, k].copy()
+                    gamma_before = float(gamma[k])
+                    eta_pol_before = float(eta_pol[k])
                     evs_proj = project_evs_factor(
                         a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                    )
+                    local_res_before = _relative_scaled_residual(
+                        a_proxy[:, k], a_before, config["eps"]
                     )
                     a_mat[:, k] = evs_proj["a"]
                     gamma[k] = evs_proj["gamma"]
                     eta_pol[k] = evs_proj["eta"]
+                    local_res_after = _relative_scaled_residual(
+                        a_proxy[:, k], a_mat[:, k], config["eps"]
+                    )
                     evs_projection_details.append(
                         {
                             "path": k,
                             "accepted": bool(np.all(np.isfinite(a_mat[:, k]))),
                             "skipped": False,
                             "guarded": False,
+                            "reason": "accepted_projection"
+                            if np.all(np.isfinite(a_mat[:, k]))
+                            else "rejected_nonfinite",
                             "best_rho": 1.0,
                             "global_sse_before": "",
                             "global_sse_after": "",
+                            "local_res_before": float(local_res_before),
+                            "local_res_after": float(local_res_after),
+                            "candidate_local_residual": float(evs_proj["residual"]),
+                            "relative_improvement": float(
+                                (local_res_before - local_res_after)
+                                / max(local_res_before, config["eps"])
+                            ),
                             "relative_change": _relative_change(a_mat[:, k], a_before, config["eps"]),
+                            "gamma_before": gamma_before,
+                            "gamma_after": float(gamma[k]),
+                            "eta_pol_before": eta_pol_before,
+                            "eta_pol_after": float(eta_pol[k]),
                             "projection_residual": evs_proj["residual"],
                         }
                     )
@@ -715,15 +853,27 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         "accepted": False,
                         "skipped": True,
                         "guarded": guarded,
+                        "reason": "skipped_stage2_evs_disabled",
                         "best_rho": float("nan"),
                         "global_sse_before": float(current_sse),
                         "global_sse_after": float(current_sse),
+                        "local_res_before": float("nan"),
+                        "local_res_after": float("nan"),
+                        "candidate_local_residual": float("nan"),
+                        "relative_improvement": float("nan"),
                         "relative_change": 0.0,
+                        "gamma_before": float(gamma[k]),
+                        "gamma_after": float(gamma[k]),
+                        "eta_pol_before": float(eta_pol[k]),
+                        "eta_pol_after": float(eta_pol[k]),
                         "projection_residual": float("nan"),
                     }
                 )
 
         if enable_delay:
+            tau_before_delay = np.array(
+                [tau_from_pole(pole, scene["delta_f"]) for pole in poles]
+            )
             poles_candidate, delay_projection_details = _update_delay_poles_from_z(
                 z_tensor, beta_z, a_mat, c_mat, poles, ris_eta, scene, config
             )
@@ -742,8 +892,15 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     "accepted": bool(delay_accepted),
                     "skipped": False,
                     "guarded": bool(guarded),
+                    "reason": "accepted_global_sse"
+                    if delay_accepted
+                    else "rejected_global_sse",
                     "global_sse_before": float(current_sse),
                     "global_sse_after": float(delay_sse_after),
+                    "tau_before": tau_before_delay,
+                    "tau_candidate": np.array(
+                        [tau_from_pole(pole, scene["delta_f"]) for pole in poles_candidate]
+                    ),
                 }
             )
             if delay_accepted:
@@ -753,13 +910,37 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 beta_z = beta_candidate
                 z_hat = z_hat_candidate
                 current_sse = delay_sse_after
+            delay_projection_details["tau_after"] = np.array(
+                [tau_from_pole(pole, scene["delta_f"]) for pole in poles]
+            )
+            delay_projection_details["local_res_before"] = float(
+                delay_projection_details.get("initial_objective", np.nan)
+            )
+            delay_projection_details["local_res_after"] = float(
+                delay_projection_details.get("final_objective", np.nan)
+            )
+            delay_projection_details["relative_improvement"] = float(
+                (
+                    delay_projection_details["local_res_before"]
+                    - delay_projection_details["local_res_after"]
+                )
+                / max(delay_projection_details["local_res_before"], config["eps"])
+            )
         else:
+            tau_current = np.array([tau_from_pole(pole, scene["delta_f"]) for pole in poles])
             delay_projection_details = {
                 "accepted": False,
                 "skipped": True,
                 "guarded": bool(guarded),
+                "reason": "skipped_stage2_delay_disabled",
                 "global_sse_before": float(current_sse),
                 "global_sse_after": float(current_sse),
+                "local_res_before": float("nan"),
+                "local_res_after": float("nan"),
+                "relative_improvement": float("nan"),
+                "tau_before": tau_current,
+                "tau_candidate": tau_current,
+                "tau_after": tau_current,
             }
 
         assignment_order = list(range(scene["K"]))
@@ -767,9 +948,12 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         ris_projection_details = []
         if enable_ris:
             c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
+            assignment_t0 = time.perf_counter()
             assignment_order, assignment_costs = _mode4_assignment_from_proxy(
                 c_proxy, scene, config
             )
+            assignment_time_s = time.perf_counter() - assignment_t0
+            ris_projection_time_total += assignment_time_s
             (
                 a_mat,
                 b_mat,
@@ -793,13 +977,18 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 ris_eta,
             )
             c_proxy = c_proxy[:, assignment_order]
+            ris_weight, ris_weight_diag = _ris_projection_weight_from_c_residual(
+                z_tensor, beta_z, a_mat, b_mat, q_mat, c_proxy, config
+            )
             beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
             for k in range(scene["K"]):
                 c_before = c_mat[:, k].copy()
+                eta_before = ris_eta[k].copy()
                 before_value, _ = scaled_residual(c_proxy[:, k], c_before, config["eps"])
                 beta_before_c, z_hat_before_c, sse_before_c = _fit_z_model(
                     z_tensor, a_mat, b_mat, q_mat, c_mat
                 )
+                projection_t0 = time.perf_counter()
                 ris_proj = project_ris_factor(
                     c_proxy[:, k],
                     scene["Omega"][k],
@@ -809,7 +998,10 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     local_ris_search_config(scene, config, k),
                     config["eps"],
                     current_eta=ris_eta[k],
+                    weight=ris_weight,
                 )
+                projection_time_s = time.perf_counter() - projection_t0
+                ris_projection_time_total += projection_time_s
 
                 candidate_value, _ = scaled_residual(c_proxy[:, k], ris_proj["c"], config["eps"])
                 local_relative_improvement = float(
@@ -817,6 +1009,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 )
                 best_rho = 1.0
                 best_sse = float("nan")
+                reason = "accepted_global_sse"
                 if guarded:
                     if local_relative_improvement < ris_min_rel_improvement:
                         accepted = False
@@ -824,6 +1017,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         z_hat = z_hat_before_c
                         current_sse = sse_before_c
                         best_rho = float("nan")
+                        reason = "rejected_min_local_improvement"
                     else:
                         (
                             a_candidate,
@@ -856,10 +1050,12 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                             beta_z = beta_trial
                             z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
                             current_sse = sse_trial
+                            reason = "accepted_guarded_damped_sse"
                         else:
                             beta_z = beta_trial
                             z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
                             current_sse = sse_trial
+                            reason = "rejected_guarded_global_sse"
                 else:
                     trial_c = c_mat.copy()
                     trial_c[:, k] = ris_proj["c"]
@@ -874,11 +1070,13 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         beta_z = beta_trial
                         z_hat = z_hat_trial
                         current_sse = sse_trial
+                        reason = "accepted_global_sse"
                     else:
                         beta_z = beta_before_c
                         z_hat = z_hat_before_c
                         current_sse = sse_before_c
                         best_rho = 0.0
+                        reason = "rejected_global_sse"
 
                 after_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
                 c_change = _relative_change(c_mat[:, k], c_before, config["eps"])
@@ -888,6 +1086,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         "skipped": False,
                         "guarded": bool(guarded),
                         "local_relative_improvement": local_relative_improvement,
+                        "relative_improvement": local_relative_improvement,
                         "best_rho": float(best_rho),
                         "best_sse": float(best_sse),
                         "residual_before": float(
@@ -897,15 +1096,26 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                             np.sqrt(after_value / (np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]))
                         ),
                         "selected_eta": ris_eta[k].copy(),
+                        "eta_before": eta_before,
+                        "candidate_eta": ris_proj["eta_local"].copy(),
                         "c_relative_change": c_change,
                         "accepted": bool(accepted),
+                        "reason": reason,
                         "selected_model": ris_proj["selected_model"] if accepted else "current",
                         "global_sse_before": float(sse_before_c),
                         "global_sse_after": float(current_sse),
+                        "projection_time_s": float(projection_time_s),
+                        "candidate_ranking": ris_proj.get("candidate_ranking", []),
                         "exact_relative_residual": ris_proj.get("exact_relative_residual"),
                         "lifted_used": bool(ris_proj.get("lifted_used", False) and accepted),
                         "lifted_relative_residual": ris_proj.get("lifted_relative_residual"),
                         "optimizer_message": ris_proj["optimizer_message"],
+                        "weight_mode": ris_weight_diag["mode"],
+                        "weight_enabled": bool(ris_weight_diag["enabled"]),
+                        "weight_min": float(ris_weight_diag["min"]),
+                        "weight_max": float(ris_weight_diag["max"]),
+                        "weight_mean": float(ris_weight_diag["mean"]),
+                        "weight_std": float(ris_weight_diag["std"]),
                     }
                 )
         else:
@@ -920,13 +1130,19 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         "residual_before": float("nan"),
                         "residual_after": float("nan"),
                         "selected_eta": ris_eta[k].copy(),
+                        "eta_before": ris_eta[k].copy(),
+                        "candidate_eta": ris_eta[k].copy(),
                         "c_relative_change": 0.0,
                         "accepted": False,
+                        "reason": "skipped_stage2_ris_disabled",
                         "selected_model": "skipped",
                         "global_sse_before": float(current_sse),
                         "global_sse_after": float(current_sse),
+                        "projection_time_s": 0.0,
+                        "candidate_ranking": [],
                     }
                 )
+            assignment_time_s = 0.0
 
         proposed_sse = current_sse
         if not safeguard:
@@ -978,9 +1194,11 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 "iteration_sse_before": float(iter_start_sse),
                 "iteration_sse_proposed": float(proposed_sse),
                 "iteration_sse_after": float(current_sse),
+                "mode4_assignment_time_s": float(assignment_time_s),
                 "relative_residual_change": float(relative_residual_change),
             }
         )
+        diagnostics["ris_projection_total_s"] = float(ris_projection_time_total)
         if not iteration_accepted:
             break
         if stop_tol > 0.0 and relative_residual_change < stop_tol:
@@ -1099,6 +1317,8 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         return residual, beta, components
 
     x0_scaled = (x0 - lower) / (upper - lower)
+    residual_initial, _, _ = residual_complex_from_scaled(x0_scaled)
+    raw_objective_initial = float(np.vdot(residual_initial, residual_initial).real / y_vec.size)
 
     if scipy_is_available():
         from scipy.optimize import least_squares
@@ -1123,6 +1343,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
             "message": result.message,
             "n_eval": int(result.nfev),
             "method": "scipy.optimize.least_squares",
+            "solver_backend": "scipy.optimize",
         }
     else:
 
@@ -1145,10 +1366,12 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
             "message": info["message"],
             "n_eval": info["n_eval"],
             "method": "bounded coordinate search",
+            "solver_backend": "fallback",
         }
 
     x_best = unpack_scaled(x_scaled_best)
     residual, beta_hat, components_hat = residual_complex_from_scaled(x_scaled_best)
+    raw_objective_final = float(np.vdot(residual, residual).real / y_vec.size)
     y_hat_noiseless_model = synthesize_raw_tensor(components_hat, beta_hat)
     residual_rmse_noisy = float(np.linalg.norm(residual) / np.sqrt(y_vec.size))
 
@@ -1162,5 +1385,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         "components": components_hat,
         "Y_hat": y_hat_noiseless_model,
         "raw_residual_rmse_noisy": residual_rmse_noisy,
+        "raw_objective_initial": raw_objective_initial,
+        "raw_objective_final": raw_objective_final,
         "optimizer": optimizer_info,
     }

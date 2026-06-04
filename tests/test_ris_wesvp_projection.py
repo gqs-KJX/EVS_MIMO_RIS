@@ -2,7 +2,7 @@ import numpy as np
 
 from src.channel_model import generate_scene
 from src.config import default_config
-from src.estimators import structured_refinement
+from src.estimators import _ris_projection_weight_from_c_residual, structured_refinement
 from src.geometry import make_ris_grid
 from src.projections_delay import bq_from_poles
 from src.projections_ris import (
@@ -18,7 +18,7 @@ def _complex_normal(rng, shape):
     return rng.normal(size=shape) + 1j * rng.normal(size=shape)
 
 
-def _small_search_config(mode="wesvp_qd"):
+def _small_search_config(mode="wesvp_ms"):
     return {
         "range_bounds": (2.0, 4.0),
         "elev_bounds": (-0.25, 0.25),
@@ -37,9 +37,9 @@ def _small_search_config(mode="wesvp_qd"):
         "ris_pgd_step_scale": 0.5,
         "num_exact_refine_starts": 3,
         "projection_mode": mode,
-        "use_qd_init": True,
+        "use_qd_init": False,
         "qd_proxy_reg": 1.0e-6,
-        "qd_proxy_max_rel_residual": 0.8,
+        "qd_proxy_max_rel_residual": 0.5,
         "qd_num_range": 21,
         "wesvp_max_iter": 60,
         "wesvp_ftol": 1.0e-12,
@@ -82,7 +82,7 @@ def test_wesvp_analytic_gradient_matches_finite_difference():
     assert rel_error < 1.0e-4
 
 
-def test_wesvp_qd_recovers_noiseless_uncompressed_exact_response():
+def test_wesvp_ms_true_current_eta_recovers_noiseless_response_with_or_without_qd():
     wavelength = 0.05
     ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)
     m_dim = ris_grid.shape[0]
@@ -91,8 +91,42 @@ def test_wesvp_qd_recovers_noiseless_uncompressed_exact_response():
     true_eta = np.array([3.0, 0.08, 0.14])
     alpha = 1.2 - 0.7j
     c_tilde = alpha * compressed_exact_response(true_eta, omega, a_rb, ris_grid, wavelength)
-    search = _small_search_config("wesvp_qd")
+    for use_qd in (False, True):
+        search = _small_search_config("wesvp_ms")
+        search["elev_bounds"] = (0.0, 0.25)
+        search["use_qd_init"] = use_qd
+
+        projection = project_ris_factor(
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search,
+            current_eta=true_eta,
+        )
+
+        assert projection["relative_residual"] < 1.0e-6
+        assert abs(projection["eta_local"][0] - true_eta[0]) < 2.0e-2
+        assert np.linalg.norm(projection["eta_local"][1:] - true_eta[1:]) < 2.0e-2
+        assert projection["selected_model"] == "wesvp_ms"
+        assert projection["primary_start_source"] == "current_eta"
+        assert projection["candidate_sources"][0] == "current_eta"
+        assert projection["qd_attempted"] is use_qd
+
+
+def test_wesvp_ms_works_with_qd_disabled_using_current_eta_and_exact_grid():
+    wavelength = 0.05
+    ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)
+    m_dim = ris_grid.shape[0]
+    omega = np.eye(m_dim, dtype=complex)
+    a_rb = np.ones(m_dim, dtype=complex)
+    true_eta = np.array([3.0, 0.08, 0.14])
+    alpha = 1.2 - 0.7j
+    c_tilde = alpha * compressed_exact_response(true_eta, omega, a_rb, ris_grid, wavelength)
+    search = _small_search_config("wesvp_ms")
     search["elev_bounds"] = (0.0, 0.25)
+    search["use_qd_init"] = False
 
     projection = project_ris_factor(
         c_tilde,
@@ -105,12 +139,15 @@ def test_wesvp_qd_recovers_noiseless_uncompressed_exact_response():
     )
 
     assert projection["relative_residual"] < 1.0e-6
-    assert abs(projection["eta_local"][0] - true_eta[0]) < 2.0e-2
-    assert np.linalg.norm(projection["eta_local"][1:] - true_eta[1:]) < 2.0e-2
-    assert projection["selected_model"] == "wesvp_qd"
+    assert "current_eta" in projection["candidate_sources"]
+    assert "exact_grid" in projection["candidate_sources"]
+    assert "qd" not in projection["candidate_sources"]
+    assert projection["qd_attempted"] is False
+    assert projection["qd_used_as_start"] is False
+    assert projection["selected_model"] == "wesvp_ms"
 
 
-def test_wesvp_qd_does_not_catastrophically_degrade_compressed_noisy_projection():
+def test_wesvp_ms_does_not_catastrophically_degrade_compressed_noisy_projection():
     rng = np.random.default_rng(202)
     wavelength = 0.05
     ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)
@@ -139,12 +176,12 @@ def test_wesvp_qd_does_not_catastrophically_degrade_compressed_noisy_projection(
         a_rb,
         ris_grid,
         wavelength,
-        _small_search_config("wesvp_qd"),
+        _small_search_config("wesvp_ms"),
         current_eta=true_eta + np.array([0.05, 0.02, -0.03]),
     )
 
     assert wesvp["relative_residual"] <= 1.2 * paper["relative_residual"] + 1.0e-10
-    assert wesvp["selected_model"] == "wesvp_qd"
+    assert wesvp["selected_model"] == "wesvp_ms"
 
 
 def test_qd_poor_proxy_is_skipped_but_exact_vp_returns_valid_projection():
@@ -155,16 +192,96 @@ def test_qd_poor_proxy_is_skipped_but_exact_vp_returns_valid_projection():
     omega = np.zeros((t_dim, m_dim), dtype=complex)
     a_rb = np.ones(m_dim, dtype=complex)
     c_tilde = np.ones(t_dim, dtype=complex)
-    search = _small_search_config("wesvp_qd")
+    search = _small_search_config("wesvp_ms")
+    search["use_qd_init"] = True
     search["qd_proxy_max_rel_residual"] = 0.1
+    no_qd_search = dict(search)
+    no_qd_search["use_qd_init"] = False
 
     _, proxy_rel = _element_domain_proxy(c_tilde, omega, a_rb)
     projection = project_ris_factor(c_tilde, omega, a_rb, ris_grid, wavelength, search)
+    no_qd_projection = project_ris_factor(
+        c_tilde, omega, a_rb, ris_grid, wavelength, no_qd_search
+    )
 
     assert proxy_rel > search["qd_proxy_max_rel_residual"]
+    assert projection["qd_attempted"] is True
     assert projection["qd_used_as_start"] is False
+    assert projection["qd_rejected_reason"] == "proxy_residual_above_threshold"
+    assert projection["candidate_sources"] == no_qd_projection["candidate_sources"]
+    np.testing.assert_allclose(projection["eta_local"], no_qd_projection["eta_local"])
     assert np.isfinite(projection["relative_residual"])
     assert "c" in projection and projection["c"].shape == c_tilde.shape
+
+
+def test_wesvp_ms_qd_is_auxiliary_and_final_selection_uses_exact_objective():
+    wavelength = 0.05
+    ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)
+    m_dim = ris_grid.shape[0]
+    omega = np.eye(m_dim, dtype=complex)
+    a_rb = np.ones(m_dim, dtype=complex)
+    true_eta = np.array([3.05, 0.08, 0.14])
+    c_tilde = (1.1 - 0.3j) * compressed_exact_response(
+        true_eta, omega, a_rb, ris_grid, wavelength
+    )
+    search = _small_search_config("wesvp_ms")
+    search["range_bounds"] = (2.6, 3.4)
+    search["elev_bounds"] = (0.0, 0.2)
+    search["az_bounds"] = (-0.1, 0.3)
+    search["use_qd_init"] = True
+    search["qd_proxy_max_rel_residual"] = 0.5
+    current_eta = true_eta + np.array([0.22, -0.04, 0.07])
+
+    projection = project_ris_factor(
+        c_tilde,
+        omega,
+        a_rb,
+        ris_grid,
+        wavelength,
+        search,
+        current_eta=current_eta,
+    )
+
+    assert projection["candidate_sources"][0] == "current_eta"
+    assert "exact_grid" in projection["candidate_sources"]
+    assert projection["qd_attempted"] is True
+    assert projection["qd_used_as_start"] is True
+    assert "qd" in projection["candidate_sources"]
+    assert projection["selected_start_source"] in projection["candidate_sources"]
+    assert projection["J_selected_after_refine"] <= projection["J_current_eta_before_refine"] + 1.0e-10
+    assert projection["J_selected_after_refine"] <= projection["J_grid_before_refine"] + 1.0e-10
+    assert projection["J_selected_after_refine"] <= projection["J_qd_before_refine"] + 1.0e-10
+    assert projection["relative_residual"] < 1.0e-6
+
+
+def test_ris_residual_weight_downweights_high_residual_training_slot():
+    rng = np.random.default_rng(204)
+    i_dim, p_dim, l_dim, t_dim, k_paths = 3, 2, 2, 5, 1
+    beta = np.array([1.0 + 0.0j])
+    a_mat = _complex_normal(rng, (i_dim, k_paths))
+    poles = np.exp(1j * np.array([0.31]))
+    b_mat, q_mat = bq_from_poles(poles, p_dim, l_dim)
+    c_proxy = _complex_normal(rng, (t_dim, k_paths))
+    z_tensor = reconstruct_z(beta, a_mat, b_mat, q_mat, c_proxy)
+    z_tensor[:, :, :, 0] += 8.0 * _complex_normal(rng, (i_dim, p_dim, l_dim))
+    config = default_config()
+    config.update(
+        {
+            "stage2_ris_weight_mode": "residual_diag",
+            "stage2_ris_weight_floor_rel": 1.0e-2,
+            "stage2_ris_weight_clip": (0.2, 5.0),
+            "stage2_ris_weight_normalize": True,
+        }
+    )
+
+    weights, diag = _ris_projection_weight_from_c_residual(
+        z_tensor, beta, a_mat, b_mat, q_mat, c_proxy, config
+    )
+
+    assert diag["enabled"] is True
+    assert weights.shape == (t_dim,)
+    assert weights[0] < np.median(weights[1:])
+    assert abs(float(np.mean(weights)) - 1.0) < 1.0e-12
 
 
 def test_wesvp_projection_keys_and_structured_refinement_compatibility():
@@ -186,7 +303,7 @@ def test_wesvp_projection_keys_and_structured_refinement_compatibility():
             "stage2_guarded": False,
         }
     )
-    config["ris_search"].update(_small_search_config("wesvp_qd"))
+    config["ris_search"].update(_small_search_config("wesvp_ms"))
     scene = generate_scene(config, rng)
     poles = np.exp(1j * np.array([0.22]))
     b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
@@ -241,3 +358,8 @@ def test_wesvp_projection_keys_and_structured_refinement_compatibility():
     refined, diagnostics = structured_refinement(z_tensor, scene, config, estimate)
     assert refined["C"].shape == c_mat.shape
     assert diagnostics["updates"]
+    ris_detail = diagnostics["updates"][0]["ris_projection_details"][0]
+    assert ris_detail["weight_mode"] == "residual_diag"
+    assert ris_detail["weight_enabled"] is True
+    assert np.isfinite(ris_detail["weight_min"])
+    assert np.isfinite(ris_detail["weight_max"])

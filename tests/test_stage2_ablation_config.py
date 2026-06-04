@@ -23,7 +23,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["SNR_dB"] == 0.0
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 2
-    assert config["enable_global_vp"] is False
+    assert config["enable_global_vp"] is True
     assert config["vp_max_nfev"] == 10
     assert config["vp_max_iter"] == 10
     assert config["delta_t_true"] == 5.0e-9
@@ -33,23 +33,27 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage1_tls"] is True
     assert config["stage1_factor_init"] == "hankel_coupled_ls"
     assert config["stage1_factor_reg"] == 1.0e-10
-    assert config["ris_search"]["projection_mode"] == "wesvp_qd"
-    assert config["ris_search"]["use_qd_init"] is True
+    assert config["ris_search"]["projection_mode"] == "wesvp_ms"
+    assert config["ris_search"]["use_qd_init"] is False
     assert config["ris_search"]["qd_proxy_reg"] == 1.0e-6
-    assert config["ris_search"]["qd_proxy_max_rel_residual"] == 0.8
+    assert config["ris_search"]["qd_proxy_max_rel_residual"] == 0.5
     assert config["ris_search"]["qd_num_range"] == 41
     assert config["ris_search"]["wesvp_max_iter"] == 100
     assert config["ris_search"]["wesvp_ftol"] == 1.0e-12
     assert config["ris_search"]["wesvp_gtol"] == 1.0e-8
     assert config["ris_search"]["use_fresnel_warm_start"] is True
     assert config["ris_centers"].shape == (3, 3)
-    assert config["stage2_enable_evs"] is True
-    assert config["stage2_enable_delay"] is True
+    assert config["stage2_enable_evs"] is False
+    assert config["stage2_enable_delay"] is False
     assert config["stage2_enable_ris"] is True
     assert config["stage2_guarded"] is True
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
     assert tuple(config["stage2_damping_grid"]) == (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)
+    assert config["stage2_ris_weight_mode"] == "residual_diag"
+    assert config["stage2_ris_weight_floor_rel"] == 5.0e-2
+    assert config["stage2_ris_weight_clip"] == (0.25, 4.0)
+    assert config["stage2_ris_weight_normalize"] is True
 
 
 def test_structured_refinement_all_modules_disabled_keeps_factors_unchanged():

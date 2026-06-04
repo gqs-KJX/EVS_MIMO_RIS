@@ -1,9 +1,10 @@
 """Compressed near-field RIS projection helpers.
 
-The default Stage-II RIS projection is a weighted exact spherical variable
-projection with optional quadratic-distance initialization. Quadratic-distance
-and Fresnel/dechirped rank-one lifting are warm starts only; the returned RIS
-factor is reconstructed from the exact compressed spherical-wave response.
+The default Stage-II RIS projection is weighted exact spherical variable
+projection with multi-start refinement. The current Stage-I/previous-iteration
+geometry is the primary start. Quadratic-distance and Fresnel/dechirped
+rank-one lifting are optional auxiliary starts only; the returned RIS factor is
+always reconstructed from the exact compressed spherical-wave response.
 """
 
 from __future__ import annotations
@@ -743,7 +744,76 @@ def _ris_grid_candidates(
     return candidates, refine_lower, refine_upper
 
 
-def _project_ris_factor_wesvp_qd(
+def _ris_candidate_record(
+    model: str,
+    eta_local: np.ndarray,
+    local_residual: float,
+    exact_refined: bool,
+    selected: bool = False,
+) -> dict:
+    """Build a compact RIS candidate-ranking diagnostic row."""
+    eta = np.asarray(eta_local, dtype=float)
+    return {
+        "_eta_local": eta,
+        "model": str(model),
+        "range_m": float(eta[0]),
+        "elev_deg": float(np.rad2deg(eta[1])),
+        "az_deg": float(np.rad2deg(eta[2])),
+        "local_residual": float(local_residual),
+        "exact_refined": bool(exact_refined),
+        "selected": bool(selected),
+    }
+
+
+def _finalize_ris_candidate_ranking(records: list[dict], top_k: int = 3) -> list[dict]:
+    """Sort and de-duplicate RIS candidate diagnostics without changing selection."""
+    sorted_records = sorted(
+        records,
+        key=lambda item: (
+            not np.isfinite(item["local_residual"]),
+            item["local_residual"],
+            not item["selected"],
+        ),
+    )
+    unique_records: list[dict] = []
+    for record in sorted_records:
+        eta = record["_eta_local"]
+        duplicate = None
+        for existing in unique_records:
+            if np.linalg.norm(eta - existing["_eta_local"]) <= 1.0e-8:
+                duplicate = existing
+                break
+        if duplicate is None:
+            unique_records.append(dict(record))
+        else:
+            duplicate["selected"] = bool(duplicate["selected"] or record["selected"])
+            duplicate["exact_refined"] = bool(
+                duplicate["exact_refined"] or record["exact_refined"]
+            )
+            if record["selected"]:
+                duplicate["model"] = record["model"]
+
+    ranking = []
+    for rank, record in enumerate(unique_records[:top_k], start=1):
+        item = dict(record)
+        item.pop("_eta_local", None)
+        item["rank"] = rank
+        ranking.append(item)
+    return ranking
+
+
+def _eta_within_bounds(eta_local: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> bool:
+    """Return whether eta is finite and inside closed box bounds."""
+    eta = np.asarray(eta_local, dtype=float)
+    return bool(
+        eta.shape == (3,)
+        and np.all(np.isfinite(eta))
+        and np.all(eta >= lower)
+        and np.all(eta <= upper)
+    )
+
+
+def _project_ris_factor_wesvp_ms(
     c_tilde: np.ndarray,
     omega: np.ndarray,
     a_rb: np.ndarray,
@@ -754,9 +824,9 @@ def _project_ris_factor_wesvp_qd(
     current_eta: np.ndarray | None = None,
     weight: np.ndarray | None = None,
 ) -> dict:
-    """Weighted exact spherical variable projection with QD warm start."""
+    """Weighted exact spherical variable projection with multi-start refinement."""
     lower, upper = _ris_search_bounds(search_config)
-    projection_mode = str(search_config.get("projection_mode", "wesvp_qd")).lower()
+    projection_mode = str(search_config.get("projection_mode", "wesvp_ms")).lower()
     use_local_grid = current_eta is not None
     grid_candidates, refine_lower, refine_upper = _ris_grid_candidates(
         search_config, lower, upper, current_eta, use_local_grid
@@ -780,15 +850,38 @@ def _project_ris_factor_wesvp_qd(
         coarse_candidates.append((float(value), eta_local))
     coarse_candidates.sort(key=lambda item: item[0])
     best_coarse_value, best_coarse_eta = coarse_candidates[0]
-
-    starts: list[tuple[np.ndarray, str]] = [(best_coarse_eta, "exact_grid")]
-    if current_eta is not None:
+    starts: list[tuple[np.ndarray, str]] = []
+    primary_start_source = "stage1"
+    j_current_eta_before_refine = None
+    if current_eta is not None and _eta_within_bounds(
+        np.asarray(current_eta, dtype=float), refine_lower, refine_upper
+    ):
         starts.append((np.asarray(current_eta, dtype=float), "current_eta"))
+        primary_start_source = "current_eta"
+        j_current_eta_before_refine, _ = _wesvp_objective_and_grad(
+            np.asarray(current_eta, dtype=float),
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            refine_lower,
+            refine_upper,
+            weight,
+            eps,
+        )
+        j_current_eta_before_refine = float(j_current_eta_before_refine)
 
-    use_qd = bool(search_config.get("use_qd_init", True)) and projection_mode == "wesvp_qd"
+    starts.append((best_coarse_eta, "exact_grid"))
+    j_grid_before_refine = float(best_coarse_value)
+
+    use_qd = bool(search_config.get("use_qd_init", False)) and projection_mode == "wesvp_ms"
+    qd_attempted = bool(use_qd)
     qd_available = False
     qd_used_as_start = False
     qd_proxy_relative_residual = float("nan")
+    qd_rejected_reason = "disabled"
+    j_qd_before_refine = None
     qd_diag = None
     if use_qd:
         u_proxy, qd_proxy_relative_residual = _element_domain_proxy(
@@ -800,18 +893,39 @@ def _project_ris_factor_wesvp_qd(
             eps=eps,
         )
         if qd_proxy_relative_residual <= float(
-            search_config.get("qd_proxy_max_rel_residual", 0.8)
+            search_config.get("qd_proxy_max_rel_residual", 0.5)
         ):
             qd_diag = _qd_initializer_from_element_proxy(
                 u_proxy, ris_grid, wavelength, search_config, eps
             )
             if qd_diag is not None:
-                qd_available = True
-                starts.append((qd_diag["eta_local"], "qd"))
-                qd_used_as_start = True
+                if _eta_within_bounds(qd_diag["eta_local"], refine_lower, refine_upper):
+                    qd_available = True
+                    starts.append((qd_diag["eta_local"], "qd"))
+                    qd_used_as_start = True
+                    qd_rejected_reason = ""
+                    j_qd_before_refine, _ = _wesvp_objective_and_grad(
+                        qd_diag["eta_local"],
+                        c_tilde,
+                        omega,
+                        a_rb,
+                        ris_grid,
+                        wavelength,
+                        refine_lower,
+                        refine_upper,
+                        weight,
+                        eps,
+                    )
+                    j_qd_before_refine = float(j_qd_before_refine)
+                else:
+                    qd_rejected_reason = "eta_out_of_bounds"
+            else:
+                qd_rejected_reason = "initializer_failed"
+        else:
+            qd_rejected_reason = "proxy_residual_above_threshold"
 
     use_fresnel = bool(search_config.get("use_fresnel_warm_start", True))
-    use_fresnel = use_fresnel and projection_mode == "wesvp_qd"
+    use_fresnel = use_fresnel and projection_mode == "wesvp_ms"
     lifted_best = None
     fresnel_used_as_start = False
     if use_fresnel:
@@ -835,19 +949,17 @@ def _project_ris_factor_wesvp_qd(
             if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
                 lifted_best = lifted
         if lifted_best is not None:
-            starts.append((lifted_best["eta_local"], "fresnel"))
-            fresnel_used_as_start = True
-
-    for _, eta_candidate in coarse_candidates[
-        : int(search_config.get("num_exact_refine_starts", 6))
-    ]:
-        starts.append((eta_candidate, "exact_grid_extra"))
+            if _eta_within_bounds(lifted_best["eta_local"], refine_lower, refine_upper):
+                starts.append((lifted_best["eta_local"], "fresnel"))
+                fresnel_used_as_start = True
 
     unique_starts: list[tuple[np.ndarray, str]] = []
     for eta_start, source in starts:
-        eta_clipped = np.clip(np.asarray(eta_start, dtype=float), refine_lower, refine_upper)
-        if not any(np.linalg.norm(eta_clipped - old_eta) < 1e-9 for old_eta, _ in unique_starts):
-            unique_starts.append((eta_clipped, source))
+        eta_start = np.asarray(eta_start, dtype=float)
+        if not _eta_within_bounds(eta_start, refine_lower, refine_upper):
+            continue
+        if not any(np.linalg.norm(eta_start - old_eta) < 1e-9 for old_eta, _ in unique_starts):
+            unique_starts.append((eta_start, source))
 
     def objective(eta_local: np.ndarray) -> float:
         value, _ = _wesvp_objective_and_grad(
@@ -878,10 +990,12 @@ def _project_ris_factor_wesvp_qd(
             eps,
         )
 
-    best_eta = np.asarray(best_coarse_eta, dtype=float)
-    best_value = float(best_coarse_value)
-    best_eta_source = "exact_grid"
+    candidate_sources = [source for _, source in unique_starts]
+    best_eta = None
+    best_value = float("inf")
+    best_eta_source = ""
     optimizer_messages = []
+    refined_candidates = []
     analytic_jacobian_used = False
     if scipy_is_available():
         from scipy.optimize import minimize
@@ -901,7 +1015,15 @@ def _project_ris_factor_wesvp_qd(
                 },
             )
             optimizer_messages.append(f"{source}: L-BFGS-B success={bool(result.success)}")
-            if float(result.fun) <= best_value:
+            refined_candidates.append(
+                {
+                    "source": source,
+                    "eta_local": np.asarray(result.x, dtype=float),
+                    "objective": float(result.fun),
+                    "success": bool(result.success),
+                }
+            )
+            if float(result.fun) < best_value:
                 best_eta = np.asarray(result.x, dtype=float)
                 best_value = float(result.fun)
                 best_eta_source = source
@@ -924,11 +1046,21 @@ def _project_ris_factor_wesvp_qd(
                 tol=1e-4,
             )
             optimizer_messages.append(f"{source}: {info['message']}")
-            if float(value) <= best_value:
-                best_eta = refine_lower + x_best * span
+            eta_best_candidate = refine_lower + x_best * span
+            refined_candidates.append(
+                {
+                    "source": source,
+                    "eta_local": eta_best_candidate,
+                    "objective": float(value),
+                    "success": bool(info["success"]),
+                }
+            )
+            if float(value) < best_value:
+                best_eta = eta_best_candidate
                 best_value = float(value)
                 best_eta_source = source
 
+    assert best_eta is not None, "WESVP-MS requires at least one valid start"
     h_best = compressed_exact_response(best_eta, omega, a_rb, ris_grid, wavelength)
     alpha_raw = _vp_alpha(c_tilde, h_best, weight, eps)
     c_raw = alpha_raw * h_best
@@ -947,7 +1079,7 @@ def _project_ris_factor_wesvp_qd(
     coarse_relative = float(np.sqrt(max(best_coarse_value, 0.0) / c_norm_sq))
     exact_relative = float(np.sqrt(max(best_value, 0.0) / c_norm_sq))
     candidates = {
-        "wesvp_qd": {
+        "wesvp_ms": {
             "c": c_projected,
             "eta_local": best_eta,
             "alpha": alpha_final,
@@ -955,10 +1087,66 @@ def _project_ris_factor_wesvp_qd(
             "relative_residual": final_relative,
         }
     }
-    if qd_diag is not None:
+    if qd_used_as_start:
         candidates["qd"] = qd_diag
     if lifted_best is not None:
         candidates["fresnel_warm_start"] = lifted_best
+
+    candidate_records = [
+        _ris_candidate_record(
+            "wesvp_ms",
+            best_eta,
+            final_relative,
+            exact_refined=True,
+            selected=True,
+        )
+    ]
+    for rank, (value, eta_candidate) in enumerate(coarse_candidates[:3], start=1):
+        candidate_records.append(
+            _ris_candidate_record(
+                f"exact_grid_{rank}",
+                eta_candidate,
+                float(np.sqrt(max(value, 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    if current_eta is not None:
+        candidate_records.append(
+            _ris_candidate_record(
+                "current_eta",
+                np.asarray(current_eta, dtype=float),
+                float(np.sqrt(max(objective(current_eta), 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    if qd_used_as_start:
+        candidate_records.append(
+            _ris_candidate_record(
+                "qd",
+                qd_diag["eta_local"],
+                float(np.sqrt(max(objective(qd_diag["eta_local"]), 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    if lifted_best is not None:
+        candidate_records.append(
+            _ris_candidate_record(
+                "fresnel_warm_start",
+                lifted_best["eta_local"],
+                float(np.sqrt(max(lifted_best["data_residual"], 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    for refined in refined_candidates:
+        candidate_records.append(
+            _ris_candidate_record(
+                f"exact_refined_{refined['source']}",
+                refined["eta_local"],
+                float(np.sqrt(max(refined["objective"], 0.0) / c_norm_sq)),
+                exact_refined=True,
+            )
+        )
+    candidate_ranking = _finalize_ris_candidate_ranking(candidate_records)
 
     optimizer_message = "; ".join(optimizer_messages) if optimizer_messages else "grid only"
     return {
@@ -966,8 +1154,9 @@ def _project_ris_factor_wesvp_qd(
         "eta_local": best_eta,
         "alpha": alpha_final,
         "relative_residual": final_relative,
-        "selected_model": "wesvp_qd",
+        "selected_model": "wesvp_ms",
         "candidates": candidates,
+        "candidate_ranking": candidate_ranking,
         "coarse_eta_local": best_coarse_eta,
         "coarse_relative_residual": coarse_relative,
         "exact_relative_residual": exact_relative,
@@ -978,9 +1167,19 @@ def _project_ris_factor_wesvp_qd(
         "wesvp_objective": float(best_value),
         "wesvp_relative_residual": exact_relative,
         "best_eta_source": best_eta_source,
+        "primary_start_source": primary_start_source,
+        "candidate_sources": candidate_sources,
+        "selected_start_source": best_eta_source,
+        "selected_after_refinement_source": f"exact_refined_{best_eta_source}",
+        "qd_attempted": bool(qd_attempted),
         "qd_available": bool(qd_available),
         "qd_used_as_start": bool(qd_used_as_start),
+        "qd_rejected_reason": qd_rejected_reason,
         "qd_proxy_relative_residual": float(qd_proxy_relative_residual),
+        "J_current_eta_before_refine": j_current_eta_before_refine,
+        "J_grid_before_refine": j_grid_before_refine,
+        "J_qd_before_refine": j_qd_before_refine,
+        "J_selected_after_refine": float(best_value),
         "fresnel_used_as_start": bool(fresnel_used_as_start),
         "analytic_jacobian_used": bool(analytic_jacobian_used),
         "lifted_available": lifted_best is not None,
@@ -1075,11 +1274,12 @@ def _project_ris_factor_legacy(
         coarse_candidates.append((float(value), eta_local, alpha))
     coarse_candidates.sort(key=lambda item: item[0])
     best_value, best_eta, _ = coarse_candidates[0]
+    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
 
     def exact_objective(eta_local: np.ndarray) -> float:
         h_model = compressed_exact_response(eta_local, omega, a_rb, ris_grid, wavelength)
         value, _ = scaled_residual(c_tilde, h_model, eps)
-        return value / (np.linalg.norm(c_tilde) ** 2 + eps)
+        return value / c_norm_sq
 
     num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
     num_lift_steps = int(search_config.get("num_lift_steps", 3))
@@ -1138,6 +1338,7 @@ def _project_ris_factor_legacy(
 
     best_exact_value = exact_objective(best_eta)
     best_exact_success = False
+    refined_candidates = []
     if scipy_is_available():
         from scipy.optimize import minimize
 
@@ -1148,6 +1349,14 @@ def _project_ris_factor_legacy(
                 method="L-BFGS-B",
                 bounds=list(zip(refine_lower, refine_upper)),
                 options={"maxiter": 100, "ftol": 1e-12},
+            )
+            refined_candidates.append(
+                {
+                    "source": "exact_refine",
+                    "eta_local": np.asarray(result.x, dtype=float),
+                    "objective": float(result.fun),
+                    "success": bool(result.success),
+                }
             )
             if result.fun <= best_exact_value:
                 best_eta = np.asarray(result.x, dtype=float)
@@ -1173,13 +1382,21 @@ def _project_ris_factor_legacy(
                 max_iter=45,
                 tol=1e-4,
             )
+            eta_best_candidate = refine_lower + x_best * span
+            refined_candidates.append(
+                {
+                    "source": "exact_refine",
+                    "eta_local": eta_best_candidate,
+                    "objective": float(value),
+                    "success": bool(info["success"]),
+                }
+            )
             if value <= best_exact_value:
-                best_eta = refine_lower + x_best * span
+                best_eta = eta_best_candidate
                 best_exact_value = float(value)
                 best_info_message = info["message"]
         optimizer_message += f" + exact spherical {best_info_message}"
 
-    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
     h_best = compressed_exact_response(best_eta, omega, a_rb, ris_grid, wavelength)
     exact_value, exact_alpha = scaled_residual(c_tilde, h_best, eps)
     c_projected = exact_alpha * h_best
@@ -1201,15 +1418,61 @@ def _project_ris_factor_legacy(
             "relative_residual": final_relative,
         }
     }
+    selected_model = "exact_refined_from_lifted" if lifted_best is not None else "exact"
+    candidate_records = [
+        _ris_candidate_record(
+            selected_model,
+            best_eta,
+            final_relative,
+            exact_refined=True,
+            selected=True,
+        )
+    ]
+    for rank, (value, eta_candidate, _) in enumerate(coarse_candidates[:3], start=1):
+        candidate_records.append(
+            _ris_candidate_record(
+                f"exact_grid_{rank}",
+                eta_candidate,
+                float(np.sqrt(max(value, 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    if current_eta is not None:
+        candidate_records.append(
+            _ris_candidate_record(
+                "current_eta",
+                np.asarray(current_eta, dtype=float),
+                float(np.sqrt(max(exact_objective(current_eta), 0.0))),
+                exact_refined=False,
+            )
+        )
+    if lifted_best is not None:
+        candidate_records.append(
+            _ris_candidate_record(
+                "fresnel_warm_start",
+                lifted_best["eta_local"],
+                float(np.sqrt(max(lifted_best["data_residual"], 0.0) / c_norm_sq)),
+                exact_refined=False,
+            )
+        )
+    for refined in refined_candidates:
+        candidate_records.append(
+            _ris_candidate_record(
+                f"exact_refined_{refined['source']}",
+                refined["eta_local"],
+                float(np.sqrt(max(refined["objective"], 0.0))),
+                exact_refined=True,
+            )
+        )
+    candidate_ranking = _finalize_ris_candidate_ranking(candidate_records)
     return {
         "c": c_projected,
         "eta_local": best_eta,
         "alpha": final_alpha,
         "relative_residual": final_relative,
-        "selected_model": "exact_refined_from_lifted"
-        if lifted_best is not None
-        else "exact",
+        "selected_model": selected_model,
         "candidates": candidates,
+        "candidate_ranking": candidate_ranking,
         "coarse_eta_local": coarse_candidates[0][1],
         "coarse_relative_residual": float(
             np.sqrt(best_value / c_norm_sq)
@@ -1245,22 +1508,22 @@ def project_ris_factor(
 ) -> dict:
     """Project a compressed RIS factor onto a spherical-wave manifold.
 
-    The default mode is weighted exact spherical variable projection with
-    optional quadratic-distance initialization. The legacy ``paper`` mode keeps
-    the previous Fresnel/dechirped rank-one baseline, while ``exact`` keeps the
-    previous exact-only baseline.
+    The default mode is WESVP-MS: weighted exact spherical variable projection
+    with current-eta-first multi-start refinement and optional QD auxiliary
+    start. The legacy ``paper`` mode keeps the previous Fresnel/dechirped
+    rank-one baseline, while ``exact`` keeps the previous exact-only baseline.
     """
     assert c_tilde.ndim == 1, "c_tilde must be a vector"
     assert omega.shape[0] == c_tilde.size, "Omega rows must match c_tilde length"
     assert omega.shape[1] == a_rb.size, "Omega columns must match RIS response length"
 
-    projection_mode = str(search_config.get("projection_mode", "wesvp_qd")).lower()
-    if projection_mode in ("wesvp_qd", "exact_vp", "spherical_vp"):
+    projection_mode = str(search_config.get("projection_mode", "wesvp_ms")).lower()
+    if projection_mode in ("wesvp_ms", "exact_vp", "spherical_vp"):
         local_config = dict(search_config)
         if projection_mode in ("exact_vp", "spherical_vp"):
             local_config["use_qd_init"] = False
             local_config["use_fresnel_warm_start"] = False
-        return _project_ris_factor_wesvp_qd(
+        return _project_ris_factor_wesvp_ms(
             c_tilde,
             omega,
             a_rb,
