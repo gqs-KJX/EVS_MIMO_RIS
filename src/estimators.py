@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import itertools
 import time
 import numpy as np
 
 from .channel_model import channel_components, synthesize_raw_tensor
+from .global_vp import global_exact_spherical_vp_refinement
 from .geometry import position_from_local_geometry
 from .projections_delay import (
     bq_from_poles,
@@ -33,6 +35,14 @@ def _relative_scaled_residual(
     """Return min_alpha ||target - alpha model|| / ||target||."""
     scale = np.vdot(model, target) / (np.vdot(model, model) + eps)
     return float(np.linalg.norm(target - scale * model) / (np.linalg.norm(target) + eps))
+
+
+def _inverse_column_to_panel_assignment(column_to_panel: list[int]) -> list[int]:
+    """Return panel-to-column inverse of a column-to-panel assignment."""
+    panel_to_column = [-1] * len(column_to_panel)
+    for column, panel in enumerate(column_to_panel):
+        panel_to_column[int(panel)] = int(column)
+    return panel_to_column
 
 
 def _count_nonfinite(array: np.ndarray) -> int:
@@ -455,6 +465,9 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         "eta_pol": eta_pol,
         "ris_eta": ris_eta,
         "assignment": assignment,
+        "column_to_panel_assignment": assignment,
+        "panel_to_column_assignment": _inverse_column_to_panel_assignment(assignment),
+        "columns_are_panel_ordered": True,
         "assignment_costs": assignment_costs,
         "initial_z_residual": initial_residual,
         "Z_hat": z_hat,
@@ -1388,4 +1401,64 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         "raw_objective_initial": raw_objective_initial,
         "raw_objective_final": raw_objective_final,
         "optimizer": optimizer_info,
+    }
+
+
+def run_proposed_estimator(
+    y_raw: np.ndarray,
+    z_tensor: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Run the proposed default architecture and optional ablation paths.
+
+    Default:
+      Stage I: RIS-aware A-IMDF/TLS tensor initialization.
+      Stage II: none.
+      Final: initialization-aided global exact-spherical variable projection.
+
+    Legacy factor-domain EVS/delay/RIS projections remain available only via
+    ``stage2_mode="full_legacy"`` for ablation.
+    """
+    stage1 = initialize_from_hankel(z_tensor, scene, config)
+    stage2_mode = str(config.get("stage2_mode", "none")).lower()
+    if stage2_mode == "full_legacy":
+        stage2, structured_diag = structured_refinement(
+            z_tensor, scene, config, copy.deepcopy(stage1)
+        )
+    elif stage2_mode == "ris_only":
+        raise NotImplementedError("stage2_mode='ris_only' is not a standalone pipeline")
+    elif stage2_mode == "none":
+        stage2 = copy.deepcopy(stage1)
+        structured_diag = {
+            "z_hat_history": [],
+            "residuals_noisy_rmse": [],
+            "updates": [],
+            "ris_projection_total_s": 0.0,
+        }
+    else:
+        raise ValueError(f"unknown stage2_mode {stage2_mode!r}")
+
+    final_method = str(
+        config.get("final_refinement_method", "global_exact_spherical_vp")
+    ).lower()
+    if final_method == "global_exact_spherical_vp":
+        final = global_exact_spherical_vp_refinement(y_raw, stage2, scene, config)
+        final["stage2_mode"] = stage2_mode
+    elif final_method == "legacy_raw_vp":
+        final = refine_global_raw(y_raw, scene, config, stage2)
+        final["stage2_mode"] = stage2_mode
+        final["final_refinement_method"] = "legacy_raw_vp"
+    elif final_method == "none":
+        final = copy.deepcopy(stage2)
+        final["stage2_mode"] = stage2_mode
+        final["final_refinement_method"] = "none"
+    else:
+        raise ValueError(f"unknown final_refinement_method {final_method!r}")
+
+    return {
+        "stage1": stage1,
+        "stage2": stage2,
+        "structured_diag": structured_diag,
+        "final": final,
     }

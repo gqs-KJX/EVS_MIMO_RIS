@@ -36,6 +36,7 @@ if __package__ in (None, ""):
         z_metric_summary,
     )
     from src.estimators import (
+        global_exact_spherical_vp_refinement,
         initialize_from_hankel,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
@@ -69,6 +70,7 @@ else:
         z_metric_summary,
     )
     from .estimators import (
+        global_exact_spherical_vp_refinement,
         initialize_from_hankel,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
@@ -323,10 +325,19 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     """Print the structured run configuration block."""
     scene = results["scene"]
     ris_search = results["stage1_initialization"]["ris_search"]
-    if not config.get("enable_global_vp", True):
+    final_method = str(
+        config.get("final_refinement_method", "global_exact_spherical_vp")
+    ).lower()
+    if not config.get("enable_global_vp", True) or final_method == "none":
         vp_solver_type = "skipped_global_vp"
         vp_backend = "skipped"
-    elif scipy_is_available():
+    elif final_method == "global_exact_spherical_vp" and scipy_is_available():
+        vp_solver_type = "scipy.optimize.minimize:L-BFGS-B"
+        vp_backend = "scipy.optimize"
+    elif final_method == "global_exact_spherical_vp":
+        vp_solver_type = "bounded_coordinate_search"
+        vp_backend = "fallback"
+    elif final_method == "legacy_raw_vp" and scipy_is_available():
         vp_solver_type = "scipy.optimize.least_squares"
         vp_backend = "scipy.optimize"
     else:
@@ -365,8 +376,10 @@ def _print_run_configuration(config: dict, results: dict) -> None:
         f"RIS={config.get('stage2_enable_ris', True)}"
     )
     print(f"stage2_guarded = {config.get('stage2_guarded', False)}")
+    print(f"stage2_mode = {config.get('stage2_mode', 'none')}")
     print(f"num_structured_iters = {config['num_structured_iters']}")
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
+    print(f"final_refinement_method = {config.get('final_refinement_method', 'global_exact_spherical_vp')}")
     print(f"vp_solver_type = {vp_solver_type}")
     print(f"vp_solver_backend = {vp_backend}")
 
@@ -418,7 +431,7 @@ def _print_assignment_diagnostics(results: dict) -> None:
 
 
 def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
-    """Run initialization, optional Stage-II, and optional raw-domain VP."""
+    """Run Stage-I, optional legacy Stage-II ablation, and final raw-domain VP."""
     total_start = time.perf_counter()
     data = _make_data(config)
     timing = dict(data.get("timing", {}))
@@ -427,13 +440,17 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
     stage1_start = time.perf_counter()
     estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, stage1_config)
     timing["stage1"] = time.perf_counter() - stage1_start
-    if use_structured:
+    requested_stage2_mode = str(config.get("stage2_mode", "none")).lower()
+    stage2_mode = requested_stage2_mode if use_structured else "none"
+    if stage2_mode == "full_legacy":
         stage2_start = time.perf_counter()
         estimate_used, structured_diag = structured_refinement(
             data["Z_noisy"], scene, config, copy.deepcopy(estimate_initial)
         )
         timing["stage2"] = time.perf_counter() - stage2_start
-    else:
+    elif stage2_mode == "ris_only":
+        raise NotImplementedError("stage2_mode='ris_only' is not a standalone pipeline")
+    elif stage2_mode == "none":
         estimate_used = copy.deepcopy(estimate_initial)
         structured_diag = {
             "z_hat_history": [],
@@ -442,15 +459,34 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
             "ris_projection_total_s": 0.0,
         }
         timing["stage2"] = 0.0
+    else:
+        raise ValueError(f"unknown stage2_mode {stage2_mode!r}")
     timing["ris_projection_total"] = float(
         structured_diag.get("ris_projection_total_s", 0.0)
     )
-    if config.get("enable_global_vp", True):
+    final_method = str(
+        config.get("final_refinement_method", "global_exact_spherical_vp")
+    ).lower()
+    if not config.get("enable_global_vp", True):
+        final_method = "none"
+
+    if final_method == "global_exact_spherical_vp":
+        vp_start = time.perf_counter()
+        final = global_exact_spherical_vp_refinement(
+            data["Y_noisy"], estimate_used, scene, config
+        )
+        timing["vp"] = time.perf_counter() - vp_start
+        final["vp_enabled"] = True
+        final["stage2_mode"] = stage2_mode
+        final["final_refinement_method"] = "global_exact_spherical_vp"
+    elif final_method == "legacy_raw_vp":
         vp_start = time.perf_counter()
         final = refine_global_raw(data["Y_noisy"], scene, config, estimate_used)
         timing["vp"] = time.perf_counter() - vp_start
         final["vp_enabled"] = True
-    else:
+        final["stage2_mode"] = stage2_mode
+        final["final_refinement_method"] = "legacy_raw_vp"
+    elif final_method == "none":
         vp_start = time.perf_counter()
         y_hat = reconstruct_raw_tensor_from_structured_estimate(estimate_used, scene)
         raw_residual = y_hat - data["Y_noisy"]
@@ -485,8 +521,12 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
                 "solver_backend": "skipped",
             },
             "vp_enabled": False,
+            "stage2_mode": stage2_mode,
+            "final_refinement_method": "none",
         }
         timing["vp"] = time.perf_counter() - vp_start
+    else:
+        raise ValueError(f"unknown final_refinement_method {final_method!r}")
     timing["total"] = time.perf_counter() - total_start
     return {
         **data,
@@ -500,6 +540,58 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         "final": final,
         "timing": timing,
     }
+
+
+def _print_global_vp_diagnostics(results: dict) -> None:
+    """Print the compact final-refinement diagnostics requested for the demo."""
+    scene = results["scene"]
+    final = results["final"]
+    y_noisy = results["Y_noisy"]
+    stage1_y_hat = reconstruct_raw_tensor_from_structured_estimate(
+        results["estimate_initial"], scene
+    )
+    stage1_residual = float(
+        np.linalg.norm(stage1_y_hat - y_noisy) / np.sqrt(y_noisy.size)
+    )
+    timing = results.get("timing", {})
+
+    print("\n=== Global VP diagnostics ===")
+    print(f"stage1_raw_residual_rmse_noisy = {stage1_residual:.6e}")
+    print(f"global_vp_initial_residual = {_fmt(final.get('raw_residual_initial'))}")
+    print(f"global_vp_final_residual = {_fmt(final.get('raw_residual_final'))}")
+    print(f"global_vp_raw_objective = {_fmt(final.get('raw_objective'))}")
+    print(f"global_vp_delay_prior_objective = {_fmt(final.get('delay_prior_objective'))}")
+    print(f"global_vp_total_objective = {_fmt(final.get('total_objective'))}")
+    print(f"global_vp_evs_mode = {final.get('global_vp_evs_mode', 'unknown')}")
+    print(f"global_vp_use_delay_prior = {final.get('global_vp_use_delay_prior', 'NA')}")
+    print(f"global_vp_trust_region_used = {final.get('global_vp_trust_region_used', 'NA')}")
+    print(
+        "global_vp_columns_are_panel_ordered = "
+        f"{final.get('global_vp_columns_are_panel_ordered', 'NA')}"
+    )
+    print(
+        "global_vp_used_panel_to_column = "
+        f"{final.get('global_vp_used_panel_to_column', 'NA')}"
+    )
+    print(f"global_vp_panel_to_column = {final.get('global_vp_panel_to_column', 'NA')}")
+    print(f"tau_stage1_ns = {_fmt_vector(final.get('tau_stage1', []), scale=1e9)}")
+    print(
+        "tau_after_global_vp_ns = "
+        f"{_fmt_vector(final.get('tau_after_global_vp', []), scale=1e9)}"
+    )
+    print(f"global_vp_init_method = {final.get('global_vp_init_method', 'unknown')}")
+    print(
+        "global_vp_init_selected_candidate = "
+        f"{final.get('global_vp_init_selected_candidate', 'unknown')}"
+    )
+    print(f"estimated_p_u_m = {_fmt_vector(final.get('p_u', []), precision=5)}")
+    delta_t = final.get("delta_t")
+    delta_t_ns = None if delta_t is None else float(delta_t) * 1.0e9
+    print(f"estimated_Delta_t_ns = {_fmt(delta_t_ns, precision=6)}")
+    print(f"stage1_runtime_s = {_fmt(timing.get('stage1'))}")
+    print(f"legacy_stage2_runtime_s = {_fmt(timing.get('stage2'))}")
+    print(f"global_vp_runtime_s = {_fmt(timing.get('vp'))}")
+    print(f"total_runtime_s = {_fmt(timing.get('total'))}")
 
 
 def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: float) -> dict:
@@ -1086,6 +1178,12 @@ def _print_stage_two_update_diagnostics(results: dict) -> None:
 
 def _print_structured_comparison(results: dict, direct_results: dict, y_metrics: dict) -> None:
     """Print final estimates with versus without the structured stage."""
+    if str(results["final"].get("stage2_mode", "none")).lower() == "none":
+        print("\n=== With vs without structured stage ===")
+        print("legacy_structured_stage_enabled = False")
+        print("comparison_note = default pipeline bypasses legacy factor-domain Stage-II")
+        return
+
     y_true = results["Y_true"]
     _ = y_true
     vp_enabled = bool(results["final"].get("vp_enabled", True))
@@ -1170,6 +1268,7 @@ def _print_runtime_profile(results: dict, direct_results: dict) -> None:
     print(f"hankelization_s = {_fmt(timing.get('hankelization'))}")
     print(f"stage1_s = {_fmt(timing.get('stage1'))}")
     print(f"stage2_s = {_fmt(timing.get('stage2'))}")
+    print(f"legacy_stage2_s = {_fmt(timing.get('stage2'))}")
     print(f"ris_projection_total_s = {_fmt(timing.get('ris_projection_total'))}")
     for iter_idx, update in enumerate(results["structured_diag"]["updates"], start=1):
         print(
@@ -1182,6 +1281,7 @@ def _print_runtime_profile(results: dict, direct_results: dict) -> None:
                 f"{_fmt(detail.get('projection_time_s'))}"
             )
     print(f"vp_s = {_fmt(timing.get('vp'))}")
+    print(f"global_vp_s = {_fmt(timing.get('vp'))}")
     print(f"total_s = {_fmt(timing.get('total'))}")
     direct_timing = direct_results.get("timing", {})
     print(f"direct_stage1_vp_total_s = {_fmt(direct_timing.get('total'))}")
@@ -1192,13 +1292,17 @@ def run_default_diagnostic() -> None:
     """Run and print the default SNR=0 diagnostic report."""
     config = default_config()
     results = _run_single_pipeline(config, use_structured=True)
-    direct_results = _run_single_pipeline(config, use_structured=False)
+    if str(config.get("stage2_mode", "none")).lower() == "none":
+        direct_results = copy.deepcopy(results)
+    else:
+        direct_results = _run_single_pipeline(config, use_structured=False)
     scene = results["scene"]
 
     print("=== Single proposed diagnostic run ===")
     _print_run_configuration(config, results)
     _print_ris_dimension_diagnostics(scene, results["true_components"])
     _print_assignment_diagnostics(results)
+    _print_global_vp_diagnostics(results)
     if not scipy_is_available():
         print("optimizer_note = scipy.optimize not found; using deterministic fallback optimizer")
 

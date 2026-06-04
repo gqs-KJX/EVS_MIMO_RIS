@@ -24,6 +24,8 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 2
     assert config["enable_global_vp"] is True
+    assert config["stage2_mode"] == "none"
+    assert config["final_refinement_method"] == "global_exact_spherical_vp"
     assert config["vp_max_nfev"] == 10
     assert config["vp_max_iter"] == 10
     assert config["delta_t_true"] == 5.0e-9
@@ -47,6 +49,24 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage2_enable_delay"] is False
     assert config["stage2_enable_ris"] is True
     assert config["stage2_guarded"] is True
+    assert config["global_vp"]["max_iter"] == 80
+    assert config["global_vp"]["ftol"] == 1.0e-12
+    assert config["global_vp"]["gtol"] == 1.0e-8
+    assert config["global_vp"]["beta_reg"] == 0.0
+    assert config["global_vp"]["evs_mode"] == "linear_polarization_basis"
+    assert config["global_vp"]["use_delay_prior"] is True
+    assert config["global_vp"]["delay_prior_weight"] == 1.0
+    assert config["global_vp"]["delay_prior_sigma_s"] == 2.0e-11
+    assert config["global_vp"]["use_weight"] is False
+    assert config["global_vp"]["use_multistart"] is False
+    assert config["global_vp"]["num_perturb_starts"] == 0
+    assert config["global_vp"]["position_perturb_std_m"] == 0.05
+    assert config["global_vp"]["clock_perturb_std_s"] == 1.0e-10
+    assert config["global_vp"]["use_trust_region"] is True
+    assert config["global_vp"]["position_trust_radius_m"] == 0.3
+    assert config["global_vp"]["clock_trust_radius_s"] == 3.0e-10
+    assert config["global_vp"]["overwrite_factor_keys"] is False
+    assert config["global_vp"]["finite_difference_check"] is False
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
     assert tuple(config["stage2_damping_grid"]) == (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)
