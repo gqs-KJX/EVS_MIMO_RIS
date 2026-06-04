@@ -1,9 +1,12 @@
 """Raw-domain global exact-spherical variable projection refinement.
 
-The default proposed estimator uses Stage-I only for path assignment and fixed
-EVS factors, then refines the UE position and common clock offset directly in
-the raw OFDM tensor. Path gains are eliminated by variable projection. Legacy
-factor-domain EVS/delay/RIS projections remain separate ablation baselines.
+The default proposed estimator uses Stage-I for path assignment and nonlinear
+initialization, then runs the legacy high-performing least_squares VP-WNLS
+solver in the raw OFDM tensor. That solver refines UE position, common clock
+offset, and EVS polarization angles while eliminating path gains by variable
+projection. The reduced L-BFGS-B scalar VP path is retained only as an
+experimental ablation. Legacy factor-domain EVS/delay/RIS projections remain
+separate ablation baselines.
 """
 
 from __future__ import annotations
@@ -12,20 +15,21 @@ import copy
 
 import numpy as np
 
-from .geometry import elev_az_from_unit_vector, unit_vector_from_elev_az
+from .geometry import elev_az_from_unit_vector, polarization_vector, unit_vector_from_elev_az
 from .projections_delay import tau_from_pole
-from .utils import bounded_coordinate_search, scipy_is_available
+from .utils import bounded_coordinate_search, scipy_is_available, solve_lstsq
 
 
 def _global_vp_config(config: dict) -> dict:
     """Return global-VP options with conservative defaults."""
     defaults = {
+        "solver": "least_squares",
         "max_iter": 80,
         "ftol": 1.0e-12,
         "gtol": 1.0e-8,
         "beta_reg": 0.0,
-        "evs_mode": "linear_polarization_basis",
-        "use_delay_prior": True,
+        "evs_mode": "legacy_or_full_polarization",
+        "use_delay_prior": False,
         "delay_prior_weight": 1.0,
         "delay_prior_sigma_s": 2.0e-11,
         "use_weight": False,
@@ -34,9 +38,10 @@ def _global_vp_config(config: dict) -> dict:
         "num_perturb_starts": 0,
         "position_perturb_std_m": 0.05,
         "clock_perturb_std_s": 1.0e-10,
-        "use_trust_region": True,
+        "use_trust_region": False,
         "position_trust_radius_m": 0.3,
         "clock_trust_radius_s": 3.0e-10,
+        "objective_rollback_tolerance": 1.0e-12,
         "overwrite_factor_keys": False,
         "finite_difference_check": False,
     }
@@ -70,6 +75,12 @@ def _get_panel_ordered_stage1_factors(init_estimate: dict, scene: dict) -> dict:
     ris_eta_raw = np.asarray(init_estimate["ris_eta"], dtype=float)
     c_raw = init_estimate.get("C")
     c_raw_arr = None if c_raw is None else np.asarray(c_raw, dtype=complex)
+    gamma_raw = init_estimate.get("gamma")
+    gamma_raw_arr = None if gamma_raw is None else np.asarray(gamma_raw, dtype=float)
+    eta_pol_raw = init_estimate.get("eta_pol")
+    eta_pol_raw_arr = (
+        None if eta_pol_raw is None else np.asarray(eta_pol_raw, dtype=float)
+    )
 
     columns_are_panel_ordered = bool(
         init_estimate.get("columns_are_panel_ordered", False)
@@ -102,6 +113,8 @@ def _get_panel_ordered_stage1_factors(init_estimate: dict, scene: dict) -> dict:
     poles_phys = poles_raw[order]
     ris_eta_phys = ris_eta_raw[order]
     c_phys = None if c_raw_arr is None else c_raw_arr[:, order]
+    gamma_phys = None if gamma_raw_arr is None else gamma_raw_arr[order]
+    eta_pol_phys = None if eta_pol_raw_arr is None else eta_pol_raw_arr[order]
     tau_phys = np.array(
         [tau_from_pole(pole, scene["delta_f"]) for pole in poles_phys],
         dtype=float,
@@ -113,6 +126,8 @@ def _get_panel_ordered_stage1_factors(init_estimate: dict, scene: dict) -> dict:
         "tau_phys": tau_phys,
         "ris_eta_phys": ris_eta_phys,
         "C_phys": c_phys,
+        "gamma_phys": gamma_phys,
+        "eta_pol_phys": eta_pol_phys,
         "global_vp_used_panel_to_column": bool(used_panel_to_column),
         "global_vp_panel_to_column": np.asarray(
             reported_panel_to_column, dtype=int
@@ -255,11 +270,26 @@ def _evs_linear_polarization_basis(scene: dict, path: int) -> np.ndarray:
     return np.column_stack([basis_1, basis_2])
 
 
+def _evs_legacy_full_polarization_atom(stage1_factors: dict, scene: dict, path: int) -> np.ndarray:
+    """Return the old full-polarization EVS atom for one path."""
+    gamma = stage1_factors.get("gamma_phys")
+    eta_pol = stage1_factors.get("eta_pol_phys")
+    if gamma is None or eta_pol is None:
+        return stage1_factors["A_phys"][:, path : path + 1]
+    pol = scene["Theta"][path] @ polarization_vector(float(gamma[path]), float(eta_pol[path]))
+    return np.kron(scene["v_B"][path], pol)[:, None]
+
+
 def _evs_atom_bases(init_estimate: dict, scene: dict, config: dict) -> tuple[list[np.ndarray], str]:
     """Return per-path EVS basis matrices for the configured global VP mode."""
     options = _global_vp_config(config)
-    evs_mode = str(options.get("evs_mode", "linear_polarization_basis"))
+    evs_mode = str(options.get("evs_mode", "legacy_or_full_polarization"))
     stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+    if evs_mode == "legacy_or_full_polarization":
+        return [
+            _evs_legacy_full_polarization_atom(stage1_factors, scene, k)
+            for k in range(scene["K"])
+        ], evs_mode
     if evs_mode == "fixed_stage1_A":
         a_phys = stage1_factors["A_phys"]
         return [a_phys[:, k : k + 1] for k in range(scene["K"])], evs_mode
@@ -616,18 +646,16 @@ def _intersect_trust_region_bounds(
     return np.maximum(lower, trust_lower), np.minimum(upper, trust_upper), True
 
 
-def global_exact_spherical_vp_refinement(
+def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     y_raw: np.ndarray,
     init_estimate: dict,
     scene: dict,
     config: dict,
 ) -> dict:
-    """Initialization-aided global exact-spherical VP refinement.
+    """Experimental reduced scalar VP solved by L-BFGS-B.
 
-    Stage-I provides path assignment and fixed EVS factors. This refinement
-    optimizes only UE position and common clock offset by default; path gains are
-    eliminated by VP, and RIS near-field plus delay/clock coupling are embedded
-    directly in each raw-domain atom.
+    This is retained only for ablation. The default numerical solver is the old
+    least_squares VP-WNLS implementation.
     """
     assert y_raw.shape == (scene["I"], scene["N"], scene["T"])
     options = _global_vp_config(config)
@@ -729,6 +757,17 @@ def global_exact_spherical_vp_refinement(
     final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
     final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
     final_objective = float(final_parts["total_objective"])
+    rollback_tolerance = float(options.get("objective_rollback_tolerance", 1.0e-12))
+    if final_objective > initial_objective + rollback_tolerance:
+        best_x = xi0.copy()
+        phi_final, aux = _build_global_dictionary(best_x, init_estimate, scene, config)
+        beta_final = _solve_beta_vp(phi_final, y_vec, weight, beta_reg, objective_scale)
+        final_residual_vec = y_vec - phi_final @ beta_final
+        final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
+        final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
+        final_objective = float(final_parts["total_objective"])
+        success = False
+        message = "rollback_objective_increased"
     y_hat = (phi_final @ beta_final).reshape(scene["I"], scene["N"], scene["T"])
 
     estimate = copy.deepcopy(init_estimate)
@@ -770,7 +809,8 @@ def global_exact_spherical_vp_refinement(
             "beta_reg_objective_final": float(final_parts["beta_reg_objective"]),
             "tau_stage1": np.asarray(stage1_factors["tau_phys"], dtype=float).copy(),
             "tau_after_global_vp": aux["tau"].copy(),
-            "global_vp_evs_mode": str(options.get("evs_mode", "linear_polarization_basis")),
+            "global_vp_solver": "lbfgsb_reduced",
+            "global_vp_evs_mode": str(options.get("evs_mode", "legacy_or_full_polarization")),
             "global_vp_use_delay_prior": _delay_prior_enabled(config),
             "global_vp_trust_region_used": bool(trust_region_used),
             "global_vp_bounds_lower": lower.copy(),
@@ -799,8 +839,9 @@ def global_exact_spherical_vp_refinement(
                 "objective": (
                     "regularized_weighted_vp_raw_plus_delay_prior"
                     if beta_reg > 0.0
-                    else "weighted_vp_raw_plus_delay_prior"
+                    else "weighted_vp_raw_reduced"
                 ),
+                "solver": "lbfgsb_reduced",
             },
             "vp_enabled": True,
             "stage2_mode": "none",
@@ -811,3 +852,193 @@ def global_exact_spherical_vp_refinement(
         estimate["C"] = aux["C"].copy()
         estimate["D"] = aux["D"].copy()
     return estimate
+
+
+def _panel_ordered_estimate_for_legacy_solver(init_estimate: dict, scene: dict) -> dict:
+    """Return an estimate copy in physical panel order for the legacy VP solver."""
+    stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+    estimate = copy.deepcopy(init_estimate)
+    estimate["A"] = stage1_factors["A_phys"].copy()
+    estimate["poles"] = stage1_factors["poles_phys"].copy()
+    estimate["ris_eta"] = stage1_factors["ris_eta_phys"].copy()
+    if stage1_factors.get("C_phys") is not None:
+        estimate["C"] = stage1_factors["C_phys"].copy()
+    if stage1_factors.get("gamma_phys") is not None:
+        estimate["gamma"] = stage1_factors["gamma_phys"].copy()
+    if stage1_factors.get("eta_pol_phys") is not None:
+        estimate["eta_pol"] = stage1_factors["eta_pol_phys"].copy()
+    estimate["columns_are_panel_ordered"] = True
+    estimate["global_vp_used_panel_to_column"] = stage1_factors[
+        "global_vp_used_panel_to_column"
+    ]
+    estimate["global_vp_panel_to_column"] = stage1_factors["global_vp_panel_to_column"]
+    estimate["global_vp_columns_are_panel_ordered"] = stage1_factors[
+        "global_vp_columns_are_panel_ordered"
+    ]
+    return estimate
+
+
+def _legacy_vp_initial_result(y_raw: np.ndarray, estimate: dict, scene: dict, config: dict) -> dict:
+    """Evaluate the old VP-WNLS model at its initial point for rollback."""
+    from .channel_model import synthesize_raw_tensor
+    from .estimators import _bounds_global, _dictionary_from_global_x, _initial_global_parameters
+
+    x0 = _initial_global_parameters(scene, estimate, config)
+    lower, upper = _bounds_global(scene, config)
+    x0 = np.clip(x0, lower, upper)
+    y_vec = y_raw.reshape(-1)
+    dictionary, components = _dictionary_from_global_x(scene, x0)
+    beta = solve_lstsq(dictionary, y_vec, reg=1.0e-12)
+    residual = dictionary @ beta - y_vec
+    raw_objective = float(np.vdot(residual, residual).real / y_vec.size)
+    return {
+        "x": x0,
+        "p_u": x0[:3],
+        "delta_t": float(x0[3]),
+        "gamma": x0[4 : 4 + scene["K"]],
+        "eta_pol": x0[4 + scene["K"] : 4 + 2 * scene["K"]],
+        "beta": beta,
+        "components": components,
+        "Y_hat": synthesize_raw_tensor(components, beta),
+        "raw_residual_rmse_noisy": float(np.sqrt(raw_objective)),
+        "raw_objective_initial": raw_objective,
+        "raw_objective_final": raw_objective,
+        "optimizer": {
+            "success": False,
+            "status": 0,
+            "message": "rollback_objective_increased",
+            "n_eval": 0,
+            "method": "scipy.optimize.least_squares",
+            "solver_backend": "scipy.optimize" if scipy_is_available() else "fallback",
+        },
+    }
+
+
+def _augment_legacy_vp_result(
+    legacy_result: dict,
+    init_estimate: dict,
+    scene: dict,
+    options: dict,
+    *,
+    rolled_back: bool,
+) -> dict:
+    """Add global-VP compatibility diagnostics to old VP-WNLS output."""
+    stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+    components = legacy_result["components"]
+    raw_initial = float(legacy_result["raw_objective_initial"])
+    raw_final = float(legacy_result["raw_objective_final"])
+    final_rmse = float(legacy_result["raw_residual_rmse_noisy"])
+    optimizer = dict(legacy_result.get("optimizer", {}))
+    if rolled_back:
+        optimizer["success"] = False
+        optimizer["message"] = "rollback_objective_increased"
+
+    estimate = copy.deepcopy(init_estimate)
+    estimate.update(legacy_result)
+    estimate.update(
+        {
+            "tau": components["taus"].copy(),
+            "poles": components["poles"].copy(),
+            "D": components["d"].T.copy(),
+            "C_global": components["c"].T.copy(),
+            "beta_raw": legacy_result["beta"].copy(),
+            "raw_residual_initial": float(np.sqrt(raw_initial)),
+            "raw_residual_final": final_rmse,
+            "raw_residual": final_rmse,
+            "raw_objective": raw_final,
+            "delay_prior_objective_initial": 0.0,
+            "delay_prior_objective_final": 0.0,
+            "delay_prior_objective": 0.0,
+            "total_objective_initial": raw_initial,
+            "total_objective_final": raw_final,
+            "total_objective": raw_final,
+            "beta_reg_objective_initial": 0.0,
+            "beta_reg_objective_final": 0.0,
+            "tau_stage1": np.asarray(stage1_factors["tau_phys"], dtype=float).copy(),
+            "tau_after_global_vp": components["taus"].copy(),
+            "global_vp_solver": "least_squares",
+            "global_vp_evs_mode": "legacy_or_full_polarization",
+            "global_vp_use_delay_prior": False,
+            "global_vp_trust_region_used": False,
+            "global_vp_used_panel_to_column": stage1_factors[
+                "global_vp_used_panel_to_column"
+            ],
+            "global_vp_panel_to_column": stage1_factors["global_vp_panel_to_column"],
+            "global_vp_columns_are_panel_ordered": stage1_factors[
+                "global_vp_columns_are_panel_ordered"
+            ],
+            "global_vp_success": bool(optimizer.get("success", False)) and not rolled_back,
+            "global_vp_message": str(optimizer.get("message", "")),
+            "global_vp_num_iter": int(optimizer.get("n_eval", 0)),
+            "global_vp_objective_history": [],
+            "optimizer": {
+                **optimizer,
+                "objective": "least_squares_vp_wnls_raw_mse",
+                "solver": "least_squares",
+            },
+            "vp_enabled": True,
+            "stage2_mode": "none",
+            "final_refinement_method": "global_exact_spherical_vp",
+        }
+    )
+    if bool(options.get("overwrite_factor_keys", False)):
+        estimate["C"] = components["c"].T.copy()
+        estimate["D"] = components["d"].T.copy()
+    return estimate
+
+
+def _global_exact_spherical_vp_refinement_least_squares(
+    y_raw: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Wrap the old high-performing least_squares VP-WNLS implementation."""
+    from .estimators import refine_global_raw
+
+    options = _global_vp_config(config)
+    panel_ordered_estimate = _panel_ordered_estimate_for_legacy_solver(
+        init_estimate, scene
+    )
+    legacy_result = refine_global_raw(y_raw, scene, config, panel_ordered_estimate)
+    tolerance = float(options.get("objective_rollback_tolerance", 1.0e-12))
+    rolled_back = bool(
+        legacy_result["raw_objective_final"]
+        > legacy_result["raw_objective_initial"] + tolerance
+    )
+    if rolled_back:
+        legacy_result = _legacy_vp_initial_result(
+            y_raw, panel_ordered_estimate, scene, config
+        )
+    return _augment_legacy_vp_result(
+        legacy_result,
+        panel_ordered_estimate,
+        scene,
+        options,
+        rolled_back=rolled_back,
+    )
+
+
+def global_exact_spherical_vp_refinement(
+    y_raw: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Initialization-aided unified raw-domain exact-spherical VP.
+
+    The default numerical solver is the legacy high-performing
+    least_squares VP-WNLS path, which optimizes UE position, clock offset, and
+    EVS polarization angles while eliminating path gains. The reduced L-BFGS-B
+    implementation is retained only as an experimental ablation.
+    """
+    solver = str(_global_vp_config(config).get("solver", "least_squares"))
+    if solver == "least_squares":
+        return _global_exact_spherical_vp_refinement_least_squares(
+            y_raw, init_estimate, scene, config
+        )
+    if solver == "lbfgsb_reduced":
+        return _global_exact_spherical_vp_refinement_lbfgsb_reduced(
+            y_raw, init_estimate, scene, config
+        )
+    raise ValueError(f"unknown global_vp solver {solver!r}")

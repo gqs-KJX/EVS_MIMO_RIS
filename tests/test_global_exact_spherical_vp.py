@@ -1,6 +1,7 @@
 import copy
 
 import numpy as np
+import pytest
 
 from src.channel_model import channel_components, generate_scene, synthesize_raw_tensor
 from src.config import default_config
@@ -13,7 +14,8 @@ from src.global_vp import (
     _vp_objective_and_grad,
     global_exact_spherical_vp_refinement,
 )
-from src.metrics import relative_nmse
+from src.metrics import position_rmse, relative_nmse
+from src.utils import scipy_is_available
 
 
 def _small_config(k_paths: int = 2, beta_reg: float = 0.0) -> dict:
@@ -125,20 +127,33 @@ def test_true_dictionary_reconstruction_with_polarization_basis():
     config, scene, components, y_raw, init_estimate = _scene_truth_and_init()
     xi = np.r_[scene["p_u_true"], scene["delta_t_true"]]
 
-    phi, aux = _build_global_dictionary(xi, init_estimate, scene, config)
-    beta = _solve_beta_vp(phi, y_raw.reshape(-1), None, 0.0, 1.0 / y_raw.size)
-    y_hat = (phi @ beta).reshape(y_raw.shape)
+    for evs_mode, expected_atoms in (
+        ("legacy_or_full_polarization", scene["K"]),
+        ("linear_polarization_basis", 2 * scene["K"]),
+    ):
+        mode_config = copy.deepcopy(config)
+        mode_config["global_vp"]["evs_mode"] = evs_mode
+        phi, aux = _build_global_dictionary(xi, init_estimate, scene, mode_config)
+        beta = _solve_beta_vp(phi, y_raw.reshape(-1), None, 0.0, 1.0 / y_raw.size)
+        y_hat = (phi @ beta).reshape(y_raw.shape)
 
-    assert phi.shape == (scene["I"] * scene["N"] * scene["T"], 2 * scene["K"])
-    assert aux["D"].shape == (scene["N"], scene["K"])
-    assert aux["C"].shape == (scene["T"], scene["K"])
-    assert aux["tau"].shape == (scene["K"],)
-    np.testing.assert_allclose(aux["tau"], components["taus"], rtol=1.0e-12, atol=1.0e-14)
-    assert relative_nmse(y_hat, y_raw) < 1.0e-24
+        assert phi.shape == (scene["I"] * scene["N"] * scene["T"], expected_atoms)
+        assert aux["D"].shape == (scene["N"], scene["K"])
+        assert aux["C"].shape == (scene["T"], scene["K"])
+        assert aux["tau"].shape == (scene["K"],)
+        np.testing.assert_allclose(aux["tau"], components["taus"], rtol=1.0e-12, atol=1.0e-14)
+        assert relative_nmse(y_hat, y_raw) < 1.0e-24
 
 
 def test_analytic_gradient_matches_finite_difference():
     config, scene, _, y_raw, init_estimate = _scene_truth_and_init()
+    config["global_vp"].update(
+        {
+            "solver": "lbfgsb_reduced",
+            "evs_mode": "linear_polarization_basis",
+            "use_delay_prior": True,
+        }
+    )
     xi = np.r_[scene["p_u_true"] + np.array([0.06, -0.04, 0.03]), scene["delta_t_true"] + 1.5e-10]
     y_vec = y_raw.reshape(-1)
 
@@ -168,6 +183,13 @@ def test_noiseless_recovery_from_perturbed_initialization():
 
 def test_regularized_beta_objective_and_gradient_consistency():
     config, scene, _, y_raw, init_estimate = _scene_truth_and_init(beta_reg=1.0e-3)
+    config["global_vp"].update(
+        {
+            "solver": "lbfgsb_reduced",
+            "evs_mode": "linear_polarization_basis",
+            "use_delay_prior": True,
+        }
+    )
     xi = np.r_[scene["p_u_true"] + np.array([0.05, 0.03, -0.02]), scene["delta_t_true"] - 1.0e-10]
     y_vec = y_raw.reshape(-1)
 
@@ -190,10 +212,11 @@ def test_regularized_beta_objective_and_gradient_consistency():
         ]
     )
     tau_err = aux["tau"] - tau_stage1
-    expected += float(
-        config["global_vp"]["delay_prior_weight"]
-        * np.sum((tau_err / config["global_vp"]["delay_prior_sigma_s"]) ** 2)
-    )
+    if config["global_vp"]["use_delay_prior"]:
+        expected += float(
+            config["global_vp"]["delay_prior_weight"]
+            * np.sum((tau_err / config["global_vp"]["delay_prior_sigma_s"]) ** 2)
+        )
     np.testing.assert_allclose(objective, expected, rtol=1.0e-12, atol=1.0e-12)
 
     fd_grad = _finite_difference_gradient(xi, y_vec, init_estimate, scene, config)
@@ -248,6 +271,7 @@ def test_low_snr_guarded_basis_prior_reduces_stage1_delay_drift():
     fixed_config = copy.deepcopy(config)
     fixed_config["global_vp"].update(
         {
+            "solver": "lbfgsb_reduced",
             "evs_mode": "fixed_stage1_A",
             "use_delay_prior": False,
             "use_trust_region": False,
@@ -257,6 +281,7 @@ def test_low_snr_guarded_basis_prior_reduces_stage1_delay_drift():
     guarded_config = copy.deepcopy(config)
     guarded_config["global_vp"].update(
         {
+            "solver": "lbfgsb_reduced",
             "evs_mode": "linear_polarization_basis",
             "use_delay_prior": True,
             "delay_prior_weight": 100.0,
@@ -288,6 +313,28 @@ def test_low_snr_guarded_basis_prior_reduces_stage1_delay_drift():
     assert guarded["raw_residual_final"] <= 1.15 * fixed["raw_residual_final"]
     assert guarded_tau_drift <= fixed_tau_drift + 1.0e-15
     assert guarded_range_drift <= fixed_range_drift + 1.0e-12
+
+
+def test_default_least_squares_reproduces_old_direct_stage1_vp_performance():
+    if not scipy_is_available():
+        pytest.skip("scipy.optimize.least_squares is required for this regression")
+    from src.main_single_proposed import _run_single_pipeline
+
+    config = default_config()
+    config["stage2_mode"] = "none"
+    config["final_refinement_method"] = "global_exact_spherical_vp"
+    config["global_vp"]["solver"] = "least_squares"
+    results = _run_single_pipeline(config, use_structured=True)
+
+    final = results["final"]
+    pos_error = position_rmse(final["p_u"], results["scene"]["p_u_true"])
+    y_nmse = relative_nmse(final["Y_hat"], results["Y_true"])
+
+    assert final["optimizer"]["method"] == "scipy.optimize.least_squares"
+    assert final["global_vp_solver"] == "least_squares"
+    assert final["stage2_mode"] == "none"
+    assert pos_error < 2.0e-4
+    assert y_nmse < 2.0e-5
 
 
 def test_pipeline_default_skips_legacy_structured_refinement(monkeypatch):

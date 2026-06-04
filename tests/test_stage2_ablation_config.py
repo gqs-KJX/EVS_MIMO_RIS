@@ -49,12 +49,13 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage2_enable_delay"] is False
     assert config["stage2_enable_ris"] is True
     assert config["stage2_guarded"] is True
+    assert config["global_vp"]["solver"] == "least_squares"
     assert config["global_vp"]["max_iter"] == 80
     assert config["global_vp"]["ftol"] == 1.0e-12
     assert config["global_vp"]["gtol"] == 1.0e-8
     assert config["global_vp"]["beta_reg"] == 0.0
-    assert config["global_vp"]["evs_mode"] == "linear_polarization_basis"
-    assert config["global_vp"]["use_delay_prior"] is True
+    assert config["global_vp"]["evs_mode"] == "legacy_or_full_polarization"
+    assert config["global_vp"]["use_delay_prior"] is False
     assert config["global_vp"]["delay_prior_weight"] == 1.0
     assert config["global_vp"]["delay_prior_sigma_s"] == 2.0e-11
     assert config["global_vp"]["use_weight"] is False
@@ -62,9 +63,10 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["global_vp"]["num_perturb_starts"] == 0
     assert config["global_vp"]["position_perturb_std_m"] == 0.05
     assert config["global_vp"]["clock_perturb_std_s"] == 1.0e-10
-    assert config["global_vp"]["use_trust_region"] is True
+    assert config["global_vp"]["use_trust_region"] is False
     assert config["global_vp"]["position_trust_radius_m"] == 0.3
     assert config["global_vp"]["clock_trust_radius_s"] == 3.0e-10
+    assert config["global_vp"]["objective_rollback_tolerance"] == 1.0e-12
     assert config["global_vp"]["overwrite_factor_keys"] is False
     assert config["global_vp"]["finite_difference_check"] is False
     assert config["stage2_strict_accept_rel"] == 1.0e-6

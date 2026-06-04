@@ -328,13 +328,29 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     final_method = str(
         config.get("final_refinement_method", "global_exact_spherical_vp")
     ).lower()
+    global_vp_options = dict(config.get("global_vp", {}))
+    global_vp_solver = str(global_vp_options.get("solver", "least_squares"))
     if not config.get("enable_global_vp", True) or final_method == "none":
         vp_solver_type = "skipped_global_vp"
         vp_backend = "skipped"
-    elif final_method == "global_exact_spherical_vp" and scipy_is_available():
+    elif (
+        final_method == "global_exact_spherical_vp"
+        and global_vp_solver == "least_squares"
+        and scipy_is_available()
+    ):
+        vp_solver_type = "scipy.optimize.least_squares"
+        vp_backend = "scipy.optimize"
+    elif final_method == "global_exact_spherical_vp" and global_vp_solver == "least_squares":
+        vp_solver_type = "bounded_coordinate_search"
+        vp_backend = "fallback"
+    elif (
+        final_method == "global_exact_spherical_vp"
+        and global_vp_solver == "lbfgsb_reduced"
+        and scipy_is_available()
+    ):
         vp_solver_type = "scipy.optimize.minimize:L-BFGS-B"
         vp_backend = "scipy.optimize"
-    elif final_method == "global_exact_spherical_vp":
+    elif final_method == "global_exact_spherical_vp" and global_vp_solver == "lbfgsb_reduced":
         vp_solver_type = "bounded_coordinate_search"
         vp_backend = "fallback"
     elif final_method == "legacy_raw_vp" and scipy_is_available():
@@ -380,6 +396,7 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     print(f"num_structured_iters = {config['num_structured_iters']}")
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
     print(f"final_refinement_method = {config.get('final_refinement_method', 'global_exact_spherical_vp')}")
+    print(f"global_vp_solver = {global_vp_solver}")
     print(f"vp_solver_type = {vp_solver_type}")
     print(f"vp_solver_backend = {vp_backend}")
 
@@ -562,6 +579,7 @@ def _print_global_vp_diagnostics(results: dict) -> None:
     print(f"global_vp_raw_objective = {_fmt(final.get('raw_objective'))}")
     print(f"global_vp_delay_prior_objective = {_fmt(final.get('delay_prior_objective'))}")
     print(f"global_vp_total_objective = {_fmt(final.get('total_objective'))}")
+    print(f"global_vp_solver = {final.get('global_vp_solver', 'unknown')}")
     print(f"global_vp_evs_mode = {final.get('global_vp_evs_mode', 'unknown')}")
     print(f"global_vp_use_delay_prior = {final.get('global_vp_use_delay_prior', 'NA')}")
     print(f"global_vp_trust_region_used = {final.get('global_vp_trust_region_used', 'NA')}")
