@@ -311,7 +311,7 @@ def _weak_reasonable_stage1_config(config: dict) -> dict:
 def _print_stage1_initialization_diagnostics(results: dict) -> None:
     """Print the Stage-I initialization mode and RIS search strength."""
     ris_search = results["stage1_initialization"]["ris_search"]
-    print("stage1_init_mode = weak_reasonable")
+    print(f"stage1_init_mode = {results['stage1_initialization']['mode']}")
     print(
         f"range/elev/az = ({ris_search['num_range']}, "
         f"{ris_search['num_elev']}, {ris_search['num_az']})"
@@ -453,7 +453,7 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
     data = _make_data(config)
     timing = dict(data.get("timing", {}))
     scene = data["scene"]
-    stage1_config = _weak_reasonable_stage1_config(config)
+    stage1_config = config
     stage1_start = time.perf_counter()
     estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, stage1_config)
     timing["stage1"] = time.perf_counter() - stage1_start
@@ -551,7 +551,7 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         "estimate_used": estimate_used,
         "structured_diag": structured_diag,
         "stage1_initialization": {
-            "mode": "weak_reasonable",
+            "mode": "normal",
             "ris_search": dict(stage1_config["ris_search"]),
         },
         "final": final,
