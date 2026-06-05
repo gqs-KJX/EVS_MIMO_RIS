@@ -25,6 +25,9 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["num_structured_iters"] == 2
     assert config["enable_global_vp"] is True
     assert config["stage2_mode"] == "none"
+    assert config["diagnostic_mode"] == "performance"
+    assert config["diagnostic_fast_problem_size"] is False
+    assert config["diagnostic_fast_stage1_search"] is False
     assert config["final_refinement_method"] == "global_exact_spherical_vp"
     assert config["vp_max_nfev"] == 10
     assert config["vp_max_iter"] == 10
@@ -124,12 +127,12 @@ def test_main_single_weak_reasonable_stage1_config():
     weak_search = weak_config["ris_search"]
     original_search = config["ris_search"]
 
-    assert weak_search["num_range"] == 9
-    assert weak_search["num_elev"] == 5
-    assert weak_search["num_az"] == 13
-    assert weak_search["num_exact_refine_starts"] == 3
-    assert weak_search["num_lift_candidates"] == 3
-    assert weak_search["num_lift_steps"] == 3
+    assert weak_search["num_range"] == original_search["num_range"]
+    assert weak_search["num_elev"] == original_search["num_elev"]
+    assert weak_search["num_az"] == original_search["num_az"]
+    assert weak_search["num_exact_refine_starts"] == original_search["num_exact_refine_starts"]
+    assert weak_search["num_lift_candidates"] == original_search["num_lift_candidates"]
+    assert weak_search["num_lift_steps"] == original_search["num_lift_steps"]
     assert original_search["num_range"] == 15
     assert original_search["num_elev"] == 9
     assert original_search["num_az"] == 25

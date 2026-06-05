@@ -1,4 +1,16 @@
-"""Run one diagnostic proposed RIS-EVS-OFDM estimation demo."""
+"""
+Diagnostic runner for the proposed reliability-gated estimator.
+
+This script is not the formal simulation sweep. It validates one realization
+of the proposed algorithm:
+    Stage-I initialization
+    -> reliability check
+    -> direct VP-WNLS or RIS-only basin recovery
+    -> final raw-domain exact-spherical VP-WNLS.
+
+Full legacy EVS/delay/RIS structured refinement is retained only as an
+optional ablation comparison.
+"""
 
 from __future__ import annotations
 
@@ -293,19 +305,209 @@ def _print_self_tests(scene: dict, config: dict, true_components: dict) -> None:
 
 
 def _weak_reasonable_stage1_config(config: dict) -> dict:
-    """Return a moderately weakened Stage-I RIS search for main_single_proposed."""
-    weak_config = copy.deepcopy(config)
-    ris_search = dict(weak_config["ris_search"])
-    ris_search["num_range"] = min(int(ris_search.get("num_range", 15)), 9)
-    ris_search["num_elev"] = min(int(ris_search.get("num_elev", 9)), 5)
-    ris_search["num_az"] = min(int(ris_search.get("num_az", 25)), 13)
-    ris_search["num_exact_refine_starts"] = min(
-        int(ris_search.get("num_exact_refine_starts", 6)), 3
+    """Return the normal Stage-I config; retained for legacy diagnostic callers."""
+    return copy.deepcopy(config)
+
+
+def _apply_main_single_defaults(config: dict) -> dict:
+    """Apply main_single diagnostic defaults to a local config copy."""
+    config.setdefault("diagnostic_mode", "performance")
+    config.setdefault("run_full_legacy_comparison", False)
+    config.setdefault("verbose_stage2", False)
+    config.setdefault("print_progress", True)
+    mode = str(config.get("diagnostic_mode", "performance")).lower()
+    if mode not in ("smoke", "performance"):
+        raise ValueError(f"unknown diagnostic_mode {mode!r}")
+    config["diagnostic_mode"] = mode
+    if mode == "smoke":
+        config.setdefault("diagnostic_fast_problem_size", True)
+        config.setdefault("diagnostic_fast_stage1_search", True)
+    else:
+        config["diagnostic_fast_problem_size"] = False
+        config["diagnostic_fast_stage1_search"] = False
+        config["M_A"] = max(int(config.get("M_A", 16)), 16)
+        ris_shape = tuple(config.get("ris_shape", (64, 64)))
+        config["ris_shape"] = (max(int(ris_shape[0]), 64), max(int(ris_shape[1]), 64))
+        config["N"] = max(int(config.get("N", 63)), 63)
+        config["P"] = max(int(config.get("P", 32)), 32)
+        config["T"] = max(int(config.get("T", 256)), 256)
+        ris_search = dict(config["ris_search"])
+        floors = {
+            "num_range": 9,
+            "num_elev": 5,
+            "num_az": 13,
+            "num_exact_refine_starts": 3,
+            "num_lift_candidates": 3,
+            "num_lift_steps": 3,
+        }
+        for key, floor in floors.items():
+            ris_search[key] = max(int(ris_search.get(key, floor)), floor)
+        config["ris_search"] = ris_search
+    config.setdefault("stage2_adaptive", True)
+    config.setdefault("stage2_rescue_type", "ris_only")
+    config["stage2_mode"] = "none"
+    config.setdefault("reliability_assignment_good", 1.0)
+    config.setdefault("reliability_assignment_low", 0.3)
+    config.setdefault("reliability_clock_good_ns", 0.1)
+    config.setdefault("reliability_clock_bad_ns", 0.5)
+    config.setdefault("reliability_ris_good", 0.3)
+    config.setdefault("reliability_ris_bad", 0.7)
+    global_vp = dict(config.get("global_vp", {}))
+    global_vp.setdefault("solver", "least_squares")
+    global_vp.setdefault("use_delay_prior", False)
+    global_vp.setdefault("use_trust_region", False)
+    config["global_vp"] = global_vp
+    if bool(config.get("diagnostic_fast_problem_size", True)):
+        config["M_A"] = min(int(config.get("M_A", 4)), 4)
+        ris_shape = tuple(config.get("ris_shape", (8, 8)))
+        config["ris_shape"] = (
+            min(int(ris_shape[0]), 8),
+            min(int(ris_shape[1]), 8),
+        )
+        config["N"] = min(int(config.get("N", 15)), 15)
+        config["P"] = min(int(config.get("P", 8)), 8, int(config["N"]))
+        config["T"] = min(int(config.get("T", 32)), 32)
+    if bool(config.get("diagnostic_fast_stage1_search", True)):
+        ris_search = dict(config["ris_search"])
+        caps = {
+            "num_range": 5,
+            "num_elev": 3,
+            "num_az": 7,
+            "num_exact_refine_starts": 1,
+            "num_lift_candidates": 1,
+            "num_lift_steps": 1,
+        }
+        for key, cap in caps.items():
+            ris_search[key] = min(int(ris_search.get(key, cap)), cap)
+        config["ris_search"] = ris_search
+    return config
+
+
+def _stage1_clock_panel_order(stage1_estimate: dict, scene: dict) -> tuple[np.ndarray, np.ndarray, bool, list[int] | None]:
+    """Return Stage-I tau/range arrays in physical RIS panel order."""
+    tau_raw = np.array(
+        [tau_from_pole(pole, scene["delta_f"]) for pole in stage1_estimate["poles"]],
+        dtype=float,
     )
-    ris_search["num_lift_candidates"] = min(int(ris_search.get("num_lift_candidates", 4)), 3)
-    ris_search["num_lift_steps"] = min(int(ris_search.get("num_lift_steps", 4)), 3)
-    weak_config["ris_search"] = ris_search
-    return weak_config
+    ris_eta_raw = np.asarray(stage1_estimate["ris_eta"], dtype=float)
+    range_raw = ris_eta_raw[:, 0]
+    columns_are_panel_ordered = bool(stage1_estimate.get("columns_are_panel_ordered", False))
+    panel_to_column = stage1_estimate.get("panel_to_column_assignment")
+    if panel_to_column is not None:
+        panel_to_column = [int(col) for col in panel_to_column]
+    if columns_are_panel_ordered or panel_to_column is None:
+        return tau_raw, range_raw, bool(columns_are_panel_ordered), panel_to_column
+
+    k_paths = int(scene["K"])
+    if len(panel_to_column) != k_paths:
+        return tau_raw, range_raw, False, None
+    tau_phys = np.empty(k_paths, dtype=float)
+    range_phys = np.empty(k_paths, dtype=float)
+    for panel in range(k_paths):
+        col = panel_to_column[panel]
+        tau_phys[panel] = tau_raw[col]
+        range_phys[panel] = range_raw[col]
+    return tau_phys, range_phys, True, panel_to_column
+
+
+def _assignment_margin_from_costs(costs: np.ndarray, eps: float) -> float:
+    """Return the Stage-I assignment margin over column-to-panel permutations."""
+    arr = np.asarray(costs, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or not np.all(np.isfinite(arr)):
+        return float("nan")
+    scores = []
+    for perm in itertools.permutations(range(arr.shape[0])):
+        scores.append(float(sum(arr[col, perm[col]] for col in range(arr.shape[0]))))
+    if not scores:
+        return float("nan")
+    scores.sort()
+    best = scores[0]
+    second = scores[1] if len(scores) > 1 else float("inf")
+    return float((second - best) / (best + eps))
+
+
+def _stage1_ris_residuals(stage1_estimate: dict, scene: dict) -> np.ndarray:
+    """Return Stage-I per-path compressed RIS residuals when they can be evaluated."""
+    _ = scene
+    for key in ("stage1_ris_residuals", "ris_residuals", "ris_projection_residuals"):
+        if key in stage1_estimate:
+            values = np.asarray(stage1_estimate[key], dtype=float).reshape(-1)
+            if values.size:
+                return values
+    return np.array([], dtype=float)
+
+
+def _finite_less(value: float, threshold: float) -> bool:
+    return bool(np.isfinite(value) and value < threshold)
+
+
+def _finite_greater(value: float, threshold: float) -> bool:
+    return bool(np.isfinite(value) and value > threshold)
+
+
+def compute_stage1_reliability(stage1_estimate: dict, scene: dict, config: dict) -> dict:
+    """Compute the diagnostic Stage-I reliability gate used by main_single only."""
+    eps = float(config.get("eps", 1.0e-10))
+    assignment_margin = stage1_estimate.get("stage1_assignment_margin")
+    if assignment_margin is None and "assignment_costs" in stage1_estimate:
+        assignment_margin = _assignment_margin_from_costs(
+            stage1_estimate["assignment_costs"], eps
+        )
+    try:
+        assignment_margin = float(assignment_margin)
+    except (TypeError, ValueError):
+        assignment_margin = float("nan")
+
+    tau_stage1, range_stage1, used_panel_order, panel_to_column = (
+        _stage1_clock_panel_order(stage1_estimate, scene)
+    )
+    delta_t_k = tau_stage1 - (range_stage1 + scene["d_RB"]) / scene["c0"]
+    delta_t_k_ns = delta_t_k * 1.0e9
+    sigma_delta_t = float(np.std(delta_t_k))
+    sigma_delta_t_ns = sigma_delta_t * 1.0e9
+
+    ris_residuals = _stage1_ris_residuals(stage1_estimate, scene)
+    finite_ris = ris_residuals[np.isfinite(ris_residuals)]
+    max_ris_residual = float(np.max(finite_ris)) if finite_ris.size else float("nan")
+
+    assignment_good = float(config["reliability_assignment_good"])
+    clock_good_ns = float(config["reliability_clock_good_ns"])
+    ris_good = float(config["reliability_ris_good"])
+    assignment_low = float(config["reliability_assignment_low"])
+    clock_bad_ns = float(config["reliability_clock_bad_ns"])
+    ris_bad = float(config["reliability_ris_bad"])
+
+    bad_score = 0
+    trigger_reasons = []
+    if _finite_less(assignment_margin, assignment_good):
+        bad_score += 1
+        trigger_reasons.append("low_assignment_margin")
+    if _finite_greater(sigma_delta_t_ns, clock_good_ns):
+        bad_score += 1
+        trigger_reasons.append("poor_clock_consistency")
+    if _finite_greater(max_ris_residual, ris_good):
+        bad_score += 1
+        trigger_reasons.append("large_ris_residual")
+
+    severe_unreliable = (
+        _finite_less(assignment_margin, assignment_low)
+        or _finite_greater(sigma_delta_t_ns, clock_bad_ns)
+        or _finite_greater(max_ris_residual, ris_bad)
+    )
+    decision = "direct_vp" if bad_score == 0 else "ris_only_stage2_then_vp"
+    return {
+        "assignment_margin": assignment_margin,
+        "sigma_delta_t": sigma_delta_t,
+        "sigma_delta_t_ns": sigma_delta_t_ns,
+        "delta_t_k_ns": delta_t_k_ns.tolist(),
+        "reliability_used_panel_order": bool(used_panel_order),
+        "reliability_panel_to_column": panel_to_column,
+        "max_ris_residual": max_ris_residual,
+        "bad_score": int(bad_score),
+        "decision": decision,
+        "trigger_reasons": trigger_reasons,
+        "severe_unreliable": bool(severe_unreliable),
+    }
 
 
 def _print_stage1_initialization_diagnostics(results: dict) -> None:
@@ -361,6 +563,7 @@ def _print_run_configuration(config: dict, results: dict) -> None:
         vp_backend = "fallback"
 
     print("=== Run configuration ===")
+    print(f"diagnostic_mode = {config.get('diagnostic_mode', 'performance')}")
     print(f"seed = {config['seed']}")
     print(f"git_commit = {_git_commit()}")
     print(f"SNR_dB = {config['SNR_dB']:.1f}")
@@ -378,6 +581,14 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     )
     print(f"stage1_init_mode = {results['stage1_initialization']['mode']}")
     print(
+        "diagnostic_fast_problem_size = "
+        f"{config.get('diagnostic_fast_problem_size', True)}"
+    )
+    print(
+        "diagnostic_fast_stage1_search = "
+        f"{config.get('diagnostic_fast_stage1_search', True)}"
+    )
+    print(
         "stage1_grid = "
         f"range={ris_search['num_range']}, "
         f"elev={ris_search['num_elev']}, az={ris_search['num_az']}"
@@ -386,19 +597,34 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     print(f"lift_candidates = {ris_search['num_lift_candidates']}")
     print(f"lift_steps = {ris_search['num_lift_steps']}")
     print(
-        "stage2_enabled_flags = "
+        "configured_stage2_enabled_flags = "
         f"EVS={config.get('stage2_enable_evs', True)}, "
         f"delay={config.get('stage2_enable_delay', True)}, "
         f"RIS={config.get('stage2_enable_ris', True)}"
     )
+    print("proposed_ris_only_stage2_flags = EVS=False, delay=False, RIS=True")
     print(f"stage2_guarded = {config.get('stage2_guarded', False)}")
-    print(f"stage2_mode = {config.get('stage2_mode', 'none')}")
+    print(f"configured_stage2_mode = {config.get('stage2_mode', 'none')}")
+    print("proposed_stage2_policy = reliability_gated_ris_only")
+    print(f"run_full_legacy_comparison = {config.get('run_full_legacy_comparison', False)}")
     print(f"num_structured_iters = {config['num_structured_iters']}")
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
     print(f"final_refinement_method = {config.get('final_refinement_method', 'global_exact_spherical_vp')}")
     print(f"global_vp_solver = {global_vp_solver}")
     print(f"vp_solver_type = {vp_solver_type}")
     print(f"vp_solver_backend = {vp_backend}")
+    if str(config.get("diagnostic_mode", "performance")).lower() == "smoke":
+        print("WARNING_SMOKE_TEST_NOT_FOR_PERFORMANCE")
+    if bool(config.get("diagnostic_fast_problem_size", False)):
+        print(
+            "WARNING: diagnostic_fast_problem_size=True changes the estimation problem."
+        )
+        print("Results are not comparable with full-size paper performance.")
+    if bool(config.get("diagnostic_fast_stage1_search", False)):
+        print(
+            "WARNING: diagnostic_fast_stage1_search=True weakens Stage-I search."
+        )
+        print("Results are not comparable with full-size paper performance.")
 
 
 def _print_assignment_diagnostics(results: dict) -> None:
@@ -447,16 +673,375 @@ def _print_assignment_diagnostics(results: dict) -> None:
                     )
 
 
+def _empty_structured_diag() -> dict:
+    return {
+        "z_hat_history": [],
+        "residuals_noisy_rmse": [],
+        "updates": [],
+        "ris_projection_total_s": 0.0,
+    }
+
+
+def _common_timing_total(timing: dict) -> float:
+    return float(
+        timing.get("data_generation", 0.0)
+        + timing.get("hankelization", 0.0)
+        + timing.get("stage1", 0.0)
+    )
+
+
+def _make_branch_result(
+    *,
+    data: dict,
+    estimate_initial: dict,
+    estimate_used: dict,
+    structured_diag: dict,
+    final: dict,
+    timing: dict,
+    stage1_config: dict,
+    branch_name: str,
+    reliability: dict,
+) -> dict:
+    return {
+        **data,
+        "estimate_initial": estimate_initial,
+        "estimate_used": estimate_used,
+        "structured_diag": structured_diag,
+        "stage1_initialization": {
+            "mode": "normal",
+            "ris_search": dict(stage1_config["ris_search"]),
+        },
+        "final": final,
+        "timing": timing,
+        "branch_name": branch_name,
+        "reliability": reliability,
+    }
+
+
+def _run_global_vp_branch(
+    y_noisy: np.ndarray,
+    estimate_used: dict,
+    scene: dict,
+    config: dict,
+    stage2_mode: str,
+) -> tuple[dict, float]:
+    vp_start = time.perf_counter()
+    final = global_exact_spherical_vp_refinement(
+        y_noisy, estimate_used, scene, config
+    )
+    vp_s = time.perf_counter() - vp_start
+    final["vp_enabled"] = True
+    final["stage2_mode"] = stage2_mode
+    final["final_refinement_method"] = "global_exact_spherical_vp"
+    return final, vp_s
+
+
+def _run_ris_only_stage2(
+    z_noisy: np.ndarray,
+    scene: dict,
+    config: dict,
+    estimate_initial: dict,
+) -> tuple[dict, dict, dict, float]:
+    ris_config = copy.deepcopy(config)
+    ris_config["stage2_mode"] = "full_legacy"
+    ris_config["num_structured_iters"] = int(config.get("num_structured_iters", 2))
+    # Do not enable EVS/delay projections in the default rescue branch.
+    # Low-SNR logs show that EVS/delay updates can drift; RIS projection is the
+    # physically meaningful basin-recovery step.
+    ris_config["stage2_enable_evs"] = False
+    ris_config["stage2_enable_delay"] = False
+    ris_config["stage2_enable_ris"] = True
+    stage2_start = time.perf_counter()
+    estimate_used, structured_diag = structured_refinement(
+        z_noisy, scene, ris_config, copy.deepcopy(estimate_initial)
+    )
+    return (
+        estimate_used,
+        structured_diag,
+        ris_config,
+        time.perf_counter() - stage2_start,
+    )
+
+
+def _run_full_legacy_stage2(
+    z_noisy: np.ndarray,
+    scene: dict,
+    config: dict,
+    estimate_initial: dict,
+) -> tuple[dict, dict, dict, float]:
+    legacy_config = copy.deepcopy(config)
+    legacy_config["stage2_mode"] = "full_legacy"
+    legacy_config["stage2_enable_evs"] = True
+    legacy_config["stage2_enable_delay"] = True
+    legacy_config["stage2_enable_ris"] = True
+    stage2_start = time.perf_counter()
+    estimate_used, structured_diag = structured_refinement(
+        z_noisy, scene, legacy_config, copy.deepcopy(estimate_initial)
+    )
+    return (
+        estimate_used,
+        structured_diag,
+        legacy_config,
+        time.perf_counter() - stage2_start,
+    )
+
+
+def _final_raw_objective(final: dict) -> float:
+    for key in ("raw_objective_final", "raw_objective"):
+        value = final.get(key)
+        try:
+            value_float = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value_float):
+            return value_float
+    return float("nan")
+
+
+def run_stage1_only(data: dict, config: dict) -> dict:
+    """Run the Stage-I tensor/subspace initialization for one realization."""
+    stage1_start = time.perf_counter()
+    estimate = initialize_from_hankel(data["Z_noisy"], data["scene"], config)
+    return {
+        "estimate": estimate,
+        "timing": {"stage1": time.perf_counter() - stage1_start},
+        "stage1_config": config,
+    }
+
+
+def run_direct_vp_branch(
+    data: dict,
+    stage1_estimate: dict,
+    config: dict,
+    base_timing: dict,
+    reliability: dict,
+) -> dict:
+    """Run the direct Stage-I initialized raw-domain VP-WNLS branch."""
+    scene = data["scene"]
+    final, vp_s = _run_global_vp_branch(
+        data["Y_noisy"], copy.deepcopy(stage1_estimate), scene, config, "none"
+    )
+    timing = dict(base_timing)
+    timing.update(
+        {
+            "stage2": 0.0,
+            "ris_projection_total": 0.0,
+            "vp": vp_s,
+            "total": _common_timing_total(base_timing) + vp_s,
+        }
+    )
+    return _make_branch_result(
+        data=data,
+        estimate_initial=stage1_estimate,
+        estimate_used=copy.deepcopy(stage1_estimate),
+        structured_diag=_empty_structured_diag(),
+        final=final,
+        timing=timing,
+        stage1_config=config,
+        branch_name="direct_vp",
+        reliability=reliability,
+    )
+
+
+def run_ris_only_stage2_branch(
+    data: dict,
+    stage1_estimate: dict,
+    config: dict,
+    base_timing: dict,
+    reliability: dict,
+) -> dict:
+    """
+    Run RIS-only Stage-II basin recovery followed by raw-domain VP-WNLS.
+
+    RIS-only Stage-II is used only to move the initialization closer to the
+    exact spherical RIS manifold before the final raw-domain VP-WNLS.
+    """
+    scene = data["scene"]
+    ris_estimate, structured_diag, ris_config, stage2_s = _run_ris_only_stage2(
+        data["Z_noisy"], scene, config, stage1_estimate
+    )
+    final, vp_s = _run_global_vp_branch(
+        data["Y_noisy"], ris_estimate, scene, ris_config, "ris_only"
+    )
+    timing = dict(base_timing)
+    timing.update(
+        {
+            "stage2": stage2_s,
+            "ris_projection_total": float(
+                structured_diag.get("ris_projection_total_s", 0.0)
+            ),
+            "vp": vp_s,
+            "total": _common_timing_total(base_timing) + stage2_s + vp_s,
+        }
+    )
+    return _make_branch_result(
+        data=data,
+        estimate_initial=stage1_estimate,
+        estimate_used=ris_estimate,
+        structured_diag=structured_diag,
+        final=final,
+        timing=timing,
+        stage1_config=ris_config,
+        branch_name="ris_only_stage2_then_vp",
+        reliability=reliability,
+    )
+
+
+def run_full_legacy_comparison_branch(
+    data: dict,
+    stage1_estimate: dict,
+    config: dict,
+    base_timing: dict,
+    reliability: dict,
+) -> dict:
+    """Run the full legacy EVS/delay/RIS Stage-II only as an explicit ablation."""
+    scene = data["scene"]
+    estimate, structured_diag, legacy_config, stage2_s = _run_full_legacy_stage2(
+        data["Z_noisy"], scene, config, stage1_estimate
+    )
+    final, vp_s = _run_global_vp_branch(
+        data["Y_noisy"], estimate, scene, legacy_config, "full_legacy"
+    )
+    timing = dict(base_timing)
+    timing.update(
+        {
+            "stage2": stage2_s,
+            "ris_projection_total": float(
+                structured_diag.get("ris_projection_total_s", 0.0)
+            ),
+            "vp": vp_s,
+            "total": _common_timing_total(base_timing) + stage2_s + vp_s,
+        }
+    )
+    return _make_branch_result(
+        data=data,
+        estimate_initial=stage1_estimate,
+        estimate_used=estimate,
+        structured_diag=structured_diag,
+        final=final,
+        timing=timing,
+        stage1_config=legacy_config,
+        branch_name="full_legacy_comparison",
+        reliability=reliability,
+    )
+
+
+def _branch_y_nmse(branch: dict) -> float:
+    return float(relative_nmse(branch["final"]["Y_hat"], branch["Y_true"]))
+
+
+def select_proposed_branch(
+    direct_result: dict,
+    rescue_result: dict | None,
+    reliability: dict,
+    config: dict,
+) -> tuple[dict, bool]:
+    """Select the proposed output using the final raw-domain objective."""
+    if reliability["decision"] == "direct_vp" or rescue_result is None:
+        selected = dict(direct_result)
+        selected_branch = "direct_vp"
+        no_gain = False
+    else:
+        tol = float(config.get("stage2_objective_accept_tol", 1.0e-12))
+        direct_raw = _final_raw_objective(direct_result["final"])
+        rescue_raw = _final_raw_objective(rescue_result["final"])
+        if np.isfinite(direct_raw) and np.isfinite(rescue_raw):
+            accept_rescue = rescue_raw <= direct_raw + tol
+        else:
+            direct_nmse = _branch_y_nmse(direct_result)
+            rescue_nmse = _branch_y_nmse(rescue_result)
+            accept_rescue = rescue_nmse <= direct_nmse + tol
+
+        # Stage-II is accepted only if it improves the final raw-domain objective.
+        # This keeps the diagnostic consistent with the final estimator objective.
+        if accept_rescue:
+            selected = dict(rescue_result)
+            selected_branch = "ris_only_stage2_then_vp"
+            no_gain = False
+        else:
+            selected = dict(direct_result)
+            selected_branch = "direct_vp_rollback"
+            no_gain = True
+
+    selected["selected_branch"] = selected_branch
+    selected["reliability"] = reliability
+    selected["ris_stage2_no_gain"] = bool(no_gain)
+    selected["final"] = dict(selected["final"])
+    selected["final"]["selected_branch"] = selected_branch
+    selected["final"]["reliability"] = reliability
+    return selected, bool(no_gain)
+
+
+def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> dict:
+    """Run one reliability-gated proposed diagnostic realization."""
+    total_start = time.perf_counter()
+    config = _apply_main_single_defaults(copy.deepcopy(config))
+    data = _make_data(config)
+    base_timing = dict(data.get("timing", {}))
+
+    stage1 = run_stage1_only(data, config)
+    stage1_estimate = stage1["estimate"]
+    base_timing.update(stage1["timing"])
+    reliability = compute_stage1_reliability(stage1_estimate, data["scene"], config)
+    progress_printed = bool(config.get("print_progress", True))
+    if progress_printed:
+        _print_reliability_progress(reliability)
+        print("running_direct_vp_branch = True", flush=True)
+
+    # Good initialization: avoid unnecessary factor-domain projection.
+    direct_result = run_direct_vp_branch(
+        data, stage1_estimate, config, base_timing, reliability
+    )
+    branches = {"direct_vp": direct_result}
+    rescue_result = None
+
+    rescue_requested = (
+        allow_stage2
+        and bool(config.get("stage2_adaptive", True))
+        and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
+        and reliability["decision"] == "ris_only_stage2_then_vp"
+    )
+    if rescue_requested:
+        if progress_printed:
+            print("running_ris_only_stage2_rescue = True", flush=True)
+        # Poor but potentially recoverable initialization: use RIS-only projection
+        # to improve the VP basin, then return to the same raw-domain VP-WNLS objective.
+        rescue_result = run_ris_only_stage2_branch(
+            data, stage1_estimate, config, base_timing, reliability
+        )
+        branches["ris_only_stage2_then_vp"] = rescue_result
+
+    selected, no_gain = select_proposed_branch(
+        direct_result, rescue_result, reliability, config
+    )
+    if bool(config.get("run_full_legacy_comparison", False)):
+        if progress_printed:
+            print("running_full_legacy_comparison = True", flush=True)
+        branches["full_legacy_comparison"] = run_full_legacy_comparison_branch(
+            data, stage1_estimate, config, base_timing, reliability
+        )
+
+    result = dict(selected)
+    result["branches"] = branches
+    result["requested_reliability_decision"] = reliability["decision"]
+    result["ris_stage2_no_gain"] = bool(no_gain)
+    result["progress_printed"] = progress_printed
+    result["timing"] = dict(result["timing"])
+    result["timing"]["diagnostic_total"] = time.perf_counter() - total_start
+    return result
+
+
 def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
-    """Run Stage-I, optional legacy Stage-II ablation, and final raw-domain VP."""
+    """Run the pre-gated single pipeline for tests and older diagnostics."""
     total_start = time.perf_counter()
     data = _make_data(config)
     timing = dict(data.get("timing", {}))
     scene = data["scene"]
-    stage1_config = config
+
     stage1_start = time.perf_counter()
-    estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, stage1_config)
+    estimate_initial = initialize_from_hankel(data["Z_noisy"], scene, config)
     timing["stage1"] = time.perf_counter() - stage1_start
+
     requested_stage2_mode = str(config.get("stage2_mode", "none")).lower()
     stage2_mode = requested_stage2_mode if use_structured else "none"
     if stage2_mode == "full_legacy":
@@ -469,42 +1054,34 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         raise NotImplementedError("stage2_mode='ris_only' is not a standalone pipeline")
     elif stage2_mode == "none":
         estimate_used = copy.deepcopy(estimate_initial)
-        structured_diag = {
-            "z_hat_history": [],
-            "residuals_noisy_rmse": [],
-            "updates": [],
-            "ris_projection_total_s": 0.0,
-        }
+        structured_diag = _empty_structured_diag()
         timing["stage2"] = 0.0
     else:
         raise ValueError(f"unknown stage2_mode {stage2_mode!r}")
     timing["ris_projection_total"] = float(
         structured_diag.get("ris_projection_total_s", 0.0)
     )
+
     final_method = str(
         config.get("final_refinement_method", "global_exact_spherical_vp")
     ).lower()
     if not config.get("enable_global_vp", True):
         final_method = "none"
 
+    vp_start = time.perf_counter()
     if final_method == "global_exact_spherical_vp":
-        vp_start = time.perf_counter()
         final = global_exact_spherical_vp_refinement(
             data["Y_noisy"], estimate_used, scene, config
         )
-        timing["vp"] = time.perf_counter() - vp_start
         final["vp_enabled"] = True
         final["stage2_mode"] = stage2_mode
         final["final_refinement_method"] = "global_exact_spherical_vp"
     elif final_method == "legacy_raw_vp":
-        vp_start = time.perf_counter()
         final = refine_global_raw(data["Y_noisy"], scene, config, estimate_used)
-        timing["vp"] = time.perf_counter() - vp_start
         final["vp_enabled"] = True
         final["stage2_mode"] = stage2_mode
         final["final_refinement_method"] = "legacy_raw_vp"
     elif final_method == "none":
-        vp_start = time.perf_counter()
         y_hat = reconstruct_raw_tensor_from_structured_estimate(estimate_used, scene)
         raw_residual = y_hat - data["Y_noisy"]
         raw_objective = float(
@@ -512,11 +1089,7 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
             / data["Y_noisy"].size
         )
         tau_hat = np.array(
-            [
-                ((-np.angle(pole)) % (2.0 * np.pi))
-                / (2.0 * np.pi * scene["delta_f"])
-                for pole in estimate_used["poles"]
-            ]
+            [tau_from_pole(pole, scene["delta_f"]) for pole in estimate_used["poles"]]
         )
         final = {
             "Y_hat": y_hat,
@@ -526,7 +1099,7 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
                 "ranges": estimate_used["ris_eta"][:, 0],
             },
             "raw_residual_rmse_noisy": float(
-                np.linalg.norm(y_hat - data["Y_noisy"]) / np.sqrt(data["Y_noisy"].size)
+                np.linalg.norm(raw_residual) / np.sqrt(data["Y_noisy"].size)
             ),
             "raw_objective_initial": raw_objective,
             "raw_objective_final": raw_objective,
@@ -541,9 +1114,10 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
             "stage2_mode": stage2_mode,
             "final_refinement_method": "none",
         }
-        timing["vp"] = time.perf_counter() - vp_start
     else:
         raise ValueError(f"unknown final_refinement_method {final_method!r}")
+
+    timing["vp"] = time.perf_counter() - vp_start
     timing["total"] = time.perf_counter() - total_start
     return {
         **data,
@@ -552,7 +1126,7 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         "structured_diag": structured_diag,
         "stage1_initialization": {
             "mode": "normal",
-            "ris_search": dict(stage1_config["ris_search"]),
+            "ris_search": dict(config["ris_search"]),
         },
         "final": final,
         "timing": timing,
@@ -610,6 +1184,126 @@ def _print_global_vp_diagnostics(results: dict) -> None:
     print(f"legacy_stage2_runtime_s = {_fmt(timing.get('stage2'))}")
     print(f"global_vp_runtime_s = {_fmt(timing.get('vp'))}")
     print(f"total_runtime_s = {_fmt(timing.get('total'))}")
+
+
+def _print_reliability_gate_diagnostics(results: dict) -> None:
+    reliability = results["reliability"]
+    reasons = reliability.get("trigger_reasons", [])
+    print("\n=== Stage-I reliability gate ===")
+    print(f"reliability_decision = {reliability['decision']}")
+    print(f"selected_proposed_branch = {results.get('selected_branch', 'unknown')}")
+    print(f"bad_score = {reliability['bad_score']}")
+    print(f"trigger_reasons = {reasons if reasons else ['none']}")
+    print(f"assignment_margin = {_fmt(reliability.get('assignment_margin'))}")
+    print(f"sigma_delta_t_ns = {_fmt(reliability.get('sigma_delta_t_ns'))}")
+    print(f"delta_t_k_ns = {_fmt_vector(reliability.get('delta_t_k_ns', []))}")
+    print(
+        "reliability_used_panel_order = "
+        f"{reliability.get('reliability_used_panel_order', 'NA')}"
+    )
+    print(
+        "reliability_panel_to_column = "
+        f"{reliability.get('reliability_panel_to_column', 'NA')}"
+    )
+    print(f"max_ris_residual = {_fmt(reliability.get('max_ris_residual'))}")
+    print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}")
+    if reliability.get("severe_unreliable", False):
+        print("WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold.")
+    if results.get("ris_stage2_no_gain", False):
+        print(
+            "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
+            "raw-domain objective relative to direct Stage-I+VP; selected direct VP."
+        )
+
+
+def _print_reliability_warnings(results: dict) -> None:
+    reliability = results["reliability"]
+    if reliability.get("severe_unreliable", False):
+        print(
+            "WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold."
+        )
+    if results.get("ris_stage2_no_gain", False):
+        print(
+            "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
+            "raw-domain objective relative to direct Stage-I+VP; selected direct VP."
+        )
+
+
+def _print_reliability_progress(reliability: dict) -> None:
+    print("\n=== Stage-I reliability gate ===", flush=True)
+    print(f"reliability_decision = {reliability['decision']}", flush=True)
+    print(f"bad_score = {reliability['bad_score']}", flush=True)
+    print(
+        f"trigger_reasons = {reliability.get('trigger_reasons', []) or ['none']}",
+        flush=True,
+    )
+    print(f"assignment_margin = {_fmt(reliability.get('assignment_margin'))}", flush=True)
+    print(f"sigma_delta_t_ns = {_fmt(reliability.get('sigma_delta_t_ns'))}", flush=True)
+    print(f"delta_t_k_ns = {_fmt_vector(reliability.get('delta_t_k_ns', []))}", flush=True)
+    print(
+        "reliability_used_panel_order = "
+        f"{reliability.get('reliability_used_panel_order', 'NA')}",
+        flush=True,
+    )
+    print(
+        "reliability_panel_to_column = "
+        f"{reliability.get('reliability_panel_to_column', 'NA')}",
+        flush=True,
+    )
+    print(f"max_ris_residual = {_fmt(reliability.get('max_ris_residual'))}", flush=True)
+    print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}", flush=True)
+
+
+def _print_vp_branch_metrics(results: dict) -> None:
+    """Print direct, RIS-only if run, optional full legacy, and selected metrics."""
+    branches = results.get("branches", {})
+    ordered_names = ["direct_vp", "ris_only_stage2_then_vp", "full_legacy_comparison"]
+    print("\n=== Reliability branch metrics ===")
+    print(
+        "branch | raw_objective_final | Y_NMSE_true | position_RMSE_m | "
+        "range_RMSE_m | tau_RMSE_s | nfev | success"
+    )
+    printed_selected = False
+    for name in ordered_names:
+        branch = branches.get(name)
+        if branch is None:
+            continue
+        final = branch["final"]
+        y_metrics = y_metric_summary(final["Y_hat"], branch["Y_true"])
+        geom = parameter_errors_for_vp(branch["scene"], final, branch["true_components"])
+        optimizer = final.get("optimizer", {})
+        print(
+            f"{name} | {_fmt(_final_raw_objective(final))} | "
+            f"{_fmt(y_metrics['nmse'])} | {_fmt(geom['position_rmse'])} | "
+            f"{_fmt(geom['range_rmse'])} | {_fmt(geom['tau_rmse'])} | "
+            f"{optimizer.get('n_eval', 'NA')} | {optimizer.get('success', 'NA')}"
+        )
+        if name == results.get("selected_branch"):
+            printed_selected = True
+    if not printed_selected:
+        final = results["final"]
+        y_metrics = y_metric_summary(final["Y_hat"], results["Y_true"])
+        geom = parameter_errors_for_vp(results["scene"], final, results["true_components"])
+        optimizer = final.get("optimizer", {})
+        print(
+            f"{results.get('selected_branch', 'selected_proposed')} | "
+            f"{_fmt(_final_raw_objective(final))} | {_fmt(y_metrics['nmse'])} | "
+            f"{_fmt(geom['position_rmse'])} | {_fmt(geom['range_rmse'])} | "
+            f"{_fmt(geom['tau_rmse'])} | {optimizer.get('n_eval', 'NA')} | "
+            f"{optimizer.get('success', 'NA')}"
+        )
+    selected_final = results["final"]
+    selected_y = y_metric_summary(selected_final["Y_hat"], results["Y_true"])
+    selected_geom = parameter_errors_for_vp(
+        results["scene"], selected_final, results["true_components"]
+    )
+    print(
+        "selected_proposed_metrics = "
+        f"branch={results.get('selected_branch', 'unknown')}, "
+        f"raw_objective_final={_fmt(_final_raw_objective(selected_final))}, "
+        f"Y_NMSE_true={_fmt(selected_y['nmse'])}, "
+        f"position_RMSE_m={_fmt(selected_geom['position_rmse'])}"
+    )
 
 
 def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: float) -> dict:
@@ -1237,15 +1931,25 @@ def _print_structured_comparison(results: dict, direct_results: dict, y_metrics:
 
 
 def _print_vp_branch_comparison(results: dict, direct_results: dict) -> None:
-    """Print direct Stage-I+VP versus Stage-I+Stage-II+VP diagnostics."""
+    """Print direct, gated RIS-only, optional full legacy, and selected VP diagnostics."""
     if not bool(results["final"].get("vp_enabled", True)):
         return
     scene = results["scene"]
     true_components = results["true_components"]
-    branches = [
-        ("Stage-I+VP", direct_results["final"]),
-        ("Stage-I+Stage-II+VP", results["final"]),
-    ]
+    branches = [("Stage-I+VP", direct_results["final"])]
+    branch_results = results.get("branches", {})
+    if branch_results.get("ris_only_stage2_then_vp") is not None:
+        branches.append(
+            ("RIS-only Stage-II+VP", branch_results["ris_only_stage2_then_vp"]["final"])
+        )
+    if branch_results.get("full_legacy_comparison") is not None:
+        branches.append(
+            (
+                "Full legacy Stage-II+VP comparison",
+                branch_results["full_legacy_comparison"]["final"],
+            )
+        )
+    branches.append(("Selected proposed", results["final"]))
     print("\n=== VP branch comparison ===")
     print(
         "branch | solver_type | solver_backend | raw_objective_initial | "
@@ -1301,51 +2005,86 @@ def _print_runtime_profile(results: dict, direct_results: dict) -> None:
     print(f"vp_s = {_fmt(timing.get('vp'))}")
     print(f"global_vp_s = {_fmt(timing.get('vp'))}")
     print(f"total_s = {_fmt(timing.get('total'))}")
-    direct_timing = direct_results.get("timing", {})
-    print(f"direct_stage1_vp_total_s = {_fmt(direct_timing.get('total'))}")
-    print(f"direct_stage1_vp_vp_s = {_fmt(direct_timing.get('vp'))}")
+    print(f"diagnostic_total_s = {_fmt(timing.get('diagnostic_total'))}")
 
 
-def run_default_diagnostic() -> None:
-    """Run and print the default SNR=0 diagnostic report."""
-    config = default_config()
-    results = _run_single_pipeline(config, use_structured=True)
-    if str(config.get("stage2_mode", "none")).lower() == "none":
-        direct_results = copy.deepcopy(results)
-    else:
-        direct_results = _run_single_pipeline(config, use_structured=False)
+def _print_stage1_summary(results: dict) -> None:
+    """Print compact Stage-I initialization information."""
+    print("\n=== Stage-I summary ===")
+    _print_stage1_initialization_diagnostics(results)
+    estimate = results["estimate_initial"]
+    column_to_panel = estimate.get(
+        "column_to_panel_assignment", estimate.get("assignment")
+    )
+    print(f"column_to_panel_assignment = {column_to_panel}")
+    print(f"panel_to_column_assignment = {estimate.get('panel_to_column_assignment', 'NA')}")
+    print(f"initial_z_residual = {_fmt(estimate.get('initial_z_residual'))}")
+
+
+def _print_selected_runtime(results: dict) -> None:
+    timing = results.get("timing", {})
+    print("\n=== Runtime profile ===")
+    print(f"selected_branch = {results.get('selected_branch', 'unknown')}")
+    print(f"data_generation_s = {_fmt(timing.get('data_generation'))}")
+    print(f"hankelization_s = {_fmt(timing.get('hankelization'))}")
+    print(f"stage1_s = {_fmt(timing.get('stage1'))}")
+    print(f"ris_only_stage2_s = {_fmt(timing.get('stage2'))}")
+    print(f"ris_projection_total_s = {_fmt(timing.get('ris_projection_total'))}")
+    print(f"global_vp_s = {_fmt(timing.get('vp'))}")
+    print(f"selected_branch_total_s = {_fmt(timing.get('total'))}")
+    print(f"diagnostic_total_s = {_fmt(timing.get('diagnostic_total'))}")
+
+
+def print_run_summary(results: dict, config: dict) -> dict:
+    """Print the concise proposed-method diagnostic report."""
     scene = results["scene"]
+    true_components = results["true_components"]
+    y_metrics = y_metric_summary(results["final"]["Y_hat"], results["Y_true"])
+    param_metrics = parameter_errors_for_vp(scene, results["final"], true_components)
 
-    print("=== Single proposed diagnostic run ===")
+    mode = str(config.get("diagnostic_mode", "performance")).lower()
+    result_label = (
+        "SMOKE-TEST RESULT" if mode == "smoke" else "FULL-SIZE PERFORMANCE RESULT"
+    )
+    print(f"=== Single proposed diagnostic run: {result_label} ===")
     _print_run_configuration(config, results)
-    _print_ris_dimension_diagnostics(scene, results["true_components"])
-    _print_assignment_diagnostics(results)
-    _print_global_vp_diagnostics(results)
+    _print_stage1_summary(results)
+    if not results.get("progress_printed", False):
+        _print_reliability_gate_diagnostics(results)
+    else:
+        _print_reliability_warnings(results)
+    _print_vp_branch_metrics(results)
     if not scipy_is_available():
         print("optimizer_note = scipy.optimize not found; using deterministic fallback optimizer")
+    if bool(config.get("verbose_stage2", False)) and results["structured_diag"]["updates"]:
+        _print_stage_two_update_diagnostics(results)
+    _print_selected_runtime(results)
 
-    _print_self_tests(scene, config, results["true_components"])
-    y_metrics = _print_noise_and_y_metrics(results, direct_results, config["SNR_dB"])
-    _print_z_stage_metrics(results)
-    _print_stage2_summary_table(results)
-    param_metrics = _print_parameter_diagnostics(results)
-    _print_stage_two_update_diagnostics(results)
-    _print_vp_branch_comparison(results, direct_results)
-    _print_structured_comparison(results, direct_results, y_metrics)
-    _print_runtime_profile(results, direct_results)
-
-    print("\n=== Final result ===")
+    print(f"\n=== Final result: {result_label} ===")
     print(f"Y_true shape = {results['Y_true'].shape}")
     print(f"Y_noisy shape = {results['Y_noisy'].shape}")
     print(f"Y_hat shape = {results['final']['Y_hat'].shape}")
     print(f"global_VP_enabled = {results['final'].get('vp_enabled', True)}")
-    print(f"RMSE_Y_abs = {y_metrics['final']['rmse_abs']:.6e}")
-    print(f"NMSE_Y_hat = {y_metrics['final']['nmse']:.6e}")
-    print(f"UE_position_RMSE_m = {param_metrics['final']['position_rmse']:.6e}")
+    print(f"selected_branch = {results.get('selected_branch', 'unknown')}")
+    print(f"raw_objective_final = {_fmt(_final_raw_objective(results['final']))}")
+    print(f"RMSE_Y_abs = {y_metrics['rmse_abs']:.6e}")
+    print(f"NMSE_Y_hat = {y_metrics['nmse']:.6e}")
+    print(f"UE_position_RMSE_m = {param_metrics['position_rmse']:.6e}")
+    return {"y": y_metrics, "parameters": param_metrics}
+
+
+def run_default_diagnostic(config: dict | None = None) -> None:
+    """Run and print the default proposed diagnostic report."""
+    if config is None:
+        config = default_config()
+    config = _apply_main_single_defaults(config)
+    results = run_single_proposed_diagnostic(config)
+    print_run_summary(results, config)
 
 
 def _run_compact(config: dict) -> dict:
     """Run the full pipeline once and return compact sweep metrics."""
+    config = _apply_main_single_defaults(config)
     results = _run_single_pipeline(config, use_structured=True)
     y_true = results["Y_true"]
     y_noisy = results["Y_noisy"]
@@ -1361,6 +2100,7 @@ def _run_compact(config: dict) -> dict:
         "position_RMSE_final": final_params["position_rmse"],
         "global_VP_enabled": bool(results["final"].get("vp_enabled", True)),
         "range_RMSE_after_structured": structured_params["range_rmse"],
+        "selected_branch": results.get("selected_branch", "unknown"),
     }
 
 
@@ -1379,7 +2119,8 @@ def run_snr_sweep() -> None:
             f"NMSE_Y_noisy={metrics['NMSE_Y_noisy']:.6e}, "
             f"NMSE_Y_hat_final={metrics['NMSE_Y_hat_final']:.6e}, "
             f"position_RMSE_final={metrics['position_RMSE_final']:.6e}, "
-            f"global_VP_enabled={metrics['global_VP_enabled']}"
+            f"global_VP_enabled={metrics['global_VP_enabled']}, "
+            f"selected_branch={metrics['selected_branch']}"
         )
     if position_errors[-1] > position_errors[0]:
         print("WARNING GEOM_DEGRADE: UE position RMSE did not improve from -10 dB to 30 dB.")
@@ -1399,7 +2140,8 @@ def run_mr_sweep() -> None:
             f"T={t_dim}, "
             f"range_RMSE_after_structured={metrics['range_RMSE_after_structured']:.6e}, "
             f"position_RMSE_final={metrics['position_RMSE_final']:.6e}, "
-            f"global_VP_enabled={metrics['global_VP_enabled']}"
+            f"global_VP_enabled={metrics['global_VP_enabled']}, "
+            f"selected_branch={metrics['selected_branch']}"
         )
 
 
@@ -1408,6 +2150,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostic-snr-sweep", action="store_true")
     parser.add_argument("--diagnostic-mr-sweep", action="store_true")
+    parser.add_argument("--run-full-legacy-comparison", action="store_true")
+    parser.add_argument("--verbose-stage2", action="store_true")
+    parser.add_argument(
+        "--diagnostic-mode",
+        choices=("smoke", "performance"),
+        default=None,
+        help="Run a quick smoke diagnostic or the full-size performance diagnostic.",
+    )
+    parser.add_argument("--full-size-diagnostic", action="store_true")
+    parser.add_argument("--full-stage1-search", action="store_true")
     args = parser.parse_args()
 
     if args.diagnostic_snr_sweep:
@@ -1415,7 +2167,21 @@ def main() -> None:
     elif args.diagnostic_mr_sweep:
         run_mr_sweep()
     else:
-        run_default_diagnostic()
+        config = default_config()
+        if args.diagnostic_mode is not None:
+            config["diagnostic_mode"] = args.diagnostic_mode
+            if args.diagnostic_mode == "smoke":
+                config["diagnostic_fast_problem_size"] = True
+                config["diagnostic_fast_stage1_search"] = True
+        if args.run_full_legacy_comparison:
+            config["run_full_legacy_comparison"] = True
+        if args.verbose_stage2:
+            config["verbose_stage2"] = True
+        if args.full_size_diagnostic:
+            config["diagnostic_fast_problem_size"] = False
+        if args.full_stage1_search:
+            config["diagnostic_fast_stage1_search"] = False
+        run_default_diagnostic(config)
 
 
 if __name__ == "__main__":
