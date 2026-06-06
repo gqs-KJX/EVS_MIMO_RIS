@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.config import default_config
+from src.config import apply_stage1_init_preset, default_config
 from src.estimators import _accept_strict_sse, structured_refinement
 from src.main_single_proposed import (
     _print_stage_two_update_diagnostics,
@@ -33,11 +33,14 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["vp_max_iter"] == 10
     assert config["delta_t_true"] == 5.0e-9
     assert config["delta_t_bounds"][1] == 10.0e-9
-    assert config["stage1_delay_method"] == "aimdf_tls"
+    assert config["stage1_init_mode"] == "paper_stable"
+    assert config["stage1_delay_method"] == "aimdf_fullfreq_tls"
     assert config["stage1_forward_backward"] is True
     assert config["stage1_tls"] is True
     assert config["stage1_factor_init"] == "hankel_coupled_ls"
     assert config["stage1_factor_reg"] == 1.0e-10
+    assert config["stage1_factor_reg_mode"] == "relative"
+    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
     assert config["ris_search"]["projection_mode"] == "wesvp_ms"
     assert config["ris_search"]["use_qd_init"] is False
     assert config["ris_search"]["qd_proxy_reg"] == 1.0e-6
@@ -136,6 +139,42 @@ def test_main_single_weak_reasonable_stage1_config():
     assert original_search["num_range"] == 15
     assert original_search["num_elev"] == 9
     assert original_search["num_az"] == 25
+    assert original_search["num_exact_refine_starts"] == 6
+    assert original_search["num_lift_candidates"] == 4
+    assert original_search["num_lift_steps"] == 4
+
+
+def test_stage1_light_and_heavy_presets_are_explicit():
+    config = default_config()
+    apply_stage1_init_preset(config, "paper_balanced")
+    assert config["stage1_init_mode"] == "paper_balanced"
+    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["ris_search"]["num_range"] == 9
+    assert config["ris_search"]["num_elev"] == 5
+    assert config["ris_search"]["num_az"] == 13
+    assert config["ris_search"]["num_exact_refine_starts"] == 3
+    assert config["ris_search"]["num_lift_candidates"] == 3
+    assert config["ris_search"]["num_lift_steps"] == 3
+
+    apply_stage1_init_preset(config, "paper_balanced_light")
+    assert config["stage1_init_mode"] == "paper_balanced_light"
+    assert config["stage1_ris_geometry_mode"] == "coarse_correlation"
+    assert config["ris_search"]["num_range"] == 9
+    assert config["ris_search"]["num_elev"] == 5
+    assert config["ris_search"]["num_az"] == 13
+    assert config["ris_search"]["num_exact_refine_starts"] == 1
+    assert config["ris_search"]["num_lift_candidates"] == 1
+    assert config["ris_search"]["num_lift_steps"] == 1
+
+    apply_stage1_init_preset(config, "normal_heavy")
+    assert config["stage1_init_mode"] == "normal_heavy"
+    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["ris_search"]["num_range"] == 15
+    assert config["ris_search"]["num_elev"] == 9
+    assert config["ris_search"]["num_az"] == 25
+    assert config["ris_search"]["num_exact_refine_starts"] == 6
+    assert config["ris_search"]["num_lift_candidates"] == 4
+    assert config["ris_search"]["num_lift_steps"] == 4
 
 
 def test_accept_strict_sse_requires_strict_relative_decrease():

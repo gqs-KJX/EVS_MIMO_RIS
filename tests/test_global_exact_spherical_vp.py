@@ -322,6 +322,8 @@ def test_default_least_squares_reproduces_old_direct_stage1_vp_performance():
 
     config = default_config()
     config["stage2_mode"] = "none"
+    config["stage1_ris_geometry_mode"] = "exact_projection"
+    config["ris_search"]["num_exact_refine_starts"] = 3
     config["final_refinement_method"] = "global_exact_spherical_vp"
     config["global_vp"]["solver"] = "least_squares"
     results = _run_single_pipeline(config, use_structured=True)

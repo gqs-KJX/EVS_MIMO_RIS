@@ -5,21 +5,158 @@ from __future__ import annotations
 import numpy as np
 
 
+def apply_stage1_init_preset(config: dict, mode: str | None = None) -> dict:
+    """Apply one of the named Stage-I initializer presets in-place."""
+    preset = str(mode if mode is not None else config.get("stage1_init_mode", "paper_stable"))
+    if preset not in {
+        "smoke",
+        "paper_balanced",
+        "paper_balanced_light",
+        "paper_light_ablation",
+        "paper_stable",
+        "robust_low_snr",
+        "normal_heavy",
+    }:
+        raise ValueError(f"unknown stage1_init_mode {preset!r}")
+    if preset == "paper_light_ablation":
+        preset = "paper_balanced_light"
+    config["stage1_init_mode"] = preset
+    ris_search = dict(config["ris_search"])
+    k_paths = int(config.get("K", 3))
+
+    common = {
+        "stage1_factor_init": "hankel_coupled_ls",
+        "stage1_factor_reg_mode": "relative",
+        "stage1_factor_reg_rel": 1.0e-6,
+        "stage1_factor_reg_floor": 1.0e-12,
+    }
+    config.update(common)
+
+    if preset == "smoke":
+        config.update(
+            {
+                "stage1_delay_method": "aimdf_asym_tls",
+                "stage1_snapshot_sketch_dim": max(4 * k_paths, 16),
+                "stage1_forward_backward": True,
+                "stage1_tls": True,
+                "stage1_ris_geometry_mode": "coarse_correlation",
+                "stage1_ris_residual_type": "coarse_proxy",
+            }
+        )
+        ris_search.update(
+            {
+                "num_range": 5,
+                "num_elev": 3,
+                "num_az": 7,
+                "num_exact_refine_starts": 0,
+                "num_lift_candidates": 1,
+                "num_lift_steps": 1,
+            }
+        )
+    elif preset == "paper_balanced_light":
+        config.update(
+            {
+                "stage1_delay_method": "aimdf_fullfreq_tls",
+                "stage1_snapshot_sketch_dim": None,
+                "stage1_forward_backward": True,
+                "stage1_tls": True,
+                "stage1_ris_geometry_mode": "coarse_correlation",
+                "stage1_ris_residual_type": "coarse_proxy",
+            }
+        )
+        ris_search.update(
+            {
+                "num_range": 9,
+                "num_elev": 5,
+                "num_az": 13,
+                "num_exact_refine_starts": 1,
+                "num_lift_candidates": 1,
+                "num_lift_steps": 1,
+            }
+        )
+    elif preset == "paper_balanced":
+        config.update(
+            {
+                "stage1_delay_method": "aimdf_fullfreq_tls",
+                "stage1_snapshot_sketch_dim": None,
+                "stage1_forward_backward": True,
+                "stage1_tls": True,
+                "stage1_ris_geometry_mode": "legacy_fast_projection",
+                "stage1_ris_residual_type": "legacy_fast_projection",
+            }
+        )
+        ris_search.update(
+            {
+                "num_range": 9,
+                "num_elev": 5,
+                "num_az": 13,
+                "num_exact_refine_starts": 3,
+                "num_lift_candidates": 3,
+                "num_lift_steps": 3,
+            }
+        )
+    elif preset in ("paper_stable", "normal_heavy"):
+        config.update(
+            {
+                "stage1_delay_method": "aimdf_fullfreq_tls",
+                "stage1_snapshot_sketch_dim": None,
+                "stage1_forward_backward": True,
+                "stage1_tls": True,
+                "stage1_ris_geometry_mode": "legacy_fast_projection",
+                "stage1_ris_residual_type": "legacy_fast_projection",
+            }
+        )
+        ris_search.update(
+            {
+                "num_range": 15,
+                "num_elev": 9,
+                "num_az": 25,
+                "num_exact_refine_starts": 6,
+                "num_lift_candidates": 4,
+                "num_lift_steps": 4,
+            }
+        )
+    else:
+        config.update(
+            {
+                "stage1_delay_method": "aimdf_asym_tls",
+                "stage1_snapshot_sketch_dim": max(8 * k_paths, 32),
+                "stage1_forward_backward": True,
+                "stage1_tls": True,
+                "stage1_ris_geometry_mode": "legacy_fast_projection",
+                "stage1_ris_residual_type": "legacy_fast_projection",
+            }
+        )
+        ris_search.update(
+            {
+                "num_range": 15,
+                "num_elev": 9,
+                "num_az": 25,
+                "num_exact_refine_starts": 6,
+                "num_lift_candidates": 4,
+                "num_lift_steps": 4,
+            }
+        )
+    config["ris_search"] = ris_search
+    return config
+
+
 def default_config() -> dict:
     """Return the default single-diagnostic XL-RIS configuration."""
     c0 = 299_792_458.0
     fc = 60.0e9
     wavelength = c0 / fc
 
-    return {
+    config = {
         "seed": 20260526,
         "trials": 1,
-        "SNR_dB": 20.0,
+        "SNR_dB": 0.0,
         "enable_global_vp": True,
         "stage2_mode": "none",
         "diagnostic_mode": "performance",
         "run_full_legacy_comparison": False,
         "verbose_stage2": False,
+        "verbose_timing": False,
         "print_progress": True,
         "diagnostic_fast_problem_size": False,
         "diagnostic_fast_stage1_search": False,
@@ -60,18 +197,25 @@ def default_config() -> dict:
             ]
         ),
         "delta_t_bounds": np.array([0.0, 10.0e-9]),
-        "stage1_delay_method": "aimdf_tls",
+        "stage1_init_mode": "paper_stable",
+        "stage1_delay_method": "aimdf_fullfreq_tls",
         "stage1_forward_backward": True,
         "stage1_tls": True,
+        "stage1_snapshot_sketch_dim": None,
         "stage1_factor_init": "hankel_coupled_ls",
         "stage1_factor_reg": 1.0e-10,
+        "stage1_factor_reg_mode": "relative",
+        "stage1_factor_reg_rel": 1.0e-6,
+        "stage1_factor_reg_floor": 1.0e-12,
+        "stage1_ris_geometry_mode": "legacy_fast_projection",
+        "stage1_ris_residual_type": "legacy_fast_projection",
         "ris_search": {
             "range_bounds": (2.5, 6.5),
             "elev_bounds": (-0.45, 0.25),
             "az_bounds": (-np.pi, np.pi),
-            "num_range": 15,
-            "num_elev": 9,
-            "num_az": 25,
+            "num_range": 9,
+            "num_elev": 5,
+            "num_az": 13,
             "stage2_num_range": 3,
             "stage2_num_elev": 3,
             "stage2_num_az": 5,
@@ -81,7 +225,7 @@ def default_config() -> dict:
             "num_lift_steps": 4,
             "lambda_phys": 1.0e-2,
             "ris_pgd_step_scale": 0.5,
-            "num_exact_refine_starts": 6,
+            "num_exact_refine_starts": 3,
             "projection_mode": "wesvp_ms",
             "use_qd_init": False,
             "qd_proxy_reg": 1.0e-6,
@@ -141,3 +285,4 @@ def default_config() -> dict:
         },
         "eps": 1.0e-10,
     }
+    return apply_stage1_init_preset(config, config["stage1_init_mode"])

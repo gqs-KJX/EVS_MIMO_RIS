@@ -33,7 +33,7 @@ if __package__ in (None, ""):
         generate_scene,
         synthesize_raw_tensor,
     )
-    from src.config import default_config
+    from src.config import apply_stage1_init_preset, default_config
     from src.diagnostics import (
         format_float_list,
         hankel_metric_summary,
@@ -67,7 +67,7 @@ else:
         generate_scene,
         synthesize_raw_tensor,
     )
-    from .config import default_config
+    from .config import apply_stage1_init_preset, default_config
     from .diagnostics import (
         format_float_list,
         hankel_metric_summary,
@@ -336,9 +336,12 @@ def _apply_main_single_defaults(config: dict) -> dict:
             "num_range": 9,
             "num_elev": 5,
             "num_az": 13,
-            "num_exact_refine_starts": 3,
-            "num_lift_candidates": 3,
-            "num_lift_steps": 3,
+            "num_exact_refine_starts": 0
+            if config.get("stage1_ris_geometry_mode", "coarse_correlation")
+            == "coarse_correlation"
+            else 3,
+            "num_lift_candidates": 1,
+            "num_lift_steps": 1,
         }
         for key, floor in floors.items():
             ris_search[key] = max(int(ris_search.get(key, floor)), floor)
@@ -476,6 +479,13 @@ def compute_stage1_reliability(stage1_estimate: dict, scene: dict, config: dict)
     assignment_low = float(config["reliability_assignment_low"])
     clock_bad_ns = float(config["reliability_clock_bad_ns"])
     ris_bad = float(config["reliability_ris_bad"])
+    use_ris_residual_gate = bool(
+        config.get(
+            "stage1_ris_residual_gate",
+            str(config.get("stage1_ris_geometry_mode", "coarse_correlation"))
+            == "coarse_correlation",
+        )
+    )
 
     bad_score = 0
     trigger_reasons = []
@@ -485,14 +495,14 @@ def compute_stage1_reliability(stage1_estimate: dict, scene: dict, config: dict)
     if _finite_greater(sigma_delta_t_ns, clock_good_ns):
         bad_score += 1
         trigger_reasons.append("poor_clock_consistency")
-    if _finite_greater(max_ris_residual, ris_good):
+    if use_ris_residual_gate and _finite_greater(max_ris_residual, ris_good):
         bad_score += 1
         trigger_reasons.append("large_ris_residual")
 
     severe_unreliable = (
         _finite_less(assignment_margin, assignment_low)
         or _finite_greater(sigma_delta_t_ns, clock_bad_ns)
-        or _finite_greater(max_ris_residual, ris_bad)
+        or (use_ris_residual_gate and _finite_greater(max_ris_residual, ris_bad))
     )
     decision = "direct_vp" if bad_score == 0 else "ris_only_stage2_then_vp"
     return {
@@ -503,11 +513,34 @@ def compute_stage1_reliability(stage1_estimate: dict, scene: dict, config: dict)
         "reliability_used_panel_order": bool(used_panel_order),
         "reliability_panel_to_column": panel_to_column,
         "max_ris_residual": max_ris_residual,
+        "stage1_ris_residual_type": stage1_estimate.get(
+            "stage1_ris_residual_type", "unknown"
+        ),
+        "stage1_ris_residual_gate": bool(use_ris_residual_gate),
         "bad_score": int(bad_score),
         "decision": decision,
         "trigger_reasons": trigger_reasons,
         "severe_unreliable": bool(severe_unreliable),
     }
+
+
+def _paper_balanced_good_snr_triggered_stage2(config: dict, reliability: dict) -> bool:
+    """Return True when default paper preset unexpectedly asks for Stage-II."""
+    return (
+        str(config.get("diagnostic_mode", "performance")).lower() == "performance"
+        and float(config.get("SNR_dB", float("nan"))) >= 0.0
+        and str(config.get("stage1_init_mode", "paper_balanced")) == "paper_balanced"
+        and reliability.get("decision") != "direct_vp"
+    )
+
+
+def _max_ris_residual_display(reliability: dict):
+    """Return the log value for max RIS residual consistent with gate usage."""
+    if bool(reliability.get("stage1_ris_residual_gate", False)):
+        return reliability.get("max_ris_residual")
+    if reliability.get("stage1_ris_residual_type") == "coarse_proxy":
+        return "coarse_proxy_not_used"
+    return "NA"
 
 
 def _print_stage1_initialization_diagnostics(results: dict) -> None:
@@ -708,9 +741,10 @@ def _make_branch_result(
         "estimate_used": estimate_used,
         "structured_diag": structured_diag,
         "stage1_initialization": {
-            "mode": "normal",
+            "mode": stage1_config.get("stage1_init_mode", "normal"),
             "ris_search": dict(stage1_config["ris_search"]),
         },
+        "stage1_config": stage1_config,
         "final": final,
         "timing": timing,
         "branch_name": branch_name,
@@ -751,6 +785,7 @@ def _run_ris_only_stage2(
     ris_config["stage2_enable_evs"] = False
     ris_config["stage2_enable_delay"] = False
     ris_config["stage2_enable_ris"] = True
+    ris_config["stage2_ris_use_current_eta"] = False
     stage2_start = time.perf_counter()
     estimate_used, structured_diag = structured_refinement(
         z_noisy, scene, ris_config, copy.deepcopy(estimate_initial)
@@ -802,9 +837,16 @@ def run_stage1_only(data: dict, config: dict) -> dict:
     """Run the Stage-I tensor/subspace initialization for one realization."""
     stage1_start = time.perf_counter()
     estimate = initialize_from_hankel(data["Z_noisy"], data["scene"], config)
+    timing = {"stage1": time.perf_counter() - stage1_start}
+    for key, value in estimate.items():
+        if key.startswith("stage1_time_"):
+            try:
+                timing[key] = float(value)
+            except (TypeError, ValueError):
+                pass
     return {
         "estimate": estimate,
-        "timing": {"stage1": time.perf_counter() - stage1_start},
+        "timing": timing,
         "stage1_config": config,
     }
 
@@ -982,10 +1024,27 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     stage1 = run_stage1_only(data, config)
     stage1_estimate = stage1["estimate"]
     base_timing.update(stage1["timing"])
+    stage1_profile_reference = None
+    if (
+        bool(config.get("verbose_timing", False))
+        and str(config.get("stage1_init_mode")) == "paper_balanced"
+    ):
+        heavy_config = copy.deepcopy(config)
+        apply_stage1_init_preset(heavy_config, "normal_heavy")
+        heavy_stage1 = run_stage1_only(data, heavy_config)
+        stage1_profile_reference = {
+            "mode": "normal_heavy",
+            "stage1_s": float(heavy_stage1["timing"]["stage1"]),
+        }
+        base_timing["stage1_normal_heavy_reference"] = stage1_profile_reference[
+            "stage1_s"
+        ]
     reliability = compute_stage1_reliability(stage1_estimate, data["scene"], config)
     progress_printed = bool(config.get("print_progress", True))
     if progress_printed:
         _print_reliability_progress(reliability)
+        if _paper_balanced_good_snr_triggered_stage2(config, reliability):
+            print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR", flush=True)
         print("running_direct_vp_branch = True", flush=True)
 
     # Good initialization: avoid unnecessary factor-domain projection.
@@ -1023,6 +1082,13 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
 
     result = dict(selected)
     result["branches"] = branches
+    result["stage1_config"] = config
+    if stage1_profile_reference is not None:
+        result["stage1_profile_reference"] = stage1_profile_reference
+        result["timing"] = dict(result["timing"])
+        result["timing"]["stage1_normal_heavy_reference"] = stage1_profile_reference[
+            "stage1_s"
+        ]
     result["requested_reliability_decision"] = reliability["decision"]
     result["ris_stage2_no_gain"] = bool(no_gain)
     result["progress_printed"] = progress_printed
@@ -1125,9 +1191,10 @@ def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
         "estimate_used": estimate_used,
         "structured_diag": structured_diag,
         "stage1_initialization": {
-            "mode": "normal",
+            "mode": config.get("stage1_init_mode", "normal"),
             "ris_search": dict(config["ris_search"]),
         },
+        "stage1_config": config,
         "final": final,
         "timing": timing,
     }
@@ -1188,6 +1255,7 @@ def _print_global_vp_diagnostics(results: dict) -> None:
 
 def _print_reliability_gate_diagnostics(results: dict) -> None:
     reliability = results["reliability"]
+    config = results.get("stage1_config", {})
     reasons = reliability.get("trigger_reasons", [])
     print("\n=== Stage-I reliability gate ===")
     print(f"reliability_decision = {reliability['decision']}")
@@ -1205,10 +1273,15 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
         "reliability_panel_to_column = "
         f"{reliability.get('reliability_panel_to_column', 'NA')}"
     )
-    print(f"max_ris_residual = {_fmt(reliability.get('max_ris_residual'))}")
+    max_ris_display = _max_ris_residual_display(reliability)
+    print(
+        f"max_ris_residual = {_fmt(max_ris_display) if not isinstance(max_ris_display, str) else max_ris_display}"
+    )
     print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}")
     if reliability.get("severe_unreliable", False):
         print("WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold.")
+    if _paper_balanced_good_snr_triggered_stage2(config, reliability):
+        print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR")
     if results.get("ris_stage2_no_gain", False):
         print(
             "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
@@ -1218,6 +1291,7 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
 
 def _print_reliability_warnings(results: dict) -> None:
     reliability = results["reliability"]
+    config = results.get("stage1_config", {})
     if reliability.get("severe_unreliable", False):
         print(
             "WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold."
@@ -1227,6 +1301,8 @@ def _print_reliability_warnings(results: dict) -> None:
             "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
             "raw-domain objective relative to direct Stage-I+VP; selected direct VP."
         )
+    if _paper_balanced_good_snr_triggered_stage2(config, reliability):
+        print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR")
 
 
 def _print_reliability_progress(reliability: dict) -> None:
@@ -1250,7 +1326,12 @@ def _print_reliability_progress(reliability: dict) -> None:
         f"{reliability.get('reliability_panel_to_column', 'NA')}",
         flush=True,
     )
-    print(f"max_ris_residual = {_fmt(reliability.get('max_ris_residual'))}", flush=True)
+    max_ris_display = _max_ris_residual_display(reliability)
+    print(
+        "max_ris_residual = "
+        f"{_fmt(max_ris_display) if not isinstance(max_ris_display, str) else max_ris_display}",
+        flush=True,
+    )
     print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}", flush=True)
 
 
@@ -2018,6 +2099,22 @@ def _print_stage1_summary(results: dict) -> None:
     )
     print(f"column_to_panel_assignment = {column_to_panel}")
     print(f"panel_to_column_assignment = {estimate.get('panel_to_column_assignment', 'NA')}")
+    reliability = results.get("reliability", {})
+    selected_clock_std = estimate.get("selected_clock_std")
+    try:
+        selected_clock_std_ns = float(selected_clock_std) * 1.0e9
+    except (TypeError, ValueError):
+        selected_clock_std_ns = float("nan")
+    print(f"stage1_assignment_margin = {_fmt(estimate.get('stage1_assignment_margin'))}")
+    print(f"stage1_selected_clock_std_ns = {_fmt(selected_clock_std_ns)}")
+    print(f"delta_t_k_ns = {_fmt_vector(reliability.get('delta_t_k_ns', []))}")
+    print(f"stage1_max_rank1_ratio = {_fmt(estimate.get('stage1_max_rank1_ratio'))}")
+    max_ris_display = _max_ris_residual_display(reliability)
+    print(
+        "max_ris_residual = "
+        f"{_fmt(max_ris_display) if not isinstance(max_ris_display, str) else max_ris_display}"
+    )
+    print(f"stage1_ris_residual_type = {estimate.get('stage1_ris_residual_type', 'NA')}")
     print(f"initial_z_residual = {_fmt(estimate.get('initial_z_residual'))}")
 
 
@@ -2033,6 +2130,33 @@ def _print_selected_runtime(results: dict) -> None:
     print(f"global_vp_s = {_fmt(timing.get('vp'))}")
     print(f"selected_branch_total_s = {_fmt(timing.get('total'))}")
     print(f"diagnostic_total_s = {_fmt(timing.get('diagnostic_total'))}")
+    if bool(results.get("stage1_config", {}).get("verbose_timing", False)):
+        print("\n=== Stage-I timing detail ===")
+        for key in (
+            "stage1_time_delay_estimation",
+            "stage1_time_vandermonde_reconstruction",
+            "stage1_time_coupled_ls",
+            "stage1_time_rank1_svd_split",
+            "stage1_time_assignment_total",
+            "stage1_time_assignment_evs",
+            "stage1_time_assignment_ris",
+            "stage1_time_ris_codebook_build",
+            "stage1_time_ris_projection_refine",
+            "stage1_time_reliability_diagnostics",
+            "stage1_time_other",
+        ):
+            print(f"{key}_s = {_fmt(timing.get(key, results['estimate_initial'].get(key)))}")
+        reference = results.get("stage1_profile_reference")
+        if reference is not None:
+            paper_s = timing.get("stage1")
+            heavy_s = reference.get("stage1_s")
+            print(f"stage1_normal_heavy_reference_s = {_fmt(heavy_s)}")
+            if (
+                np.isfinite(float(paper_s))
+                and np.isfinite(float(heavy_s))
+                and float(paper_s) > float(heavy_s)
+            ):
+                print("WARNING_PAPER_BALANCED_SLOWER_THAN_HEAVY")
 
 
 def print_run_summary(results: dict, config: dict) -> dict:

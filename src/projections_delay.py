@@ -380,6 +380,122 @@ def estimate_poles_aimdf_tls_from_hankel(
     return poles[:k_paths] / magnitudes[:k_paths]
 
 
+def _esprit_rotation(
+    upper: np.ndarray,
+    lower: np.ndarray,
+    k_paths: int,
+    tls: bool,
+) -> tuple[np.ndarray, bool]:
+    """Return the ESPRIT shift matrix using TLS when the aperture supports it."""
+    use_tls = bool(tls)
+    if use_tls and upper.shape[0] < 2 * k_paths:
+        use_tls = False
+    if use_tls:
+        stacked = np.concatenate([upper, lower], axis=1)
+        _, _, vh = np.linalg.svd(stacked, full_matrices=False)
+        v_mat = vh.conj().T
+        v12 = v_mat[:k_paths, k_paths:]
+        v22 = v_mat[k_paths:, k_paths:]
+        return -v12 @ np.linalg.pinv(v22), True
+    return np.linalg.lstsq(upper, lower, rcond=None)[0], False
+
+
+def estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
+    z_tensor: np.ndarray,
+    k_paths: int,
+    forward_backward: bool = True,
+    tls: bool = True,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, dict]:
+    """Estimate full-frequency A-IMDF poles and return Stage-I diagnostics."""
+    assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
+    _, p_dim, l_dim, _ = z_tensor.shape
+    n_dim = p_dim + l_dim - 1
+    y_like = dehankelize_frequency(z_tensor, n_dim)
+    y_freq = np.transpose(y_like, (1, 0, 2)).reshape(n_dim, -1)
+
+    if forward_backward:
+        reversal = np.fliplr(np.eye(n_dim))
+        y_aug = np.concatenate([y_freq, reversal @ y_freq.conj()], axis=1)
+    else:
+        y_aug = y_freq
+
+    u_mat, s_val, _ = np.linalg.svd(y_aug, full_matrices=False)
+    signal_subspace = u_mat[:, :k_paths]
+    psi, used_tls = _esprit_rotation(
+        signal_subspace[:-1, :], signal_subspace[1:, :], k_paths, tls
+    )
+    eigvals = np.linalg.eigvals(psi)
+    pole_magnitudes = np.abs(eigvals)
+    poles = eigvals / np.maximum(pole_magnitudes, eps)
+    order = np.argsort(np.angle(poles), kind="mergesort")
+    poles = poles[order][:k_paths]
+    pole_magnitudes = pole_magnitudes[order][:k_paths]
+    diagnostics = {
+        "delay_method": "aimdf_fullfreq_tls",
+        "singular_values": s_val,
+        "pole_magnitudes_before_unit_circle": pole_magnitudes,
+        "forward_backward": forward_backward,
+        "tls": used_tls,
+        "snapshot_sketch_dim": None,
+        "Y_asym_shape": y_freq.shape,
+        "Y_fb_shape": y_aug.shape,
+    }
+    return poles, diagnostics
+
+
+def estimate_poles_aimdf_asym_tls_from_hankel(
+    z_tensor: np.ndarray,
+    k_paths: int,
+    forward_backward: bool = True,
+    tls: bool = True,
+    snapshot_sketch_dim: int | None = None,
+    sketch_seed: int = 0,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, dict]:
+    """Estimate delay poles from the L-mode aperture using asymmetric FB/TLS ESPRIT."""
+    assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
+    i_dim, p_dim, l_dim, t_dim = z_tensor.shape
+    y_asym = np.transpose(z_tensor, (2, 0, 3, 1)).reshape(l_dim, i_dim * t_dim * p_dim)
+
+    if snapshot_sketch_dim is not None and snapshot_sketch_dim < y_asym.shape[1]:
+        rng = np.random.default_rng(sketch_seed)
+        sketch = (
+            rng.normal(size=(y_asym.shape[1], int(snapshot_sketch_dim)))
+            + 1j * rng.normal(size=(y_asym.shape[1], int(snapshot_sketch_dim)))
+        ) / np.sqrt(2.0 * int(snapshot_sketch_dim))
+        y_asym = y_asym @ sketch
+
+    if forward_backward:
+        reversal = np.fliplr(np.eye(l_dim))
+        y_fb = np.concatenate([y_asym, reversal @ y_asym.conj()], axis=1)
+    else:
+        y_fb = y_asym
+
+    u_mat, s_val, _ = np.linalg.svd(y_fb, full_matrices=False)
+    signal_subspace = u_mat[:, :k_paths]
+    upper = signal_subspace[:-1, :]
+    lower = signal_subspace[1:, :]
+    psi, used_tls = _esprit_rotation(upper, lower, k_paths, tls)
+    eigvals = np.linalg.eigvals(psi)
+    pole_magnitudes = np.abs(eigvals)
+    poles = eigvals / np.maximum(pole_magnitudes, eps)
+    order = np.argsort(np.angle(poles), kind="mergesort")
+    poles = poles[order][:k_paths]
+    pole_magnitudes = pole_magnitudes[order][:k_paths]
+    diagnostics = {
+        "delay_method": "aimdf_asym_tls",
+        "singular_values": s_val,
+        "pole_magnitudes_before_unit_circle": pole_magnitudes,
+        "forward_backward": forward_backward,
+        "tls": used_tls,
+        "snapshot_sketch_dim": snapshot_sketch_dim,
+        "Y_asym_shape": y_asym.shape,
+        "Y_fb_shape": y_fb.shape,
+    }
+    return poles, diagnostics
+
+
 def estimate_common_pole_from_factors(
     b_col: np.ndarray, q_col: np.ndarray, eps: float = 1e-12
 ) -> complex:

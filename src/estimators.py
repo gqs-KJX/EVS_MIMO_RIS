@@ -13,13 +13,20 @@ from .geometry import position_from_local_geometry
 from .projections_delay import (
     bq_from_poles,
     delay_matrix_from_poles,
+    estimate_poles_aimdf_asym_tls_from_hankel,
     estimate_poles_aimdf_tls_from_hankel,
+    estimate_poles_aimdf_tls_from_hankel_with_diagnostics,
     estimate_poles_esprit_from_hankel,
     structured_delay_mother_pgd,
     tau_from_pole,
 )
 from .projections_evs import project_evs_factor
-from .projections_ris import local_ris_search_config, project_ris_factor, scaled_residual
+from .projections_ris import (
+    compressed_exact_response,
+    local_ris_search_config,
+    project_ris_factor,
+    scaled_residual,
+)
 from .tensor_utils import dehankelize_frequency, reconstruct_z, z_design_column
 from .utils import bounded_coordinate_search, check_finite, solve_lstsq, scipy_is_available
 
@@ -240,34 +247,124 @@ def _rank_one_snapshot_initialization(
 def _coupled_hankel_factor_initialization(
     z_tensor: np.ndarray,
     poles: np.ndarray,
-    reg: float,
-) -> tuple[np.ndarray, np.ndarray]:
+    reg: float | None = None,
+    config: dict | None = None,
+    return_diagnostics: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, dict]:
     """Initialize A/C proxies by LS with coupled Hankel B/Q delay factors."""
     assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
+    total_start = time.perf_counter()
     i_dim, p_dim, l_dim, t_dim = z_tensor.shape
     k_paths = poles.size
+    eps = 1.0e-12 if config is None else float(config.get("eps", 1.0e-12))
     b_mat, q_mat = bq_from_poles(poles, p_dim, l_dim)
     z14_23 = np.transpose(z_tensor, (0, 3, 1, 2)).reshape(i_dim * t_dim, p_dim * l_dim)
     d_delay = np.empty((p_dim * l_dim, k_paths), dtype=complex)
     for k in range(k_paths):
         d_delay[:, k] = (b_mat[:, k, None] * q_mat[None, :, k]).reshape(-1)
 
-    gram = d_delay.T @ d_delay.conj() + float(reg) * np.eye(k_paths, dtype=complex)
+    gram0 = d_delay.T @ d_delay.conj()
+    if config is not None:
+        reg_mode = str(config.get("stage1_factor_reg_mode", "absolute")).lower()
+        if reg_mode == "relative":
+            reg_abs = (
+                float(config.get("stage1_factor_reg_rel", 1.0e-6))
+                * float(np.trace(gram0).real)
+                / max(k_paths, 1)
+                + float(config.get("stage1_factor_reg_floor", 1.0e-12))
+            )
+        elif reg_mode == "absolute":
+            reg_abs = float(config.get("stage1_factor_reg", 1.0e-10))
+        else:
+            raise ValueError(f"unknown stage1_factor_reg_mode {reg_mode!r}")
+    else:
+        reg_abs = float(1.0e-10 if reg is None else reg)
+        reg_mode = "absolute"
+    gram = gram0 + reg_abs * np.eye(k_paths, dtype=complex)
     rhs = z14_23 @ d_delay.conj()
     try:
         h_mat = np.linalg.solve(gram.T, rhs.T).T
     except np.linalg.LinAlgError:
         h_mat = rhs @ np.linalg.pinv(gram)
+    split_start = time.perf_counter()
 
     a_proxy = np.empty((i_dim, k_paths), dtype=complex)
     c_proxy = np.empty((t_dim, k_paths), dtype=complex)
+    snapshot_singular_values = []
+    rank1_ratios = np.empty(k_paths, dtype=float)
     for k in range(k_paths):
         snapshot = h_mat[:, k].reshape(i_dim, t_dim)
         u_mat, s_val, vh = np.linalg.svd(snapshot, full_matrices=False)
+        snapshot_singular_values.append(s_val.copy())
+        rank1_ratios[k] = float(s_val[1] / (s_val[0] + eps)) if len(s_val) > 1 else 0.0
         scale = np.sqrt(s_val[0])
         a_proxy[:, k] = u_mat[:, 0] * scale
-        c_proxy[:, k] = vh[0, :].T * scale
+        c_proxy[:, k] = vh[0, :] * scale
+    split_time = time.perf_counter() - split_start
+    total_time = time.perf_counter() - total_start
+    diagnostics = {
+        "stage1_factor_reg_mode": reg_mode,
+        "stage1_factor_reg_abs": float(reg_abs),
+        "stage1_factor_gram_condition_number": float(np.linalg.cond(gram)),
+        "stage1_snapshot_singular_values": snapshot_singular_values,
+        "stage1_rank1_ratios": rank1_ratios,
+        "stage1_max_rank1_ratio": float(np.max(rank1_ratios)) if rank1_ratios.size else 0.0,
+        "stage1_time_coupled_ls": float(max(total_time - split_time, 0.0)),
+        "stage1_time_rank1_svd_split": float(split_time),
+    }
+    if return_diagnostics:
+        return a_proxy, c_proxy, diagnostics
     return a_proxy, c_proxy
+
+
+def _min_unit_pole_phase_separation(poles: np.ndarray) -> float:
+    """Return the minimum circular phase separation between delay poles."""
+    if poles.size < 2:
+        return float("inf")
+    phases = np.sort(np.angle(poles))
+    diffs = np.diff(np.concatenate([phases, phases[:1] + 2.0 * np.pi]))
+    return float(np.min(np.abs(diffs)))
+
+
+def _coarse_ris_factor_projection(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float,
+) -> dict:
+    """Coarse exact-spherical RIS codebook match without local WESVP refinement."""
+    start = time.perf_counter()
+    r_grid = np.linspace(*search_config["range_bounds"], int(search_config["num_range"]))
+    e_grid = np.linspace(*search_config["elev_bounds"], int(search_config["num_elev"]))
+    a_grid = np.linspace(*search_config["az_bounds"], int(search_config["num_az"]))
+    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
+    best = None
+    for range_m in r_grid:
+        for elevation in e_grid:
+            for azimuth in a_grid:
+                eta_local = np.array([range_m, elevation, azimuth], dtype=float)
+                h_model = compressed_exact_response(
+                    eta_local, omega, a_rb, ris_grid, wavelength
+                )
+                value, alpha = scaled_residual(c_tilde, h_model, eps)
+                if best is None or value < best[0]:
+                    best = (float(value), eta_local, alpha, h_model)
+    assert best is not None, "empty RIS coarse codebook"
+    value, eta_local, alpha, h_model = best
+    c_projected = alpha * h_model
+    return {
+        "c": c_projected,
+        "eta_local": eta_local,
+        "alpha": alpha,
+        "data_residual": value,
+        "relative_residual": float(np.sqrt(value / c_norm_sq)),
+        "selected_model": "coarse_correlation",
+        "stage1_time_ris_codebook_build": float(time.perf_counter() - start),
+        "stage1_time_ris_projection_refine": 0.0,
+    }
 
 
 def _assignment_by_projection(
@@ -276,7 +373,7 @@ def _assignment_by_projection(
     poles_raw: np.ndarray,
     scene: dict,
     config: dict,
-) -> tuple[list[int], list[dict], list[dict], np.ndarray]:
+) -> tuple[list[int], list[dict], list[dict], dict]:
     """Align CP columns to RIS panels using projection and clock consistency."""
     k_paths = scene["K"]
     scores = np.zeros((k_paths, k_paths), dtype=float)
@@ -284,23 +381,56 @@ def _assignment_by_projection(
     ris_cache: list[list[dict]] = [[{} for _ in range(k_paths)] for _ in range(k_paths)]
     eps = config["eps"]
     implied_clock_offsets = np.zeros((k_paths, k_paths), dtype=float)
+    geometry_mode = str(config.get("stage1_ris_geometry_mode", "coarse_correlation")).lower()
+    timing = {
+        "stage1_time_assignment_evs": 0.0,
+        "stage1_time_assignment_ris": 0.0,
+        "stage1_time_ris_codebook_build": 0.0,
+        "stage1_time_ris_projection_refine": 0.0,
+    }
+    assignment_start = time.perf_counter()
 
     for col in range(k_paths):
         for ris in range(k_paths):
+            evs_start = time.perf_counter()
             evs_proj = project_evs_factor(
                 a_proxy[:, col], scene["v_B"][ris], scene["Theta"][ris], eps
             )
+            timing["stage1_time_assignment_evs"] += time.perf_counter() - evs_start
             ris_search = local_ris_search_config(scene, config, ris)
-            ris_search["projection_mode"] = "exact"
-            ris_proj = project_ris_factor(
-                c_proxy[:, col],
-                scene["Omega"][ris],
-                scene["a_RB"][ris],
-                scene["ris_grid"],
-                scene["wavelength"],
-                ris_search,
-                eps,
-            )
+            if geometry_mode == "coarse_correlation":
+                ris_start = time.perf_counter()
+                ris_proj = _coarse_ris_factor_projection(
+                    c_proxy[:, col],
+                    scene["Omega"][ris],
+                    scene["a_RB"][ris],
+                    scene["ris_grid"],
+                    scene["wavelength"],
+                    ris_search,
+                    eps,
+                )
+                ris_elapsed = time.perf_counter() - ris_start
+                timing["stage1_time_assignment_ris"] += ris_elapsed
+                timing["stage1_time_ris_codebook_build"] += float(
+                    ris_proj.get("stage1_time_ris_codebook_build", ris_elapsed)
+                )
+            elif geometry_mode in ("exact_projection", "legacy_fast_projection"):
+                ris_search["projection_mode"] = "exact"
+                ris_start = time.perf_counter()
+                ris_proj = project_ris_factor(
+                    c_proxy[:, col],
+                    scene["Omega"][ris],
+                    scene["a_RB"][ris],
+                    scene["ris_grid"],
+                    scene["wavelength"],
+                    ris_search,
+                    eps,
+                )
+                ris_elapsed = time.perf_counter() - ris_start
+                timing["stage1_time_assignment_ris"] += ris_elapsed
+                timing["stage1_time_ris_projection_refine"] += ris_elapsed
+            else:
+                raise ValueError(f"unknown stage1_ris_geometry_mode {geometry_mode!r}")
             evs_cache[col][ris] = evs_proj
             ris_cache[col][ris] = ris_proj
             scores[col, ris] = evs_proj["residual"] + ris_proj["relative_residual"]
@@ -312,6 +442,7 @@ def _assignment_by_projection(
 
     best_perm = None
     best_score = np.inf
+    all_assignment_scores = []
     for perm in itertools.permutations(range(k_paths)):
         projection_score = sum(scores[col, ris] for col, ris in enumerate(perm))
         clock_offsets = np.array(
@@ -326,6 +457,15 @@ def _assignment_by_projection(
         score = projection_score + config.get("assignment_clock_weight", 0.0) * (
             clock_spread + bound_violation
         )
+        all_assignment_scores.append(
+            {
+                "assignment": list(perm),
+                "score": float(score),
+                "projection_score": float(projection_score),
+                "clock_spread": float(clock_spread),
+                "clock_bound_violation": float(bound_violation),
+            }
+        )
         if score < best_score:
             best_score = score
             best_perm = list(perm)
@@ -333,7 +473,26 @@ def _assignment_by_projection(
     assert best_perm is not None, "failed to find a column association"
     evs_selected = [evs_cache[col][ris] for col, ris in enumerate(best_perm)]
     ris_selected = [ris_cache[col][ris] for col, ris in enumerate(best_perm)]
-    return best_perm, evs_selected, ris_selected, scores
+    all_assignment_scores.sort(key=lambda item: item["score"])
+    second_score = (
+        all_assignment_scores[1]["score"] if len(all_assignment_scores) > 1 else float("inf")
+    )
+    selected_clock_offsets = np.array(
+        [implied_clock_offsets[col, ris] for col, ris in enumerate(best_perm)]
+    )
+    diagnostics = {
+        "assignment_costs_col_by_panel": scores,
+        "best_assignment_score": float(best_score),
+        "second_assignment_score": float(second_score),
+        "assignment_margin": float((second_score - best_score) / (best_score + eps)),
+        "selected_clock_offsets": selected_clock_offsets,
+        "selected_clock_mean": float(np.mean(selected_clock_offsets)),
+        "selected_clock_std": float(np.std(selected_clock_offsets)),
+        "all_assignment_scores": all_assignment_scores,
+        "stage1_time_assignment_total": float(time.perf_counter() - assignment_start),
+        **{key: float(value) for key, value in timing.items()},
+    }
+    return best_perm, evs_selected, ris_selected, diagnostics
 
 
 def _mode4_assignment_from_proxy(
@@ -398,44 +557,111 @@ def _apply_physical_order(
 
 
 def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> dict:
-    """RIS-aware A-IMDF/TLS delay initialization with coupled EVS-RIS factor recovery."""
+    """A-IMDF-inspired RIS-EVS initializer.
+
+    This is an A-IMDF-inspired RIS-EVS initializer. It follows the A-IMDF
+    delay-first principle but is not a direct copy of the EVS-only A-IMDF
+    algorithm. The RIS-EVS model requires coupled LS recovery of joint EVS-RIS
+    factors and rank-one SVD splitting. Heavy exact RIS near-field projection is
+    deliberately excluded from default Stage-I and reserved for
+    reliability-gated Stage-II basin recovery.
+    """
     assert z_tensor.shape == (scene["I"], scene["P"], scene["L"], scene["T"])
-    delay_method = str(config.get("stage1_delay_method", "aimdf_tls"))
+    stage1_total_start = time.perf_counter()
+    stage1_timing: dict[str, float] = {
+        "stage1_time_delay_estimation": 0.0,
+        "stage1_time_vandermonde_reconstruction": 0.0,
+        "stage1_time_coupled_ls": 0.0,
+        "stage1_time_rank1_svd_split": 0.0,
+        "stage1_time_assignment_total": 0.0,
+        "stage1_time_assignment_evs": 0.0,
+        "stage1_time_assignment_ris": 0.0,
+        "stage1_time_ris_codebook_build": 0.0,
+        "stage1_time_ris_projection_refine": 0.0,
+        "stage1_time_reliability_diagnostics": 0.0,
+        "stage1_time_other": 0.0,
+    }
+    delay_method = str(config.get("stage1_delay_method", "aimdf_fullfreq_tls"))
+    if delay_method == "aimdf_tls":
+        delay_method = "aimdf_fullfreq_tls"
     forward_backward = bool(config.get("stage1_forward_backward", True))
     tls = bool(config.get("stage1_tls", True))
-    if delay_method == "aimdf_tls":
-        poles_raw = estimate_poles_aimdf_tls_from_hankel(
+    delay_start = time.perf_counter()
+    if delay_method == "aimdf_fullfreq_tls":
+        poles_raw, delay_diagnostics = estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
             z_tensor,
             scene["K"],
             forward_backward=forward_backward,
             tls=tls,
             eps=config["eps"],
         )
+    elif delay_method == "aimdf_asym_tls":
+        poles_raw, delay_diagnostics = estimate_poles_aimdf_asym_tls_from_hankel(
+            z_tensor,
+            scene["K"],
+            forward_backward=forward_backward,
+            tls=tls,
+            snapshot_sketch_dim=config.get("stage1_snapshot_sketch_dim"),
+            sketch_seed=int(config.get("seed", 0)),
+            eps=config["eps"],
+        )
     elif delay_method == "esprit_ls":
         poles_raw = estimate_poles_esprit_from_hankel(z_tensor, scene["K"])
+        delay_diagnostics = {
+            "delay_method": "esprit_ls",
+            "singular_values": np.array([], dtype=float),
+            "pole_magnitudes_before_unit_circle": np.abs(poles_raw),
+            "forward_backward": False,
+            "tls": False,
+            "snapshot_sketch_dim": None,
+        }
     else:
         raise ValueError(f"unknown stage1_delay_method {delay_method!r}")
+    stage1_timing["stage1_time_delay_estimation"] = time.perf_counter() - delay_start
 
     factor_init = str(config.get("stage1_factor_init", "hankel_coupled_ls"))
     if factor_init == "hankel_coupled_ls":
-        a_proxy, c_proxy = _coupled_hankel_factor_initialization(
-            z_tensor, poles_raw, config.get("stage1_factor_reg", 1e-10)
+        a_proxy, c_proxy, factor_diagnostics = _coupled_hankel_factor_initialization(
+            z_tensor,
+            poles_raw,
+            config.get("stage1_factor_reg", 1e-10),
+            config=config,
+            return_diagnostics=True,
+        )
+        stage1_timing["stage1_time_coupled_ls"] = float(
+            factor_diagnostics.get("stage1_time_coupled_ls", 0.0)
+        )
+        stage1_timing["stage1_time_rank1_svd_split"] = float(
+            factor_diagnostics.get("stage1_time_rank1_svd_split", 0.0)
         )
     elif factor_init in ("raw_snapshot", "snapshot_ls"):
+        factor_start = time.perf_counter()
         a_proxy, c_proxy = _rank_one_snapshot_initialization(z_tensor, poles_raw)
+        stage1_timing["stage1_time_rank1_svd_split"] = time.perf_counter() - factor_start
+        factor_diagnostics = {}
     else:
         raise ValueError(f"unknown stage1_factor_init {factor_init!r}")
-    assignment, evs_selected, ris_selected, assignment_costs = _assignment_by_projection(
+    assignment, evs_selected, ris_selected, assignment_diagnostics = _assignment_by_projection(
         a_proxy, c_proxy, poles_raw, scene, config
     )
+    for key in (
+        "stage1_time_assignment_total",
+        "stage1_time_assignment_evs",
+        "stage1_time_assignment_ris",
+        "stage1_time_ris_codebook_build",
+        "stage1_time_ris_projection_refine",
+    ):
+        stage1_timing[key] = float(assignment_diagnostics.get(key, 0.0))
 
     k_paths = scene["K"]
+    reliability_diag_start = time.perf_counter()
     poles = np.empty(k_paths, dtype=complex)
     a_mat = np.empty((scene["I"], k_paths), dtype=complex)
     c_mat = np.empty((scene["T"], k_paths), dtype=complex)
     ris_eta = np.empty((k_paths, 3), dtype=float)
     gamma = np.empty(k_paths, dtype=float)
     eta_pol = np.empty(k_paths, dtype=float)
+    stage1_ris_residuals = np.empty(k_paths, dtype=float)
 
     # Store columns in physical RIS-panel order.
     for col, ris in enumerate(assignment):
@@ -445,13 +671,38 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         ris_eta[ris] = ris_selected[col]["eta_local"]
         gamma[ris] = evs_selected[col]["gamma"]
         eta_pol[ris] = evs_selected[col]["eta"]
+        stage1_ris_residuals[ris] = float(
+            ris_selected[col].get("relative_residual", np.nan)
+        )
+    stage1_timing["stage1_time_reliability_diagnostics"] = (
+        time.perf_counter() - reliability_diag_start
+    )
 
+    vandermonde_start = time.perf_counter()
     b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
+    stage1_timing["stage1_time_vandermonde_reconstruction"] = (
+        time.perf_counter() - vandermonde_start
+    )
     beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
     z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
     initial_residual = float(
         np.linalg.norm(z_hat - z_tensor) ** 2
         / (np.linalg.norm(z_tensor) ** 2 + config["eps"])
+    )
+
+    accounted_time = sum(stage1_timing.values())
+    stage1_total_time = time.perf_counter() - stage1_total_start
+    stage1_timing["stage1_time_other"] = float(
+        max(stage1_total_time - accounted_time, 0.0)
+    )
+    residual_type = str(
+        config.get(
+            "stage1_ris_residual_type",
+            "coarse_proxy"
+            if str(config.get("stage1_ris_geometry_mode", "coarse_correlation"))
+            == "coarse_correlation"
+            else "legacy_fast_projection",
+        )
     )
 
     return {
@@ -468,13 +719,40 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         "column_to_panel_assignment": assignment,
         "panel_to_column_assignment": _inverse_column_to_panel_assignment(assignment),
         "columns_are_panel_ordered": True,
-        "assignment_costs": assignment_costs,
+        "assignment_costs": assignment_diagnostics["assignment_costs_col_by_panel"],
+        "assignment_costs_col_by_panel": assignment_diagnostics[
+            "assignment_costs_col_by_panel"
+        ],
+        "best_assignment_score": assignment_diagnostics["best_assignment_score"],
+        "second_assignment_score": assignment_diagnostics["second_assignment_score"],
+        "assignment_margin": assignment_diagnostics["assignment_margin"],
+        "stage1_assignment_margin": assignment_diagnostics["assignment_margin"],
+        "selected_clock_offsets": assignment_diagnostics["selected_clock_offsets"],
+        "selected_clock_mean": assignment_diagnostics["selected_clock_mean"],
+        "selected_clock_std": assignment_diagnostics["selected_clock_std"],
+        "all_assignment_scores": assignment_diagnostics["all_assignment_scores"],
+        "stage1_ris_residuals": stage1_ris_residuals,
+        "stage1_max_ris_residual": float(np.nanmax(stage1_ris_residuals))
+        if stage1_ris_residuals.size
+        else float("nan"),
+        "stage1_ris_residual_type": residual_type,
         "initial_z_residual": initial_residual,
         "Z_hat": z_hat,
         "stage1_delay_method": delay_method,
+        "stage1_delay_singular_values": delay_diagnostics["singular_values"],
+        "stage1_pole_magnitudes_before_unit_circle": delay_diagnostics[
+            "pole_magnitudes_before_unit_circle"
+        ],
+        "stage1_min_delay_pole_phase_sep": _min_unit_pole_phase_separation(poles_raw),
         "stage1_factor_init": factor_init,
         "stage1_forward_backward": forward_backward,
         "stage1_tls": tls,
+        "stage1_snapshot_sketch_dim": delay_diagnostics.get("snapshot_sketch_dim"),
+        "stage1_ris_geometry_mode": config.get(
+            "stage1_ris_geometry_mode", "coarse_correlation"
+        ),
+        **stage1_timing,
+        **factor_diagnostics,
     }
 
 
@@ -1010,7 +1288,9 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     scene["wavelength"],
                     local_ris_search_config(scene, config, k),
                     config["eps"],
-                    current_eta=ris_eta[k],
+                    current_eta=ris_eta[k]
+                    if bool(config.get("stage2_ris_use_current_eta", True))
+                    else None,
                     weight=ris_weight,
                 )
                 projection_time_s = time.perf_counter() - projection_t0
