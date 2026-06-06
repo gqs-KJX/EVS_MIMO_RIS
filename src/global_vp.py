@@ -12,6 +12,7 @@ separate ablation baselines.
 from __future__ import annotations
 
 import copy
+import time
 
 import numpy as np
 
@@ -44,10 +45,32 @@ def _global_vp_config(config: dict) -> dict:
         "objective_rollback_tolerance": 1.0e-12,
         "overwrite_factor_keys": False,
         "finite_difference_check": False,
+        "use_analytic_jacobian": True,
+        "matrix_free_beta": False,
     }
     options = dict(defaults)
     options.update(dict(config.get("global_vp", {})))
     return options
+
+
+def _build_global_vp_cache(scene: dict) -> dict:
+    """Build reusable static arrays for global VP diagnostics and future fast paths."""
+    kappa = 2.0 * np.pi / scene["wavelength"]
+    omega_arb = [
+        np.asarray(scene["Omega"][k], dtype=complex)
+        * np.asarray(scene["a_RB"][k], dtype=complex)[None, :]
+        for k in range(scene["K"])
+    ]
+    return {
+        "rho": np.asarray(scene["ris_grid"], dtype=float),
+        "n_idx": np.arange(scene["N"], dtype=float),
+        "Omega_aRB": omega_arb,
+        "R_GR": [np.asarray(scene["rotations"][k], dtype=float) for k in range(scene["K"])],
+        "ris_centers": np.asarray(scene["ris_centers"], dtype=float),
+        "d_RB": np.asarray(scene["d_RB"], dtype=float),
+        "wavelength": float(scene["wavelength"]),
+        "kappa": float(kappa),
+    }
 
 
 def _inverse_assignment(column_to_panel: np.ndarray, k_paths: int) -> np.ndarray:
@@ -997,10 +1020,15 @@ def _global_exact_spherical_vp_refinement_least_squares(
     from .estimators import refine_global_raw
 
     options = _global_vp_config(config)
+    cache_start = time.perf_counter()
+    _ = _build_global_vp_cache(scene)
+    cache_build_time = time.perf_counter() - cache_start
     panel_ordered_estimate = _panel_ordered_estimate_for_legacy_solver(
         init_estimate, scene
     )
+    solver_start = time.perf_counter()
     legacy_result = refine_global_raw(y_raw, scene, config, panel_ordered_estimate)
+    solver_time = time.perf_counter() - solver_start
     tolerance = float(options.get("objective_rollback_tolerance", 1.0e-12))
     rolled_back = bool(
         legacy_result["raw_objective_final"]
@@ -1010,13 +1038,26 @@ def _global_exact_spherical_vp_refinement_least_squares(
         legacy_result = _legacy_vp_initial_result(
             y_raw, panel_ordered_estimate, scene, config
         )
-    return _augment_legacy_vp_result(
+    result = _augment_legacy_vp_result(
         legacy_result,
         panel_ordered_estimate,
         scene,
         options,
         rolled_back=rolled_back,
     )
+    num_calls = int(result.get("optimizer", {}).get("n_eval", 0))
+    result["global_vp_cache_build_time"] = float(cache_build_time)
+    result["global_vp_num_residual_calls"] = int(num_calls)
+    result["global_vp_residual_eval_time_mean"] = float(
+        solver_time / max(num_calls, 1)
+    )
+    result["global_vp_jacobian_mode"] = (
+        "legacy_least_squares_numerical"
+        if bool(options.get("use_analytic_jacobian", True))
+        else "numerical"
+    )
+    result["global_vp_matrix_free_beta"] = bool(options.get("matrix_free_beta", False))
+    return result
 
 
 def global_exact_spherical_vp_refinement(

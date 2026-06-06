@@ -50,6 +50,7 @@ if __package__ in (None, ""):
     from src.estimators import (
         global_exact_spherical_vp_refinement,
         initialize_from_hankel,
+        ris_only_basin_recovery_fast,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
         structured_refinement,
@@ -84,6 +85,7 @@ else:
     from .estimators import (
         global_exact_spherical_vp_refinement,
         initialize_from_hankel,
+        ris_only_basin_recovery_fast,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
         structured_refinement,
@@ -778,18 +780,34 @@ def _run_ris_only_stage2(
 ) -> tuple[dict, dict, dict, float]:
     ris_config = copy.deepcopy(config)
     ris_config["stage2_mode"] = "full_legacy"
-    ris_config["num_structured_iters"] = int(config.get("num_structured_iters", 2))
+    ris_config["num_structured_iters"] = int(
+        config.get("stage2_ris_rescue_max_iters", 1)
+    )
     # Do not enable EVS/delay projections in the default rescue branch.
     # Low-SNR logs show that EVS/delay updates can drift; RIS projection is the
     # physically meaningful basin-recovery step.
     ris_config["stage2_enable_evs"] = False
     ris_config["stage2_enable_delay"] = False
     ris_config["stage2_enable_ris"] = True
-    ris_config["stage2_ris_use_current_eta"] = False
+    ris_config["stage2_ris_use_current_eta"] = True
+    ris_config["stage2_ris_skip_assignment"] = True
+    ris_config["_stage2_ris_projection_cache"] = {}
+    if not bool(config.get("stage2_precise_ablation", False)):
+        ris_config["stage2_damping_grid"] = tuple(
+            config.get("stage2_ris_rescue_damping_grid", (0.0, 1.0))
+        )
+    impl = str(config.get("stage2_ris_rescue_impl", "fast"))
     stage2_start = time.perf_counter()
-    estimate_used, structured_diag = structured_refinement(
-        z_noisy, scene, ris_config, copy.deepcopy(estimate_initial)
-    )
+    if impl == "fast":
+        estimate_used, structured_diag = ris_only_basin_recovery_fast(
+            estimate_initial, z_noisy, scene, ris_config
+        )
+    elif impl == "legacy_structured":
+        estimate_used, structured_diag = structured_refinement(
+            z_noisy, scene, ris_config, copy.deepcopy(estimate_initial)
+        )
+    else:
+        raise ValueError(f"unknown stage2_ris_rescue_impl {impl!r}")
     return (
         estimate_used,
         structured_diag,
@@ -912,6 +930,35 @@ def run_ris_only_stage2_branch(
             "ris_projection_total": float(
                 structured_diag.get("ris_projection_total_s", 0.0)
             ),
+            "stage2_time_ris_codebook_build": float(
+                structured_diag.get("stage2_time_ris_codebook_build", 0.0)
+            ),
+            "stage2_time_ris_correlation": float(
+                structured_diag.get("stage2_time_ris_correlation", 0.0)
+            ),
+            "stage2_time_ris_refine": float(
+                structured_diag.get("stage2_time_ris_refine", 0.0)
+            ),
+            "structured_refinement_total": float(
+                structured_diag.get("structured_refinement_total", stage2_s)
+            ),
+            "per_iteration_total": float(
+                structured_diag.get("per_iteration_total", 0.0)
+            ),
+            "projection_per_path_total": float(
+                structured_diag.get("projection_per_path_total", 0.0)
+            ),
+            "global_Z_reconstruction_time": float(
+                structured_diag.get("global_Z_reconstruction_time", 0.0)
+            ),
+            "guarded_SSE_time": float(structured_diag.get("guarded_SSE_time", 0.0)),
+            "damping_grid_time": float(structured_diag.get("damping_grid_time", 0.0)),
+            "factor_copy_time": float(structured_diag.get("factor_copy_time", 0.0)),
+            "pseudo_inverse_time": float(
+                structured_diag.get("pseudo_inverse_time", 0.0)
+            ),
+            "logging_time": float(structured_diag.get("logging_time", 0.0)),
+            "deepcopy_time": float(structured_diag.get("deepcopy_time", 0.0)),
             "vp": vp_s,
             "total": _common_timing_total(base_timing) + stage2_s + vp_s,
         }
@@ -972,6 +1019,67 @@ def _branch_y_nmse(branch: dict) -> float:
     return float(relative_nmse(branch["final"]["Y_hat"], branch["Y_true"]))
 
 
+def evaluate_direct_vp_quality(
+    direct_result: dict,
+    stage1_result: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Return observable direct-VP quality diagnostics for rescue gating."""
+    _ = stage1_result, scene
+    final = direct_result["final"]
+    optimizer = final.get("optimizer", {})
+    success = bool(final.get("global_vp_success", optimizer.get("success", False)))
+    raw_final = _final_raw_objective(final)
+    raw_initial = final.get("raw_objective_initial")
+    try:
+        raw_initial_float = float(raw_initial)
+    except (TypeError, ValueError):
+        raw_initial_float = float("nan")
+    finite_objective = bool(np.isfinite(raw_final))
+    if np.isfinite(raw_initial_float) and raw_initial_float > 0.0:
+        rel_decrease = float((raw_initial_float - raw_final) / raw_initial_float)
+        objective_decreased = rel_decrease >= float(
+            config.get("direct_vp_min_rel_residual_decrease", 1.0e-4)
+        )
+    else:
+        rel_decrease = float("nan")
+        objective_decreased = finite_objective
+
+    nfev = int(optimizer.get("n_eval", final.get("global_vp_num_iter", 10**9)))
+    nfev_good = nfev <= int(config.get("direct_vp_max_good_nfev", 12))
+    noise_variance = direct_result.get("noise_variance")
+    if noise_variance is None:
+        noise_floor_good = True
+        noise_floor_threshold = float("nan")
+    else:
+        noise_floor_threshold = float(config.get("direct_vp_noise_floor_factor", 1.5)) * float(
+            noise_variance
+        )
+        noise_floor_good = bool(raw_final <= noise_floor_threshold)
+
+    good = bool(
+        success
+        and finite_objective
+        and objective_decreased
+        and nfev_good
+        and noise_floor_good
+    )
+    return {
+        "good": good,
+        "success": success,
+        "finite_objective": finite_objective,
+        "raw_objective_initial": raw_initial_float,
+        "raw_objective_final": raw_final,
+        "relative_objective_decrease": rel_decrease,
+        "objective_decreased": bool(objective_decreased),
+        "nfev": nfev,
+        "nfev_good": bool(nfev_good),
+        "noise_floor_good": bool(noise_floor_good),
+        "noise_floor_threshold": noise_floor_threshold,
+    }
+
+
 def select_proposed_branch(
     direct_result: dict,
     rescue_result: dict | None,
@@ -984,15 +1092,24 @@ def select_proposed_branch(
         selected_branch = "direct_vp"
         no_gain = False
     else:
-        tol = float(config.get("stage2_objective_accept_tol", 1.0e-12))
+        rel_gain = float(config.get("rescue_accept_min_rel_improvement", 1.0e-3))
+        abs_gain = float(config.get("rescue_accept_min_abs_improvement", 1.0e-8))
         direct_raw = _final_raw_objective(direct_result["final"])
         rescue_raw = _final_raw_objective(rescue_result["final"])
         if np.isfinite(direct_raw) and np.isfinite(rescue_raw):
-            accept_rescue = rescue_raw <= direct_raw + tol
+            improvement = direct_raw - rescue_raw
+            accept_rescue = (
+                improvement >= abs_gain
+                and rescue_raw < direct_raw * (1.0 - rel_gain)
+            )
         else:
             direct_nmse = _branch_y_nmse(direct_result)
             rescue_nmse = _branch_y_nmse(rescue_result)
-            accept_rescue = rescue_nmse <= direct_nmse + tol
+            improvement = direct_nmse - rescue_nmse
+            accept_rescue = (
+                improvement >= abs_gain
+                and rescue_nmse < direct_nmse * (1.0 - rel_gain)
+            )
 
         # Stage-II is accepted only if it improves the final raw-domain objective.
         # This keeps the diagnostic consistent with the final estimator objective.
@@ -1051,14 +1168,27 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     direct_result = run_direct_vp_branch(
         data, stage1_estimate, config, base_timing, reliability
     )
+    direct_vp_quality = evaluate_direct_vp_quality(
+        direct_result, stage1, data["scene"], config
+    )
+    direct_result["direct_vp_quality"] = direct_vp_quality
     branches = {"direct_vp": direct_result}
     rescue_result = None
+    direct_vp_first = bool(config.get("direct_vp_first", True))
+    direct_vp_override = bool(
+        direct_vp_first
+        and direct_vp_quality["good"]
+        and reliability["decision"] != "direct_vp"
+    )
+    if direct_vp_override and progress_printed:
+        print("GATE_OVERRIDE_DIRECT_VP_GOOD", flush=True)
 
     rescue_requested = (
         allow_stage2
         and bool(config.get("stage2_adaptive", True))
         and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
         and reliability["decision"] == "ris_only_stage2_then_vp"
+        and not direct_vp_override
     )
     if rescue_requested:
         if progress_printed:
@@ -1083,6 +1213,7 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     result = dict(selected)
     result["branches"] = branches
     result["stage1_config"] = config
+    result["direct_vp_quality"] = direct_vp_quality
     if stage1_profile_reference is not None:
         result["stage1_profile_reference"] = stage1_profile_reference
         result["timing"] = dict(result["timing"])
@@ -1090,6 +1221,7 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
             "stage1_s"
         ]
     result["requested_reliability_decision"] = reliability["decision"]
+    result["gate_override_direct_vp_good"] = bool(direct_vp_override)
     result["ris_stage2_no_gain"] = bool(no_gain)
     result["progress_printed"] = progress_printed
     result["timing"] = dict(result["timing"])
@@ -1282,10 +1414,12 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
         print("WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold.")
     if _paper_balanced_good_snr_triggered_stage2(config, reliability):
         print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR")
+    if results.get("gate_override_direct_vp_good", False):
+        print("GATE_OVERRIDE_DIRECT_VP_GOOD")
     if results.get("ris_stage2_no_gain", False):
         print(
-            "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
-            "raw-domain objective relative to direct Stage-I+VP; selected direct VP."
+            "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
+            "not significantly improve the final raw-domain objective; selected direct VP."
         )
 
 
@@ -1298,11 +1432,13 @@ def _print_reliability_warnings(results: dict) -> None:
         )
     if results.get("ris_stage2_no_gain", False):
         print(
-            "WARNING_RIS_STAGE2_NO_GAIN: RIS-only Stage-II+VP worsened the final "
-            "raw-domain objective relative to direct Stage-I+VP; selected direct VP."
+            "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
+            "not significantly improve the final raw-domain objective; selected direct VP."
         )
     if _paper_balanced_good_snr_triggered_stage2(config, reliability):
         print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR")
+    if results.get("gate_override_direct_vp_good", False):
+        print("GATE_OVERRIDE_DIRECT_VP_GOOD")
 
 
 def _print_reliability_progress(reliability: dict) -> None:
@@ -1385,6 +1521,16 @@ def _print_vp_branch_metrics(results: dict) -> None:
         f"Y_NMSE_true={_fmt(selected_y['nmse'])}, "
         f"position_RMSE_m={_fmt(selected_geom['position_rmse'])}"
     )
+    quality = results.get("direct_vp_quality")
+    if quality is not None:
+        print(
+            "direct_vp_quality = "
+            f"good={quality.get('good')}, "
+            f"success={quality.get('success')}, "
+            f"nfev={quality.get('nfev')}, "
+            f"noise_floor_good={quality.get('noise_floor_good')}, "
+            f"rel_decrease={_fmt(quality.get('relative_objective_decrease'))}"
+        )
 
 
 def _print_noise_and_y_metrics(results: dict, direct_results: dict, snr_db: float) -> dict:
@@ -2120,14 +2266,60 @@ def _print_stage1_summary(results: dict) -> None:
 
 def _print_selected_runtime(results: dict) -> None:
     timing = results.get("timing", {})
+    stage2_timing = timing
+    stage2_structured = results.get("structured_diag", {})
+    rescue_branch = results.get("branches", {}).get("ris_only_stage2_then_vp")
+    if rescue_branch is not None and results.get("ris_stage2_no_gain", False):
+        stage2_timing = rescue_branch.get("timing", timing)
+        stage2_structured = rescue_branch.get("structured_diag", stage2_structured)
     print("\n=== Runtime profile ===")
     print(f"selected_branch = {results.get('selected_branch', 'unknown')}")
     print(f"data_generation_s = {_fmt(timing.get('data_generation'))}")
     print(f"hankelization_s = {_fmt(timing.get('hankelization'))}")
     print(f"stage1_s = {_fmt(timing.get('stage1'))}")
-    print(f"ris_only_stage2_s = {_fmt(timing.get('stage2'))}")
-    print(f"ris_projection_total_s = {_fmt(timing.get('ris_projection_total'))}")
+    print(f"stage2_ris_rescue_time = {_fmt(stage2_timing.get('stage2'))}")
+    print(f"ris_only_stage2_s = {_fmt(stage2_timing.get('stage2'))}")
+    print(f"ris_projection_total_s = {_fmt(stage2_timing.get('ris_projection_total'))}")
+    print(
+        "stage2_ris_codebook_time = "
+        f"{_fmt(stage2_timing.get('stage2_time_ris_codebook_build'))}"
+    )
+    print(
+        "stage2_ris_correlation_time = "
+        f"{_fmt(stage2_timing.get('stage2_time_ris_correlation'))}"
+    )
+    print(
+        "stage2_ris_refine_time = "
+        f"{_fmt(stage2_timing.get('stage2_time_ris_refine'))}"
+    )
+    print(f"stage2_ris_grid_used = {stage2_structured.get('stage2_ris_grid_used', 'NA')}")
+    print(
+        f"stage2_ris_local_window = {stage2_structured.get('stage2_ris_local_window', 'NA')}"
+    )
+    final = results.get("final", {})
+    print(f"global_vp_cache_build_time = {_fmt(final.get('global_vp_cache_build_time'))}")
+    print(
+        "global_vp_residual_eval_time_mean = "
+        f"{_fmt(final.get('global_vp_residual_eval_time_mean'))}"
+    )
+    print(f"global_vp_num_residual_calls = {final.get('global_vp_num_residual_calls', 'NA')}")
+    print(f"global_vp_jacobian_mode = {final.get('global_vp_jacobian_mode', 'NA')}")
     print(f"global_vp_s = {_fmt(timing.get('vp'))}")
+    if bool(results.get("stage1_config", {}).get("verbose_timing", False)):
+        print("\n=== Stage-II timing detail ===")
+        for key in (
+            "structured_refinement_total",
+            "per_iteration_total",
+            "projection_per_path_total",
+            "global_Z_reconstruction_time",
+            "guarded_SSE_time",
+            "damping_grid_time",
+            "factor_copy_time",
+            "pseudo_inverse_time",
+            "logging_time",
+            "deepcopy_time",
+        ):
+            print(f"{key}_s = {_fmt(stage2_timing.get(key, stage2_structured.get(key)))}")
     print(f"selected_branch_total_s = {_fmt(timing.get('total'))}")
     print(f"diagnostic_total_s = {_fmt(timing.get('diagnostic_total'))}")
     if bool(results.get("stage1_config", {}).get("verbose_timing", False)):

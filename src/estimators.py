@@ -966,8 +966,19 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         "residuals_noisy_rmse": [],
         "updates": [],
         "ris_projection_total_s": 0.0,
+        "stage2_time_ris_codebook_build": 0.0,
+        "stage2_time_ris_correlation": 0.0,
+        "stage2_time_ris_refine": 0.0,
+        "stage2_ris_grid_used": None,
+        "stage2_ris_local_window": None,
     }
     ris_projection_time_total = 0.0
+    stage2_time_ris_codebook_build = 0.0
+    stage2_time_ris_correlation = 0.0
+    stage2_time_ris_refine = 0.0
+    ris_projection_cache = config.get("_stage2_ris_projection_cache")
+    if ris_projection_cache is None:
+        ris_projection_cache = {}
     b_mat, q_mat = bq_from_poles(poles, scene["P"], scene["L"])
     beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
     safeguard = bool(config.get("stage2_global_safeguard", True))
@@ -1239,35 +1250,40 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
         ris_projection_details = []
         if enable_ris:
             c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
-            assignment_t0 = time.perf_counter()
-            assignment_order, assignment_costs = _mode4_assignment_from_proxy(
-                c_proxy, scene, config
-            )
-            assignment_time_s = time.perf_counter() - assignment_t0
-            ris_projection_time_total += assignment_time_s
-            (
-                a_mat,
-                b_mat,
-                q_mat,
-                c_mat,
-                poles,
-                beta_z,
-                gamma,
-                eta_pol,
-                ris_eta,
-            ) = _apply_physical_order(
-                assignment_order,
-                a_mat,
-                b_mat,
-                q_mat,
-                c_mat,
-                poles,
-                beta_z,
-                gamma,
-                eta_pol,
-                ris_eta,
-            )
-            c_proxy = c_proxy[:, assignment_order]
+            if bool(config.get("stage2_ris_skip_assignment", False)):
+                assignment_time_s = 0.0
+                assignment_order = list(range(scene["K"]))
+                assignment_costs = np.full((scene["K"], scene["K"]), np.nan)
+            else:
+                assignment_t0 = time.perf_counter()
+                assignment_order, assignment_costs = _mode4_assignment_from_proxy(
+                    c_proxy, scene, config
+                )
+                assignment_time_s = time.perf_counter() - assignment_t0
+                ris_projection_time_total += assignment_time_s
+                (
+                    a_mat,
+                    b_mat,
+                    q_mat,
+                    c_mat,
+                    poles,
+                    beta_z,
+                    gamma,
+                    eta_pol,
+                    ris_eta,
+                ) = _apply_physical_order(
+                    assignment_order,
+                    a_mat,
+                    b_mat,
+                    q_mat,
+                    c_mat,
+                    poles,
+                    beta_z,
+                    gamma,
+                    eta_pol,
+                    ris_eta,
+                )
+                c_proxy = c_proxy[:, assignment_order]
             ris_weight, ris_weight_diag = _ris_projection_weight_from_c_residual(
                 z_tensor, beta_z, a_mat, b_mat, q_mat, c_proxy, config
             )
@@ -1280,13 +1296,24 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     z_tensor, a_mat, b_mat, q_mat, c_mat
                 )
                 projection_t0 = time.perf_counter()
+                ris_search = local_ris_search_config(scene, config, k)
+                ris_search["_ris_projection_cache"] = ris_projection_cache
+                diagnostics["stage2_ris_grid_used"] = (
+                    int(ris_search.get("stage2_num_range", 0)),
+                    int(ris_search.get("stage2_num_elev", 0)),
+                    int(ris_search.get("stage2_num_az", 0)),
+                )
+                diagnostics["stage2_ris_local_window"] = (
+                    float(ris_search.get("stage2_range_span", 0.0)),
+                    float(ris_search.get("stage2_angle_span", 0.0)),
+                )
                 ris_proj = project_ris_factor(
                     c_proxy[:, k],
                     scene["Omega"][k],
                     scene["a_RB"][k],
                     scene["ris_grid"],
                     scene["wavelength"],
-                    local_ris_search_config(scene, config, k),
+                    ris_search,
                     config["eps"],
                     current_eta=ris_eta[k]
                     if bool(config.get("stage2_ris_use_current_eta", True))
@@ -1295,6 +1322,15 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                 )
                 projection_time_s = time.perf_counter() - projection_t0
                 ris_projection_time_total += projection_time_s
+                stage2_time_ris_codebook_build += float(
+                    ris_proj.get("stage2_time_ris_codebook_build", 0.0)
+                )
+                stage2_time_ris_correlation += float(
+                    ris_proj.get("stage2_time_ris_correlation", 0.0)
+                )
+                stage2_time_ris_refine += float(
+                    ris_proj.get("stage2_time_ris_refine", 0.0)
+                )
 
                 candidate_value, _ = scaled_residual(c_proxy[:, k], ris_proj["c"], config["eps"])
                 local_relative_improvement = float(
@@ -1398,6 +1434,15 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         "global_sse_before": float(sse_before_c),
                         "global_sse_after": float(current_sse),
                         "projection_time_s": float(projection_time_s),
+                        "stage2_time_ris_codebook_build": float(
+                            ris_proj.get("stage2_time_ris_codebook_build", 0.0)
+                        ),
+                        "stage2_time_ris_correlation": float(
+                            ris_proj.get("stage2_time_ris_correlation", 0.0)
+                        ),
+                        "stage2_time_ris_refine": float(
+                            ris_proj.get("stage2_time_ris_refine", 0.0)
+                        ),
                         "candidate_ranking": ris_proj.get("candidate_ranking", []),
                         "exact_relative_residual": ris_proj.get("exact_relative_residual"),
                         "lifted_used": bool(ris_proj.get("lifted_used", False) and accepted),
@@ -1492,6 +1537,11 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
             }
         )
         diagnostics["ris_projection_total_s"] = float(ris_projection_time_total)
+        diagnostics["stage2_time_ris_codebook_build"] = float(
+            stage2_time_ris_codebook_build
+        )
+        diagnostics["stage2_time_ris_correlation"] = float(stage2_time_ris_correlation)
+        diagnostics["stage2_time_ris_refine"] = float(stage2_time_ris_refine)
         if not iteration_accepted:
             break
         if stop_tol > 0.0 and relative_residual_change < stop_tol:
@@ -1513,6 +1563,160 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
     )
     check_finite("structured A", a_mat)
     check_finite("structured C", c_mat)
+    return estimate, diagnostics
+
+
+def ris_only_basin_recovery_fast(
+    stage1_estimate: dict,
+    z_tensor: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> tuple[dict, dict]:
+    """One-pass RIS-only local basin recovery without the structured loop."""
+    total_start = time.perf_counter()
+    deepcopy_start = time.perf_counter()
+    estimate = copy.deepcopy(stage1_estimate)
+    deepcopy_time = time.perf_counter() - deepcopy_start
+
+    a_mat = np.asarray(estimate["A"], dtype=complex).copy()
+    b_mat = np.asarray(estimate["B"], dtype=complex).copy()
+    q_mat = np.asarray(estimate["Q"], dtype=complex).copy()
+    c_mat = np.asarray(estimate["C"], dtype=complex).copy()
+    beta_z = np.asarray(estimate["beta_z"], dtype=complex).copy()
+    ris_eta = np.asarray(estimate["ris_eta"], dtype=float).copy()
+
+    timings = {
+        "structured_refinement_total": 0.0,
+        "per_iteration_total": 0.0,
+        "projection_per_path_total": 0.0,
+        "global_Z_reconstruction_time": 0.0,
+        "guarded_SSE_time": 0.0,
+        "damping_grid_time": 0.0,
+        "factor_copy_time": 0.0,
+        "pseudo_inverse_time": 0.0,
+        "logging_time": 0.0,
+        "deepcopy_time": float(deepcopy_time),
+        "stage2_time_ris_codebook_build": 0.0,
+        "stage2_time_ris_correlation": 0.0,
+        "stage2_time_ris_refine": 0.0,
+    }
+    iter_start = time.perf_counter()
+    cache: dict = {}
+    c_proxy = _update_c_from_z(z_tensor, beta_z, a_mat, b_mat, q_mat)
+    ris_details = []
+    grid_used = None
+    local_window = None
+
+    for k in range(scene["K"]):
+        projection_start = time.perf_counter()
+        ris_search = local_ris_search_config(scene, config, k)
+        ris_search["_ris_projection_cache"] = cache
+        grid_used = (
+            int(ris_search.get("stage2_num_range", 0)),
+            int(ris_search.get("stage2_num_elev", 0)),
+            int(ris_search.get("stage2_num_az", 0)),
+        )
+        local_window = (
+            float(ris_search.get("stage2_range_span", 0.0)),
+            float(ris_search.get("stage2_angle_span", 0.0)),
+        )
+        before_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
+        ris_proj = project_ris_factor(
+            c_proxy[:, k],
+            scene["Omega"][k],
+            scene["a_RB"][k],
+            scene["ris_grid"],
+            scene["wavelength"],
+            ris_search,
+            config["eps"],
+            current_eta=ris_eta[k],
+            weight=None,
+        )
+        c_mat[:, k] = ris_proj["c"]
+        ris_eta[k] = ris_proj["eta_local"]
+        after_value, _ = scaled_residual(c_proxy[:, k], c_mat[:, k], config["eps"])
+        projection_elapsed = time.perf_counter() - projection_start
+        timings["projection_per_path_total"] += projection_elapsed
+        timings["stage2_time_ris_codebook_build"] += float(
+            ris_proj.get("stage2_time_ris_codebook_build", 0.0)
+        )
+        timings["stage2_time_ris_correlation"] += float(
+            ris_proj.get("stage2_time_ris_correlation", 0.0)
+        )
+        timings["stage2_time_ris_refine"] += float(
+            ris_proj.get("stage2_time_ris_refine", 0.0)
+        )
+        norm_sq = np.linalg.norm(c_proxy[:, k]) ** 2 + config["eps"]
+        ris_details.append(
+            {
+                "path": k,
+                "skipped": False,
+                "accepted": True,
+                "reason": "accepted_fast_ris_local_projection",
+                "projection_time_s": float(projection_elapsed),
+                "residual_before": float(np.sqrt(before_value / norm_sq)),
+                "residual_after": float(np.sqrt(after_value / norm_sq)),
+                "selected_eta": ris_eta[k].copy(),
+                "candidate_eta": ris_proj["eta_local"].copy(),
+                "selected_model": ris_proj.get("selected_model", "unknown"),
+                "stage2_time_ris_codebook_build": float(
+                    ris_proj.get("stage2_time_ris_codebook_build", 0.0)
+                ),
+                "stage2_time_ris_correlation": float(
+                    ris_proj.get("stage2_time_ris_correlation", 0.0)
+                ),
+                "stage2_time_ris_refine": float(
+                    ris_proj.get("stage2_time_ris_refine", 0.0)
+                ),
+                "candidate_ranking": ris_proj.get("candidate_ranking", []),
+                "optimizer_message": ris_proj.get("optimizer_message", ""),
+            }
+        )
+
+    z_start = time.perf_counter()
+    beta_z, z_hat, current_sse = _fit_z_model(z_tensor, a_mat, b_mat, q_mat, c_mat)
+    timings["global_Z_reconstruction_time"] = time.perf_counter() - z_start
+    timings["per_iteration_total"] = time.perf_counter() - iter_start
+
+    estimate.update(
+        {
+            "A": a_mat,
+            "B": b_mat,
+            "Q": q_mat,
+            "C": c_mat,
+            "beta_z": beta_z,
+            "ris_eta": ris_eta,
+            "Z_hat": z_hat,
+        }
+    )
+    timings["structured_refinement_total"] = time.perf_counter() - total_start
+    diagnostics = {
+        "z_hat_history": [z_hat],
+        "residuals_noisy_rmse": [
+            float(np.linalg.norm(z_hat - z_tensor) / np.sqrt(z_tensor.size))
+        ],
+        "ris_projection_total_s": float(timings["projection_per_path_total"]),
+        "stage2_time_ris_codebook_build": float(
+            timings["stage2_time_ris_codebook_build"]
+        ),
+        "stage2_time_ris_correlation": float(timings["stage2_time_ris_correlation"]),
+        "stage2_time_ris_refine": float(timings["stage2_time_ris_refine"]),
+        "stage2_ris_grid_used": grid_used,
+        "stage2_ris_local_window": local_window,
+        "updates": [
+            {
+                "ris_projection_details": ris_details,
+                "mode4_assignment_order": list(range(scene["K"])),
+                "mode4_assignment_costs": np.full((scene["K"], scene["K"]), np.nan),
+                "mode4_assignment_time_s": 0.0,
+                "iteration_accepted": True,
+                "iteration_sse_after": float(current_sse),
+                **timings,
+            }
+        ],
+        **timings,
+    }
+    check_finite("fast RIS C", c_mat)
     return estimate, diagnostics
 
 

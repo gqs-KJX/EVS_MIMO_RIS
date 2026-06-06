@@ -22,7 +22,18 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["T"] == 256
     assert config["SNR_dB"] == 0.0
     assert config["trials"] == 1
-    assert config["num_structured_iters"] == 2
+    assert config["num_structured_iters"] == 1
+    assert config["stage2_ris_rescue_max_iters"] == 1
+    assert config["stage2_ris_rescue_impl"] == "fast"
+    assert config["stage2_ris_rescue_use_damping"] is False
+    assert tuple(config["stage2_ris_rescue_damping_grid"]) == (0.0, 1.0)
+    assert config["stage2_precise_ablation"] is False
+    assert config["direct_vp_first"] is True
+    assert config["direct_vp_max_good_nfev"] == 12
+    assert config["direct_vp_noise_floor_factor"] == 1.5
+    assert config["direct_vp_min_rel_residual_decrease"] == 1.0e-4
+    assert config["rescue_accept_min_rel_improvement"] == 1.0e-3
+    assert config["rescue_accept_min_abs_improvement"] == 1.0e-8
     assert config["enable_global_vp"] is True
     assert config["stage2_mode"] == "none"
     assert config["diagnostic_mode"] == "performance"
@@ -75,6 +86,8 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["global_vp"]["objective_rollback_tolerance"] == 1.0e-12
     assert config["global_vp"]["overwrite_factor_keys"] is False
     assert config["global_vp"]["finite_difference_check"] is False
+    assert config["global_vp"]["use_analytic_jacobian"] is True
+    assert config["global_vp"]["matrix_free_beta"] is False
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
     assert tuple(config["stage2_damping_grid"]) == (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)

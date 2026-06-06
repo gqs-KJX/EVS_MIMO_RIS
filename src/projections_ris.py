@@ -9,6 +9,8 @@ always reconstructed from the exact compressed spherical-wave response.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from .geometry import (
@@ -90,6 +92,7 @@ def exact_spherical_response_and_jacobian(
 def local_ris_search_config(scene: dict, config: dict, path: int) -> dict:
     """Build RIS-specific geometry-search bounds from UE position bounds."""
     base = dict(config["ris_search"])
+    base["panel_index"] = int(path)
     ue_bounds = np.asarray(config["ue_bounds"], dtype=float)
     corners = np.array(
         [
@@ -133,6 +136,77 @@ def local_ris_search_config(scene: dict, config: dict, path: int) -> dict:
     az_max = center + float(np.max(diffs) + angle_margin)
     base["az_bounds"] = (az_min, az_max)
     return base
+
+
+def _ris_cache_key(
+    search_config: dict,
+    current_eta: np.ndarray | None,
+    use_local_grid: bool,
+    wavelength: float,
+    ris_grid: np.ndarray,
+    omega: np.ndarray,
+) -> tuple:
+    """Return a deterministic key for a panel/local RIS codebook."""
+    if use_local_grid and current_eta is not None:
+        center = tuple(np.round(np.asarray(current_eta, dtype=float), 12))
+        span = (
+            float(search_config.get("stage2_range_span", 0.45)),
+            float(search_config.get("stage2_angle_span", 0.12)),
+        )
+        grid_size = (
+            int(search_config.get("stage2_num_range", 5)),
+            int(search_config.get("stage2_num_elev", 5)),
+            int(search_config.get("stage2_num_az", 7)),
+        )
+    else:
+        center = (
+            tuple(np.round(search_config["range_bounds"], 12)),
+            tuple(np.round(search_config["elev_bounds"], 12)),
+            tuple(np.round(search_config["az_bounds"], 12)),
+        )
+        span = ("global",)
+        grid_size = (
+            int(search_config.get("num_range", 5)),
+            int(search_config.get("num_elev", 5)),
+            int(search_config.get("num_az", 7)),
+        )
+    return (
+        int(search_config.get("panel_index", -1)),
+        center,
+        span,
+        grid_size,
+        float(wavelength),
+        tuple(ris_grid.shape),
+        tuple(omega.shape),
+    )
+
+
+def _cached_compressed_responses(
+    grid_candidates: list[np.ndarray],
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    current_eta: np.ndarray | None,
+    use_local_grid: bool,
+) -> tuple[list[np.ndarray], float]:
+    """Return compressed steering vectors for a grid, using an optional call-local cache."""
+    cache = search_config.get("_ris_projection_cache")
+    key = _ris_cache_key(
+        search_config, current_eta, use_local_grid, wavelength, ris_grid, omega
+    )
+    if isinstance(cache, dict) and key in cache:
+        return cache[key], 0.0
+    start = time.perf_counter()
+    responses = [
+        compressed_exact_response(eta, omega, a_rb, ris_grid, wavelength)
+        for eta in grid_candidates
+    ]
+    elapsed = time.perf_counter() - start
+    if isinstance(cache, dict):
+        cache[key] = responses
+    return responses, elapsed
 
 
 def scaled_residual(c_tilde: np.ndarray, h_model: np.ndarray, eps: float) -> tuple[float, complex]:
@@ -825,6 +899,11 @@ def _project_ris_factor_wesvp_ms(
     weight: np.ndarray | None = None,
 ) -> dict:
     """Weighted exact spherical variable projection with multi-start refinement."""
+    timing = {
+        "stage2_time_ris_codebook_build": 0.0,
+        "stage2_time_ris_correlation": 0.0,
+        "stage2_time_ris_refine": 0.0,
+    }
     lower, upper = _ris_search_bounds(search_config)
     projection_mode = str(search_config.get("projection_mode", "wesvp_ms")).lower()
     use_local_grid = current_eta is not None
@@ -833,21 +912,27 @@ def _project_ris_factor_wesvp_ms(
     )
     c_norm_sq = max(_weighted_norm_sq(c_tilde, weight), eps)
 
+    grid_responses, build_time = _cached_compressed_responses(
+        grid_candidates,
+        omega,
+        a_rb,
+        ris_grid,
+        wavelength,
+        search_config,
+        current_eta,
+        use_local_grid,
+    )
+    timing["stage2_time_ris_codebook_build"] += float(build_time)
     coarse_candidates = []
-    for eta_local in grid_candidates:
-        value, _ = _wesvp_objective_and_grad(
-            eta_local,
-            c_tilde,
-            omega,
-            a_rb,
-            ris_grid,
-            wavelength,
-            refine_lower,
-            refine_upper,
-            weight,
-            eps,
+    corr_start = time.perf_counter()
+    const_norm = _weighted_norm_sq(c_tilde, weight)
+    for eta_local, h_vec in zip(grid_candidates, grid_responses):
+        alpha = _vp_alpha(c_tilde, h_vec, weight, eps)
+        value = const_norm - abs(_weighted_inner(h_vec, c_tilde, weight)) ** 2 / (
+            _weighted_inner(h_vec, h_vec, weight).real + eps
         )
         coarse_candidates.append((float(value), eta_local))
+    timing["stage2_time_ris_correlation"] += time.perf_counter() - corr_start
     coarse_candidates.sort(key=lambda item: item[0])
     best_coarse_value, best_coarse_eta = coarse_candidates[0]
     starts: list[tuple[np.ndarray, str]] = []
@@ -1001,6 +1086,7 @@ def _project_ris_factor_wesvp_ms(
         from scipy.optimize import minimize
 
         analytic_jacobian_used = True
+        refine_start = time.perf_counter()
         for eta_start, source in unique_starts:
             result = minimize(
                 lambda eta: objective_grad(eta)[0],
@@ -1027,7 +1113,9 @@ def _project_ris_factor_wesvp_ms(
                 best_eta = np.asarray(result.x, dtype=float)
                 best_value = float(result.fun)
                 best_eta_source = source
+        timing["stage2_time_ris_refine"] += time.perf_counter() - refine_start
     else:
+        refine_start = time.perf_counter()
         for eta_start, source in unique_starts:
             span = np.maximum(refine_upper - refine_lower, eps)
             x0_scaled = (eta_start - refine_lower) / span
@@ -1059,6 +1147,7 @@ def _project_ris_factor_wesvp_ms(
                 best_eta = eta_best_candidate
                 best_value = float(value)
                 best_eta_source = source
+        timing["stage2_time_ris_refine"] += time.perf_counter() - refine_start
 
     assert best_eta is not None, "WESVP-MS requires at least one valid start"
     h_best = compressed_exact_response(best_eta, omega, a_rb, ris_grid, wavelength)
@@ -1195,6 +1284,7 @@ def _project_ris_factor_wesvp_ms(
         "ris_pgd_unscaled_objective": None
         if lifted_best is None
         else lifted_best.get("pgd_unscaled_objective"),
+        **timing,
     }
 
 
@@ -1209,6 +1299,11 @@ def _project_ris_factor_legacy(
     current_eta: np.ndarray | None = None,
 ) -> dict:
     """Project a compressed RIS factor according to the paper's Mode-4 rule."""
+    timing = {
+        "stage2_time_ris_codebook_build": 0.0,
+        "stage2_time_ris_correlation": 0.0,
+        "stage2_time_ris_refine": 0.0,
+    }
     assert c_tilde.ndim == 1, "c_tilde must be a vector"
     assert omega.shape[0] == c_tilde.size, "Omega rows must match c_tilde length"
     assert omega.shape[1] == a_rb.size, "Omega columns must match RIS response length"
@@ -1492,6 +1587,7 @@ def _project_ris_factor_legacy(
         if lifted_best is None
         else lifted_best.get("pgd_unscaled_objective"),
         "optimizer_message": optimizer_message,
+        **timing,
     }
 
 
