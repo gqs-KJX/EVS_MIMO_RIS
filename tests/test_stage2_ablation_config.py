@@ -5,6 +5,9 @@ from src.estimators import _accept_strict_sse, structured_refinement
 from src.main_single_proposed import (
     _print_stage_two_update_diagnostics,
     _weak_reasonable_stage1_config,
+    enumerate_top_assignment_hypotheses,
+    select_proposed_branch,
+    stage2_severe_unreliable,
 )
 from src.projections_delay import bq_from_poles
 
@@ -24,9 +27,24 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 1
     assert config["stage2_ris_rescue_max_iters"] == 1
-    assert config["stage2_ris_rescue_impl"] == "fast"
+    assert config["stage2_ris_rescue_impl"] == "robust_jnpp"
     assert config["stage2_ris_rescue_use_damping"] is False
     assert tuple(config["stage2_ris_rescue_damping_grid"]) == (0.0, 1.0)
+    assert config["jnpp_use_confidence_weights"] is True
+    assert config["jnpp_rank_weight_rho"] == 2.0
+    assert config["jnpp_min_weight"] == 0.05
+    assert config["jnpp_use_leave_one_out"] is True
+    assert config["jnpp_max_candidates"] == 4
+    assert config["jnpp_num_starts"] == 4
+    assert config["jnpp_start_perturb_m"] == 0.25
+    assert config["jnpp_use_coarse_grid"] is False
+    assert config["jnpp_position_box_m"] == 1.5
+    assert config["jnpp_check_gradient"] is False
+    assert config["jnpp_clock_postcheck_ns"] == 0.5
+    assert config["jnpp_clock_tie_rel_tol"] == 1.0e-3
+    assert config["jnpp_assignment_aware"] is False
+    assert config["jnpp_assignment_margin_threshold"] == 0.2
+    assert config["jnpp_top_assignments"] == 3
     assert config["stage2_precise_ablation"] is False
     assert config["direct_vp_first"] is True
     assert config["direct_vp_max_good_nfev"] == 12
@@ -34,6 +52,15 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["direct_vp_min_rel_residual_decrease"] == 1.0e-4
     assert config["rescue_accept_min_rel_improvement"] == 1.0e-3
     assert config["rescue_accept_min_abs_improvement"] == 1.0e-8
+    assert config["mhr_assignment_margin_threshold"] == 0.3
+    assert config["mhr_rank1_ratio_threshold"] == 0.9
+    assert config["mhr_z_residual_threshold"] == 0.98
+    assert config["mhr_top_assignments"] == 6
+    assert tuple(config["mhr_ris_grid"]) == (7, 5, 9)
+    assert config["mhr_top_ris_candidates_per_path"] == 3
+    assert config["mhr_max_global_hypotheses"] == 8
+    assert config["mhr_short_vp_max_nfev"] == 5
+    assert config["mhr_num_full_vp_candidates"] == 1
     assert config["enable_global_vp"] is True
     assert config["stage2_mode"] == "none"
     assert config["diagnostic_mode"] == "performance"
@@ -135,6 +162,76 @@ def test_structured_refinement_all_modules_disabled_keeps_factors_unchanged():
     np.testing.assert_allclose(refined["C"], c_mat)
     np.testing.assert_allclose(refined["poles"], poles)
     assert refined["Z_hat"].shape == z_tensor.shape
+
+
+def test_mhrr_severe_unreliable_uses_requested_thresholds():
+    config = default_config()
+    estimate = {
+        "stage1_assignment_margin": 0.29,
+        "stage1_max_rank1_ratio": 0.1,
+        "initial_z_residual": 0.1,
+    }
+    reliability = {"assignment_margin": 0.29}
+
+    severe = stage2_severe_unreliable(estimate, reliability, config)
+
+    assert severe["severe_unreliable"] is True
+    assert severe["margin_bad"] is True
+    assert severe["rank1_bad"] is False
+    assert severe["z_residual_bad"] is False
+
+
+def test_mhrr_assignment_hypotheses_sort_by_cost_and_clock():
+    config = default_config()
+    config["mhr_top_assignments"] = 2
+    estimate = {
+        "assignment_costs_col_by_panel": np.array(
+            [
+                [0.0, 5.0, 5.0],
+                [5.0, 0.0, 5.0],
+                [5.0, 5.0, 0.0],
+            ]
+        ),
+        "poles": np.ones(3, dtype=complex),
+        "ris_eta": np.zeros((3, 3), dtype=float),
+    }
+
+    hypotheses = enumerate_top_assignment_hypotheses(estimate, config)
+
+    assert len(hypotheses) == 2
+    assert hypotheses[0]["assignment"] == (0, 1, 2)
+    assert hypotheses[0]["assignment_score"] == 0.0
+    assert np.isfinite(hypotheses[0]["clock_std"])
+
+
+def test_mhrr_acceptance_and_rollback_use_raw_objective():
+    config = default_config()
+    reliability = {"decision": "ris_only_stage2_then_vp"}
+    direct = {
+        "final": {"raw_objective_final": 1.0},
+        "Y_true": np.ones(1),
+    }
+    rescue_good = {
+        "branch_name": "multi_hypothesis_ris_reacquisition_then_vp",
+        "structured_diag": {"mhr_accepted": False},
+        "final": {"raw_objective_final": 0.99},
+        "Y_true": np.ones(1),
+    }
+    selected, no_gain = select_proposed_branch(direct, rescue_good, reliability, config)
+    assert no_gain is False
+    assert selected["selected_branch"] == "multi_hypothesis_ris_reacquisition_then_vp"
+    assert rescue_good["structured_diag"]["mhr_accepted"] is True
+
+    rescue_equal = {
+        "branch_name": "multi_hypothesis_ris_reacquisition_then_vp",
+        "structured_diag": {"mhr_accepted": False},
+        "final": {"raw_objective_final": 1.0},
+        "Y_true": np.ones(1),
+    }
+    selected, no_gain = select_proposed_branch(direct, rescue_equal, reliability, config)
+    assert no_gain is True
+    assert selected["selected_branch"] == "direct_vp_rollback"
+    assert rescue_equal["structured_diag"]["mhr_accepted"] is False
 
 
 def test_main_single_weak_reasonable_stage1_config():

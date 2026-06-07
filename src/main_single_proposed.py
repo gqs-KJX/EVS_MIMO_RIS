@@ -58,7 +58,12 @@ if __package__ in (None, ""):
     from src.metrics import position_rmse, relative_nmse, rmse_abs
     from src.geometry import polarization_vector
     from src.projections_delay import tau_from_pole
-    from src.projections_ris import compressed_exact_response, scaled_residual
+    from src.projections_ris import (
+        compressed_exact_response,
+        local_ris_search_config,
+        scaled_residual,
+    )
+    from src.robust_jnpp import robust_jnpp_basin_recovery
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
@@ -93,7 +98,12 @@ else:
     from .metrics import position_rmse, relative_nmse, rmse_abs
     from .geometry import polarization_vector
     from .projections_delay import tau_from_pole
-    from .projections_ris import compressed_exact_response, scaled_residual
+    from .projections_ris import (
+        compressed_exact_response,
+        local_ris_search_config,
+        scaled_residual,
+    )
+    from .robust_jnpp import robust_jnpp_basin_recovery
     from .tensor_utils import hankelize_frequency
     from .utils import scipy_is_available
 
@@ -796,9 +806,13 @@ def _run_ris_only_stage2(
         ris_config["stage2_damping_grid"] = tuple(
             config.get("stage2_ris_rescue_damping_grid", (0.0, 1.0))
         )
-    impl = str(config.get("stage2_ris_rescue_impl", "fast"))
+    impl = str(config.get("stage2_ris_rescue_impl", "robust_jnpp"))
     stage2_start = time.perf_counter()
-    if impl == "fast":
+    if impl == "robust_jnpp":
+        estimate_used, structured_diag = robust_jnpp_basin_recovery(
+            estimate_initial, scene, ris_config
+        )
+    elif impl in ("local_ris_projection", "fast"):
         estimate_used, structured_diag = ris_only_basin_recovery_fast(
             estimate_initial, z_noisy, scene, ris_config
         )
@@ -976,6 +990,424 @@ def run_ris_only_stage2_branch(
     )
 
 
+def _safe_float(value, default: float = float("nan")) -> float:
+    try:
+        value_float = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value_float if np.isfinite(value_float) else default
+
+
+def stage2_severe_unreliable(stage1_estimate: dict, reliability: dict, config: dict) -> dict:
+    """Classify whether local RIS rescue is too narrow for the observed failure."""
+    assignment_margin = _safe_float(
+        reliability.get(
+            "assignment_margin",
+            stage1_estimate.get("stage1_assignment_margin"),
+        )
+    )
+    rank1_ratio = _safe_float(stage1_estimate.get("stage1_max_rank1_ratio"))
+    z_residual = _safe_float(stage1_estimate.get("initial_z_residual"))
+    margin_bad = bool(
+        np.isfinite(assignment_margin)
+        and assignment_margin < float(config.get("mhr_assignment_margin_threshold", 0.3))
+    )
+    rank1_bad = bool(
+        np.isfinite(rank1_ratio)
+        and rank1_ratio > float(config.get("mhr_rank1_ratio_threshold", 0.9))
+    )
+    z_bad = bool(
+        np.isfinite(z_residual)
+        and z_residual > float(config.get("mhr_z_residual_threshold", 0.98))
+    )
+    severe = bool(margin_bad or rank1_bad or z_bad)
+    return {
+        "severe_unreliable": severe,
+        "assignment_margin": assignment_margin,
+        "rank1_ratio": rank1_ratio,
+        "initial_z_residual": z_residual,
+        "margin_bad": margin_bad,
+        "rank1_bad": rank1_bad,
+        "z_residual_bad": z_bad,
+    }
+
+
+def enumerate_top_assignment_hypotheses(stage1_estimate: dict, config: dict) -> list[dict]:
+    """Enumerate candidate panel-to-column assignments from Stage-I costs."""
+    costs = np.asarray(
+        stage1_estimate.get(
+            "assignment_costs_col_by_panel",
+            stage1_estimate.get("assignment_costs", np.empty((0, 0))),
+        ),
+        dtype=float,
+    )
+    k_paths = int(np.asarray(stage1_estimate["poles"]).size)
+    if costs.shape != (k_paths, k_paths) or not np.any(np.isfinite(costs)):
+        costs = np.zeros((k_paths, k_paths), dtype=float)
+    if np.any(np.isfinite(costs)):
+        missing_cost = float(np.nanmax(costs[np.isfinite(costs)]) + 1.0)
+    else:
+        missing_cost = 1.0
+    finite_costs = np.where(np.isfinite(costs), costs, missing_cost)
+    if k_paths <= 6:
+        permutations = itertools.permutations(range(k_paths))
+    else:
+        permutations = [tuple(range(k_paths))]
+
+    poles = np.asarray(stage1_estimate["poles"])
+    ris_eta = np.asarray(
+        stage1_estimate.get("ris_eta", np.zeros((k_paths, 3))), dtype=float
+    )
+    c0 = float(config.get("c0", 299792458.0))
+    delta_f = float(config.get("delta_f", 1.0))
+    d_rb = np.asarray(config.get("d_RB", []), dtype=float)
+    if d_rb.size != k_paths:
+        d_rb = np.zeros(k_paths, dtype=float)
+    clock_scale = float(
+        config.get("mhr_clock_scale_s", config.get("assignment_clock_scale_s", 1.0e-9))
+    )
+    clock_weight = float(
+        config.get("mhr_clock_weight", config.get("assignment_clock_weight", 0.5))
+    )
+    hypotheses = []
+    for perm in permutations:
+        # perm[panel] = current column used for that physical panel.
+        assignment_score = float(
+            sum(finite_costs[int(col), panel] for panel, col in enumerate(perm))
+        )
+        delta_t_k = []
+        for panel, col in enumerate(perm):
+            tau_hat = tau_from_pole(poles[int(col)], delta_f)
+            range_hat = float(ris_eta[int(col), 0]) if ris_eta.ndim == 2 else 0.0
+            delta_t_k.append(tau_hat - (range_hat + d_rb[panel]) / c0)
+        delta_t_k = np.asarray(delta_t_k, dtype=float)
+        clock_std = float(np.std(delta_t_k)) if delta_t_k.size else float("nan")
+        clock_score = clock_std / max(clock_scale, config.get("eps", 1.0e-10))
+        total_score = assignment_score + clock_weight * clock_score
+        hypotheses.append(
+            {
+                "assignment": tuple(int(v) for v in perm),
+                "assignment_score": assignment_score,
+                "clock_std": clock_std,
+                "delta_t_k": delta_t_k,
+                "score": float(total_score),
+            }
+        )
+    hypotheses.sort(key=lambda item: item["score"])
+    max_keep = int(config.get("mhr_top_assignments", min(6, len(hypotheses))))
+    return hypotheses[: max(1, min(max_keep, len(hypotheses)))]
+
+
+def _mhr_eta_grid(
+    center_eta: np.ndarray,
+    panel: int,
+    rank1_bad: bool,
+    scene: dict,
+    config: dict,
+) -> np.ndarray:
+    """Build a semi-global or widened local RIS reacquisition grid."""
+    search = local_ris_search_config(scene, config, panel)
+    num_range, num_elev, num_az = (
+        int(v) for v in config.get("mhr_ris_grid", (7, 5, 9))
+    )
+    use_center = bool(config.get("mhr_use_current_eta_as_center", True))
+    use_global = bool(config.get("mhr_allow_global_if_rank1_bad", True)) and rank1_bad
+    if use_center and not use_global and np.all(np.isfinite(center_eta)):
+        r_span = float(config.get("mhr_range_span", 1.5))
+        a_span = float(config.get("mhr_angle_span", 0.35))
+        r_bounds = (
+            max(search["range_bounds"][0], float(center_eta[0]) - 0.5 * r_span),
+            min(search["range_bounds"][1], float(center_eta[0]) + 0.5 * r_span),
+        )
+        e_bounds = (
+            max(search["elev_bounds"][0], float(center_eta[1]) - 0.5 * a_span),
+            min(search["elev_bounds"][1], float(center_eta[1]) + 0.5 * a_span),
+        )
+        a_bounds = (
+            float(center_eta[2]) - 0.5 * a_span,
+            float(center_eta[2]) + 0.5 * a_span,
+        )
+    else:
+        r_bounds = search["range_bounds"]
+        e_bounds = search["elev_bounds"]
+        a_bounds = search["az_bounds"]
+    ranges = np.linspace(r_bounds[0], r_bounds[1], max(num_range, 1))
+    elevs = np.linspace(e_bounds[0], e_bounds[1], max(num_elev, 1))
+    azs = np.linspace(a_bounds[0], a_bounds[1], max(num_az, 1))
+    return np.asarray(list(itertools.product(ranges, elevs, azs)), dtype=float)
+
+
+def generate_ris_reacquisition_candidates(
+    stage1_estimate: dict,
+    scene: dict,
+    assignment: dict,
+    config: dict,
+) -> tuple[list[list[dict]], dict]:
+    """Generate top exact-response RIS candidates for one assignment hypothesis."""
+    start = time.perf_counter()
+    k_paths = scene["K"]
+    top_q = int(config.get("mhr_top_ris_candidates_per_path", 3))
+    eps = float(config.get("eps", 1.0e-10))
+    c_pool = np.asarray(stage1_estimate["C"], dtype=complex)
+    eta_pool = np.asarray(stage1_estimate["ris_eta"], dtype=float)
+    rank1_ratios = np.asarray(
+        stage1_estimate.get("stage1_rank1_ratios", np.zeros(k_paths)),
+        dtype=float,
+    )
+    rank1_threshold = float(config.get("mhr_rank1_ratio_threshold", 0.9))
+    candidates_by_panel: list[list[dict]] = []
+    num_candidates = 0
+    for panel, col in enumerate(assignment["assignment"]):
+        col = int(col)
+        proxy = c_pool[:, col]
+        center_eta = eta_pool[col] if eta_pool.ndim == 2 else np.full(3, np.nan)
+        rank1_bad = bool(
+            rank1_ratios.size > col
+            and np.isfinite(rank1_ratios[col])
+            and rank1_ratios[col] > rank1_threshold
+        )
+        grid = _mhr_eta_grid(center_eta, panel, rank1_bad, scene, config)
+        panel_candidates = []
+        tau_hat = tau_from_pole(stage1_estimate["poles"][col], scene["delta_f"])
+        for eta in grid:
+            h_vec = compressed_exact_response(
+                eta,
+                scene["Omega"][panel],
+                scene["a_RB"][panel],
+                scene["ris_grid"],
+                scene["wavelength"],
+            )
+            residual, alpha = scaled_residual(proxy, h_vec, eps)
+            relative = float(np.sqrt(residual / (np.linalg.norm(proxy) ** 2 + eps)))
+            delta_t = tau_hat - (float(eta[0]) + scene["d_RB"][panel]) / scene["c0"]
+            panel_candidates.append(
+                {
+                    "panel": panel,
+                    "column": col,
+                    "eta_local": eta.copy(),
+                    "c": alpha * h_vec,
+                    "alpha": alpha,
+                    "relative_residual": relative,
+                    "score": relative,
+                    "delta_t": float(delta_t),
+                    "rank1_bad_global_grid": rank1_bad,
+                }
+            )
+        panel_candidates.sort(key=lambda item: item["score"])
+        kept = panel_candidates[: max(1, top_q)]
+        num_candidates += len(kept)
+        candidates_by_panel.append(kept)
+    return candidates_by_panel, {
+        "mhr_candidate_generation_time": float(time.perf_counter() - start),
+        "mhr_num_ris_candidates": int(num_candidates),
+    }
+
+
+def _mhr_build_estimate_from_hypothesis(
+    stage1_estimate: dict,
+    assignment: dict,
+    candidate_tuple: tuple[dict, ...],
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Build a physical-panel-ordered estimate for one MHRR hypothesis."""
+    estimate = copy.deepcopy(stage1_estimate)
+    k_paths = scene["K"]
+    columns = np.asarray(assignment["assignment"], dtype=int)
+    for key in ("A", "B", "Q", "C"):
+        mat = np.asarray(stage1_estimate[key])
+        estimate[key] = mat[:, columns].copy()
+    for key in ("poles", "beta_z", "gamma", "eta_pol"):
+        if key in stage1_estimate:
+            estimate[key] = np.asarray(stage1_estimate[key])[columns].copy()
+    ris_eta = np.empty((k_paths, 3), dtype=float)
+    c_mat = np.asarray(estimate["C"], dtype=complex).copy()
+    for panel, candidate in enumerate(candidate_tuple):
+        ris_eta[panel] = candidate["eta_local"]
+        c_mat[:, panel] = candidate["c"]
+    estimate["C"] = c_mat
+    estimate["ris_eta"] = ris_eta
+    estimate["columns_are_panel_ordered"] = True
+    estimate["mhr_assignment"] = tuple(int(v) for v in assignment["assignment"])
+    estimate["mhr_ris_candidate_scores"] = np.array(
+        [float(candidate["relative_residual"]) for candidate in candidate_tuple],
+        dtype=float,
+    )
+    return estimate
+
+
+def _mhr_build_global_hypotheses(
+    stage1_estimate: dict,
+    scene: dict,
+    config: dict,
+    assignments: list[dict],
+) -> tuple[list[dict], dict]:
+    """Combine assignment and per-panel RIS candidates into global hypotheses."""
+    start = time.perf_counter()
+    global_hypotheses = []
+    total_ris_candidates = 0
+    candidate_time = 0.0
+    clock_scale = float(config.get("mhr_clock_scale_s", 1.0e-9))
+    for assignment in assignments:
+        candidates_by_panel, cand_diag = generate_ris_reacquisition_candidates(
+            stage1_estimate, scene, assignment, config
+        )
+        total_ris_candidates += int(cand_diag["mhr_num_ris_candidates"])
+        candidate_time += float(cand_diag["mhr_candidate_generation_time"])
+        for candidate_tuple in itertools.product(*candidates_by_panel):
+            clock_values = np.array(
+                [float(candidate["delta_t"]) for candidate in candidate_tuple],
+                dtype=float,
+            )
+            clock_std = float(np.std(clock_values)) if clock_values.size else float("nan")
+            ris_score = float(
+                np.mean([candidate["relative_residual"] for candidate in candidate_tuple])
+            )
+            score = (
+                float(assignment["score"])
+                + ris_score
+                + clock_std / max(clock_scale, config.get("eps", 1.0e-10))
+            )
+            estimate = _mhr_build_estimate_from_hypothesis(
+                stage1_estimate, assignment, candidate_tuple, scene, config
+            )
+            global_hypotheses.append(
+                {
+                    "estimate": estimate,
+                    "assignment": assignment,
+                    "ris_candidates": candidate_tuple,
+                    "clock_std": clock_std,
+                    "ris_score": ris_score,
+                    "score": float(score),
+                }
+            )
+    global_hypotheses.sort(key=lambda item: item["score"])
+    max_hyp = int(config.get("mhr_max_global_hypotheses", 8))
+    return global_hypotheses[: max(1, min(max_hyp, len(global_hypotheses)))], {
+        "mhr_num_ris_candidates": int(total_ris_candidates),
+        "mhr_candidate_generation_time": float(candidate_time),
+        "mhr_hypothesis_build_time": float(time.perf_counter() - start),
+    }
+
+
+def run_short_vp_for_hypotheses(
+    hypotheses: list[dict],
+    y_noisy: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> tuple[list[dict], dict]:
+    """Run short raw-domain VP probes and return the best full-VP candidates."""
+    start = time.perf_counter()
+    short_config = copy.deepcopy(config)
+    short_config["vp_least_squares_max_nfev"] = int(
+        config.get("mhr_short_vp_max_nfev", 5)
+    )
+    for hyp in hypotheses:
+        hyp_start = time.perf_counter()
+        final = global_exact_spherical_vp_refinement(
+            y_noisy, hyp["estimate"], scene, short_config
+        )
+        hyp["short_final"] = final
+        hyp["short_raw_objective"] = _final_raw_objective(final)
+        hyp["short_success"] = bool(
+            final.get("global_vp_success", final.get("optimizer", {}).get("success", False))
+        )
+        hyp["short_nfev"] = int(final.get("optimizer", {}).get("n_eval", 0))
+        hyp["short_vp_time"] = float(time.perf_counter() - hyp_start)
+    hypotheses.sort(
+        key=lambda item: (
+            not np.isfinite(item.get("short_raw_objective", float("nan"))),
+            item.get("short_raw_objective", float("inf")),
+            item["score"],
+        )
+    )
+    keep = int(config.get("mhr_num_full_vp_candidates", 1))
+    return hypotheses[: max(1, min(keep, len(hypotheses)))], {
+        "mhr_short_vp_time": float(time.perf_counter() - start),
+    }
+
+
+def run_multi_hypothesis_ris_reacquisition_branch(
+    data: dict,
+    stage1_estimate: dict,
+    config: dict,
+    base_timing: dict,
+    reliability: dict,
+) -> dict:
+    """Run severe-case multi-hypothesis RIS re-acquisition followed by VP."""
+    total_start = time.perf_counter()
+    scene = data["scene"]
+    assignment_start = time.perf_counter()
+    assignments = enumerate_top_assignment_hypotheses(stage1_estimate, config)
+    assignment_time = time.perf_counter() - assignment_start
+    hypotheses, hyp_diag = _mhr_build_global_hypotheses(
+        stage1_estimate, scene, config, assignments
+    )
+    selected_hypotheses, short_diag = run_short_vp_for_hypotheses(
+        hypotheses, data["Y_noisy"], scene, config
+    )
+    full_start = time.perf_counter()
+    best_hypothesis = None
+    best_final = None
+    for hyp in selected_hypotheses:
+        full = global_exact_spherical_vp_refinement(
+            data["Y_noisy"], hyp["estimate"], scene, config
+        )
+        hyp["full_final"] = full
+        hyp["full_raw_objective"] = _final_raw_objective(full)
+        if best_final is None or hyp["full_raw_objective"] < _final_raw_objective(best_final):
+            best_hypothesis = hyp
+            best_final = full
+    full_time = time.perf_counter() - full_start
+    assert best_hypothesis is not None and best_final is not None
+    total_time = time.perf_counter() - total_start
+    structured_diag = {
+        "stage2_rescue_mode": "multi_hypothesis_ris_reacquisition",
+        "mhr_num_assignment_hypotheses": int(len(assignments)),
+        "mhr_num_ris_candidates": int(hyp_diag["mhr_num_ris_candidates"]),
+        "mhr_num_global_hypotheses": int(len(hypotheses)),
+        "mhr_best_assignment": list(best_hypothesis["assignment"]["assignment"]),
+        "mhr_best_clock_std_ns": float(best_hypothesis["clock_std"] * 1.0e9),
+        "mhr_best_short_vp_objective": float(best_hypothesis["short_raw_objective"]),
+        "mhr_best_full_vp_objective": float(best_hypothesis["full_raw_objective"]),
+        "mhr_accepted": False,
+        "mhr_runtime_total": float(total_time),
+        "mhr_assignment_time": float(assignment_time),
+        "mhr_candidate_generation_time": float(hyp_diag["mhr_candidate_generation_time"]),
+        "mhr_short_vp_time": float(short_diag["mhr_short_vp_time"]),
+        "mhr_full_vp_time": float(full_time),
+        "updates": [],
+        "z_hat_history": [],
+        "residuals_noisy_rmse": [],
+        "ris_projection_total_s": 0.0,
+    }
+    timing = dict(base_timing)
+    timing.update(
+        {
+            "stage2": total_time,
+            "ris_projection_total": 0.0,
+            "vp": full_time,
+            "total": _common_timing_total(base_timing) + total_time,
+            "mhr_runtime_total": total_time,
+            "mhr_assignment_time": assignment_time,
+            "mhr_candidate_generation_time": hyp_diag["mhr_candidate_generation_time"],
+            "mhr_short_vp_time": short_diag["mhr_short_vp_time"],
+            "mhr_full_vp_time": full_time,
+        }
+    )
+    return _make_branch_result(
+        data=data,
+        estimate_initial=stage1_estimate,
+        estimate_used=best_hypothesis["estimate"],
+        structured_diag=structured_diag,
+        final=best_final,
+        timing=timing,
+        stage1_config=config,
+        branch_name="multi_hypothesis_ris_reacquisition_then_vp",
+        reliability=reliability,
+    )
+
+
 def run_full_legacy_comparison_branch(
     data: dict,
     stage1_estimate: dict,
@@ -1115,7 +1547,9 @@ def select_proposed_branch(
         # This keeps the diagnostic consistent with the final estimator objective.
         if accept_rescue:
             selected = dict(rescue_result)
-            selected_branch = "ris_only_stage2_then_vp"
+            selected_branch = str(
+                rescue_result.get("branch_name", "ris_only_stage2_then_vp")
+            )
             no_gain = False
         else:
             selected = dict(direct_result)
@@ -1125,6 +1559,16 @@ def select_proposed_branch(
     selected["selected_branch"] = selected_branch
     selected["reliability"] = reliability
     selected["ris_stage2_no_gain"] = bool(no_gain)
+    if rescue_result is not None:
+        rescue_diag = rescue_result.get("structured_diag", {})
+        if "mhr_accepted" in rescue_diag:
+            rescue_diag["mhr_accepted"] = bool(
+                selected_branch == "multi_hypothesis_ris_reacquisition_then_vp"
+            )
+        if "jnpp_accepted_by_raw_vp" in rescue_diag:
+            rescue_diag["jnpp_accepted_by_raw_vp"] = bool(
+                selected_branch == rescue_result.get("branch_name")
+            )
     selected["final"] = dict(selected["final"])
     selected["final"]["selected_branch"] = selected_branch
     selected["final"]["reliability"] = reliability
@@ -1174,6 +1618,7 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     direct_result["direct_vp_quality"] = direct_vp_quality
     branches = {"direct_vp": direct_result}
     rescue_result = None
+    severe_diag = stage2_severe_unreliable(stage1_estimate, reliability, config)
     direct_vp_first = bool(config.get("direct_vp_first", True))
     direct_vp_override = bool(
         direct_vp_first
@@ -1191,14 +1636,31 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
         and not direct_vp_override
     )
     if rescue_requested:
+        rescue_impl = str(config.get("stage2_ris_rescue_impl", "robust_jnpp"))
+        if rescue_impl == "robust_jnpp":
+            rescue_mode = "robust_jnpp"
+        elif severe_diag["severe_unreliable"] and bool(
+            config.get("jnpp_assignment_aware", False)
+        ):
+            rescue_mode = "multi_hypothesis_ris_reacquisition"
+        else:
+            rescue_mode = "local_ris_rescue"
         if progress_printed:
             print("running_ris_only_stage2_rescue = True", flush=True)
+            print(f"stage2_rescue_mode = {rescue_mode}", flush=True)
         # Poor but potentially recoverable initialization: use RIS-only projection
         # to improve the VP basin, then return to the same raw-domain VP-WNLS objective.
-        rescue_result = run_ris_only_stage2_branch(
-            data, stage1_estimate, config, base_timing, reliability
-        )
-        branches["ris_only_stage2_then_vp"] = rescue_result
+        if rescue_mode == "multi_hypothesis_ris_reacquisition":
+            rescue_result = run_multi_hypothesis_ris_reacquisition_branch(
+                data, stage1_estimate, config, base_timing, reliability
+            )
+            branches["multi_hypothesis_ris_reacquisition_then_vp"] = rescue_result
+        else:
+            rescue_result = run_ris_only_stage2_branch(
+                data, stage1_estimate, config, base_timing, reliability
+            )
+            rescue_result["structured_diag"]["stage2_rescue_mode"] = rescue_mode
+            branches["ris_only_stage2_then_vp"] = rescue_result
 
     selected, no_gain = select_proposed_branch(
         direct_result, rescue_result, reliability, config
@@ -1221,6 +1683,7 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
             "stage1_s"
         ]
     result["requested_reliability_decision"] = reliability["decision"]
+    result["stage2_severe_unreliable"] = severe_diag
     result["gate_override_direct_vp_good"] = bool(direct_vp_override)
     result["ris_stage2_no_gain"] = bool(no_gain)
     result["progress_printed"] = progress_printed
@@ -1417,10 +1880,22 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
     if results.get("gate_override_direct_vp_good", False):
         print("GATE_OVERRIDE_DIRECT_VP_GOOD")
     if results.get("ris_stage2_no_gain", False):
-        print(
-            "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
-            "not significantly improve the final raw-domain objective; selected direct VP."
-        )
+        rescue_mode = results.get("structured_diag", {}).get("stage2_rescue_mode")
+        if rescue_mode == "multi_hypothesis_ris_reacquisition":
+            print(
+                "MHRR_NO_SIGNIFICANT_RAW_GAIN: MHRR+VP did not significantly "
+                "improve the final raw-domain objective; selected direct VP."
+            )
+        elif rescue_mode == "robust_jnpp":
+            print(
+                "WARNING_JNPP_NO_SIGNIFICANT_RAW_GAIN: JNPP+VP did not significantly "
+                "improve the final raw-domain objective; selected direct VP."
+            )
+        else:
+            print(
+                "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
+                "not significantly improve the final raw-domain objective; selected direct VP."
+            )
 
 
 def _print_reliability_warnings(results: dict) -> None:
@@ -1431,10 +1906,28 @@ def _print_reliability_warnings(results: dict) -> None:
             "WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold."
         )
     if results.get("ris_stage2_no_gain", False):
-        print(
-            "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
-            "not significantly improve the final raw-domain objective; selected direct VP."
-        )
+        rescue_mode = results.get("structured_diag", {}).get("stage2_rescue_mode")
+        if rescue_mode != "multi_hypothesis_ris_reacquisition":
+            for branch in results.get("branches", {}).values():
+                mode = branch.get("structured_diag", {}).get("stage2_rescue_mode")
+                if mode == "multi_hypothesis_ris_reacquisition":
+                    rescue_mode = mode
+                    break
+        if rescue_mode == "multi_hypothesis_ris_reacquisition":
+            print(
+                "MHRR_NO_SIGNIFICANT_RAW_GAIN: MHRR+VP did not significantly "
+                "improve the final raw-domain objective; selected direct VP."
+            )
+        elif rescue_mode == "robust_jnpp":
+            print(
+                "WARNING_JNPP_NO_SIGNIFICANT_RAW_GAIN: JNPP+VP did not significantly "
+                "improve the final raw-domain objective; selected direct VP."
+            )
+        else:
+            print(
+                "WARNING_RIS_STAGE2_NO_SIGNIFICANT_RAW_GAIN: RIS-only Stage-II+VP did "
+                "not significantly improve the final raw-domain objective; selected direct VP."
+            )
     if _paper_balanced_good_snr_triggered_stage2(config, reliability):
         print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR")
     if results.get("gate_override_direct_vp_good", False):
@@ -2268,7 +2761,10 @@ def _print_selected_runtime(results: dict) -> None:
     timing = results.get("timing", {})
     stage2_timing = timing
     stage2_structured = results.get("structured_diag", {})
-    rescue_branch = results.get("branches", {}).get("ris_only_stage2_then_vp")
+    branches = results.get("branches", {})
+    rescue_branch = branches.get("ris_only_stage2_then_vp")
+    if rescue_branch is None:
+        rescue_branch = branches.get("multi_hypothesis_ris_reacquisition_then_vp")
     if rescue_branch is not None and results.get("ris_stage2_no_gain", False):
         stage2_timing = rescue_branch.get("timing", timing)
         stage2_structured = rescue_branch.get("structured_diag", stage2_structured)
@@ -2296,6 +2792,57 @@ def _print_selected_runtime(results: dict) -> None:
     print(
         f"stage2_ris_local_window = {stage2_structured.get('stage2_ris_local_window', 'NA')}"
     )
+    print(f"stage2_rescue_mode = {stage2_structured.get('stage2_rescue_mode', 'none')}")
+    if stage2_structured.get("stage2_rescue_mode") == "multi_hypothesis_ris_reacquisition":
+        for key in (
+            "mhr_num_assignment_hypotheses",
+            "mhr_num_ris_candidates",
+            "mhr_num_global_hypotheses",
+            "mhr_best_assignment",
+            "mhr_best_clock_std_ns",
+            "mhr_best_short_vp_objective",
+            "mhr_best_full_vp_objective",
+            "mhr_accepted",
+            "mhr_runtime_total",
+            "mhr_assignment_time",
+            "mhr_candidate_generation_time",
+            "mhr_short_vp_time",
+            "mhr_full_vp_time",
+        ):
+            print(f"{key} = {stage2_structured.get(key, 'NA')}")
+    if stage2_structured.get("stage2_rescue_mode") == "robust_jnpp":
+        for key in (
+            "jnpp_num_starts",
+            "jnpp_num_candidates",
+            "jnpp_use_confidence_weights",
+            "jnpp_weights",
+            "jnpp_rank1_ratios_used",
+            "jnpp_use_leave_one_out",
+            "jnpp_best_objective",
+            "jnpp_best_position",
+            "jnpp_best_clock_std_ns",
+            "jnpp_best_delta_t_ns",
+            "jnpp_gradient_mode",
+            "jnpp_runtime_total",
+            "jnpp_objective_eval_count",
+            "jnpp_gradient_eval_count",
+            "jnpp_accepted_by_raw_vp",
+        ):
+            print(f"{key} = {stage2_structured.get(key, 'NA')}")
+        branches = results.get("branches", {})
+        direct_branch = branches.get("direct_vp")
+        rescue_branch = branches.get("ris_only_stage2_then_vp")
+        if direct_branch is not None:
+            print(
+                "direct_vp_raw_objective = "
+                f"{_fmt(_final_raw_objective(direct_branch.get('final', {})))}"
+            )
+        if rescue_branch is not None:
+            print(
+                "jnpp_vp_raw_objective = "
+                f"{_fmt(_final_raw_objective(rescue_branch.get('final', {})))}"
+            )
+        print(f"selected_branch = {results.get('selected_branch', 'unknown')}")
     final = results.get("final", {})
     print(f"global_vp_cache_build_time = {_fmt(final.get('global_vp_cache_build_time'))}")
     print(

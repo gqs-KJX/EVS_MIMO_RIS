@@ -1828,7 +1828,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
             residual_real,
             x0_scaled,
             bounds=(np.zeros_like(x0_scaled), np.ones_like(x0_scaled)),
-            max_nfev=120,
+            max_nfev=int(config.get("vp_least_squares_max_nfev", 120)),
             xtol=1e-8,
             ftol=1e-8,
             gtol=1e-8,

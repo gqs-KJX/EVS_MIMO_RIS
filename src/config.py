@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -146,11 +148,12 @@ def default_config() -> dict:
     c0 = 299_792_458.0
     fc = 60.0e9
     wavelength = c0 / fc
+    k_default = 1
 
     config = {
         "seed": 20260526,
         "trials": 1,
-        "SNR_dB": -18.0,
+        "SNR_dB": -20.0,
         "enable_global_vp": True,
         "stage2_mode": "none",
         "diagnostic_mode": "performance",
@@ -168,6 +171,21 @@ def default_config() -> dict:
         "direct_vp_min_rel_residual_decrease": 1.0e-4,
         "rescue_accept_min_rel_improvement": 1.0e-3,
         "rescue_accept_min_abs_improvement": 1.0e-8,
+        "mhr_assignment_margin_threshold": 0.3,
+        "mhr_rank1_ratio_threshold": 0.9,
+        "mhr_z_residual_threshold": 0.98,
+        "mhr_top_assignments": 6,
+        "mhr_clock_weight": 0.5,
+        "mhr_clock_scale_s": 1.0e-9,
+        "mhr_ris_grid": (7, 5, 9),
+        "mhr_range_span": 1.5,
+        "mhr_angle_span": 0.35,
+        "mhr_use_current_eta_as_center": True,
+        "mhr_allow_global_if_rank1_bad": True,
+        "mhr_top_ris_candidates_per_path": 3,
+        "mhr_max_global_hypotheses": 8,
+        "mhr_short_vp_max_nfev": 5,
+        "mhr_num_full_vp_candidates": 1,
         "reliability_assignment_good": 1.0,
         "reliability_assignment_low": 0.3,
         "reliability_clock_good_ns": 0.1,
@@ -175,7 +193,7 @@ def default_config() -> dict:
         "reliability_ris_good": 0.3,
         "reliability_ris_bad": 0.7,
         "final_refinement_method": "global_exact_spherical_vp",
-        "K": 3,
+        "K": 2,
         "M_A": 16,
         "ris_shape": (64, 64),
         "N": 63,
@@ -244,9 +262,24 @@ def default_config() -> dict:
         },
         "num_structured_iters": 1,
         "stage2_ris_rescue_max_iters": 1,
-        "stage2_ris_rescue_impl": "fast",
+        "stage2_ris_rescue_impl": "robust_jnpp",
         "stage2_ris_rescue_use_damping": False,
         "stage2_ris_rescue_damping_grid": (0.0, 1.0),
+        "jnpp_use_confidence_weights": True,
+        "jnpp_rank_weight_rho": 2.0,
+        "jnpp_min_weight": 0.05,
+        "jnpp_use_leave_one_out": True,
+        "jnpp_max_candidates": 1 + k_default,
+        "jnpp_num_starts": 4,
+        "jnpp_start_perturb_m": 0.25,
+        "jnpp_use_coarse_grid": False,
+        "jnpp_position_box_m": 1.5,
+        "jnpp_check_gradient": False,
+        "jnpp_clock_postcheck_ns": 0.5,
+        "jnpp_clock_tie_rel_tol": 1.0e-3,
+        "jnpp_assignment_aware": False,
+        "jnpp_assignment_margin_threshold": 0.2,
+        "jnpp_top_assignments": min(3, int(math.factorial(k_default))),
         "stage2_precise_ablation": False,
         "stage2_enable_evs": False,
         "stage2_enable_delay": False,
