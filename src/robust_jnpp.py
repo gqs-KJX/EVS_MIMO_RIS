@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import time
+import warnings
 
 import numpy as np
 
@@ -32,15 +33,39 @@ def _panel_ordered_rank1_ratios(stage1_estimate: dict, k_paths: int) -> np.ndarr
     return ordered
 
 
-def _confidence_weights(stage1_estimate: dict, config: dict, k_paths: int) -> tuple[np.ndarray, np.ndarray | None]:
+def _confidence_weights(
+    stage1_estimate: dict, config: dict, k_paths: int
+) -> tuple[np.ndarray, np.ndarray | None, str, str]:
     ratios = _panel_ordered_rank1_ratios(stage1_estimate, k_paths)
-    if not bool(config.get("jnpp_use_confidence_weights", True)) or ratios is None:
-        return np.ones(k_paths, dtype=float), ratios
-    rho = float(config.get("jnpp_rank_weight_rho", 2.0))
-    min_weight = float(config.get("jnpp_min_weight", 0.05))
-    weights = np.exp(-rho * np.maximum(ratios, 0.0))
-    weights = np.maximum(weights, min_weight)
-    return weights.astype(float), ratios
+    mode = str(config.get("jnpp_weight_mode", "exponential")).lower()
+    if not bool(config.get("jnpp_use_confidence_weights", True)):
+        mode = "equal"
+    if mode not in ("equal", "exponential", "inverse_rank"):
+        raise ValueError(f"unknown jnpp_weight_mode {mode!r}")
+    if mode == "equal":
+        return np.ones(k_paths, dtype=float), ratios, mode, ""
+    if ratios is None:
+        warning = (
+            f"jnpp_weight_mode={mode!r} requested but Stage-I rank1 ratios are "
+            "unavailable; falling back to equal weights"
+        )
+        warnings.warn(warning, RuntimeWarning, stacklevel=2)
+        return np.ones(k_paths, dtype=float), ratios, "equal", warning
+
+    safe_ratios = np.maximum(np.asarray(ratios, dtype=float), 0.0)
+    if mode == "exponential":
+        rho = float(config.get("jnpp_exp_rank_rho", config.get("jnpp_rank_weight_rho", 2.0)))
+        min_weight = float(config.get("jnpp_exp_min_weight", config.get("jnpp_min_weight", 0.05)))
+        weights = np.exp(-rho * safe_ratios)
+        weights = np.maximum(weights, min_weight)
+    else:
+        eps = float(config.get("jnpp_inverse_rank_eps", 1.0e-2))
+        weights = 1.0 / (safe_ratios**2 + eps)
+        if bool(config.get("jnpp_normalize_weights", True)):
+            denom = float(np.sum(weights))
+            if np.isfinite(denom) and denom > 0.0:
+                weights = k_paths * weights / denom
+    return weights.astype(float), ratios, mode, ""
 
 
 def _stage1_position(stage1_estimate: dict, scene: dict, config: dict) -> np.ndarray:
@@ -210,13 +235,13 @@ def _starts(stage1_estimate: dict, scene: dict, config: dict, lower: np.ndarray,
     return unique
 
 
-def _subsets(k_paths: int, config: dict) -> list[tuple[int, ...]]:
+def _subsets(k_paths: int, config: dict) -> tuple[list[tuple[int, ...]], bool]:
     subsets = [tuple(range(k_paths))]
-    if bool(config.get("jnpp_use_leave_one_out", True)) and k_paths >= 3:
+    leave_one_out_effective = bool(config.get("jnpp_use_leave_one_out", True)) and k_paths >= 3
+    if leave_one_out_effective:
         for leave_out in range(k_paths):
             subsets.append(tuple(k for k in range(k_paths) if k != leave_out))
-    max_candidates = max(1, int(config.get("jnpp_max_candidates", 1 + k_paths)))
-    return subsets[:max_candidates]
+    return subsets, leave_one_out_effective
 
 
 def _minimize_subset(
@@ -435,12 +460,14 @@ def robust_jnpp_basin_recovery(stage1_estimate: dict, scene: dict, config: dict)
     c_tilde = np.asarray(stage1_estimate["C"], dtype=complex)
     if c_tilde.shape != (scene["T"], k_paths):
         raise ValueError("stage1_estimate['C'] must have shape T x K in panel order")
-    weights, ratios = _confidence_weights(stage1_estimate, config, k_paths)
+    weights, ratios, weight_mode, weight_warning = _confidence_weights(
+        stage1_estimate, config, k_paths
+    )
     p0 = _stage1_position(stage1_estimate, scene, config)
     lower, upper = _position_bounds(p0, config)
     starts = _starts(stage1_estimate, scene, config, lower, upper)
     tau_stage1 = _tau_stage1(stage1_estimate, scene)
-    subsets = _subsets(k_paths, config)
+    subsets, leave_one_out_effective = _subsets(k_paths, config)
 
     raw_candidates = []
     objective_count = 0
@@ -475,10 +502,15 @@ def robust_jnpp_basin_recovery(stage1_estimate: dict, scene: dict, config: dict)
         "stage2_rescue_mode": "robust_jnpp",
         "jnpp_num_starts": int(len(starts)),
         "jnpp_num_candidates": int(len(evaluated)),
+        "jnpp_weight_mode": weight_mode,
+        "jnpp_weight_warning": weight_warning,
         "jnpp_use_confidence_weights": bool(config.get("jnpp_use_confidence_weights", True)),
         "jnpp_weights": weights.copy(),
+        "jnpp_rank1_ratios": None if ratios is None else ratios.copy(),
         "jnpp_rank1_ratios_used": None if ratios is None else ratios.copy(),
         "jnpp_use_leave_one_out": bool(config.get("jnpp_use_leave_one_out", True)),
+        "jnpp_leave_one_out_effective": bool(leave_one_out_effective),
+        "jnpp_num_subsets": int(len(subsets)),
         "jnpp_best_objective": float(best["all_objective"]),
         "jnpp_best_position": np.asarray(best["p_u"], dtype=float).copy(),
         "jnpp_best_clock_std_ns": float(best["jnpp_clock_std_ns"]),
