@@ -25,11 +25,28 @@ def _global_vp_config(config: dict) -> dict:
     """Return global-VP options with conservative defaults."""
     defaults = {
         "solver": "least_squares",
+        "mode": "adaptive_jones",
         "max_iter": 80,
         "ftol": 1.0e-12,
         "gtol": 1.0e-8,
         "beta_reg": 0.0,
         "evs_mode": "legacy_or_full_polarization",
+        "jones_regularization_scaling": "gram",
+        "jones_lambda0": 1.0,
+        "jones_lambda_min": 1.0e-4,
+        "jones_lambda_max": 1.0e8,
+        "jones_snr_eps": 1.0e-12,
+        "run_fixed_pol_anchor": True,
+        "jones_leakage_threshold": 0.25,
+        "jones_min_rel_improvement": 1.0e-3,
+        "jones_tau": 0.25,
+        "jones_tau_min": 1.0e-3,
+        "jones_tau_max": 10.0,
+        "jones_diagonal_loading": 1.0e-10,
+        "gof_pfa": 0.05,
+        "efim_lambda_min_threshold": 1.0e-8,
+        "efim_cond_threshold": 1.0e12,
+        "use_data_only_efim_gate": True,
         "use_delay_prior": False,
         "delay_prior_weight": 1.0,
         "delay_prior_sigma_s": 2.0e-11,
@@ -51,6 +68,23 @@ def _global_vp_config(config: dict) -> dict:
     options = dict(defaults)
     options.update(dict(config.get("global_vp", {})))
     return options
+
+
+def _global_vp_mode(config: dict) -> str:
+    """Return the Stage-III VP mode, accepting legacy evs_mode aliases."""
+    options = _global_vp_config(config)
+    mode = str(options.get("mode", "adaptive_jones"))
+    if mode not in {"adaptive_jones", "jones_regularized", "jones_free", "fixed_pol"}:
+        # Backward compatibility for old experiments that selected the basis
+        # through evs_mode before the paper algorithm exposed vp mode directly.
+        evs_mode = str(options.get("evs_mode", "legacy_or_full_polarization"))
+        if evs_mode == "linear_polarization_basis":
+            mode = "jones_free"
+        elif evs_mode in {"legacy_or_full_polarization", "fixed_stage1_A"}:
+            mode = "fixed_pol"
+        else:
+            raise ValueError(f"unknown global_vp mode {mode!r}")
+    return mode
 
 
 def _build_global_vp_cache(scene: dict) -> dict:
@@ -306,6 +340,16 @@ def _evs_legacy_full_polarization_atom(stage1_factors: dict, scene: dict, path: 
 def _evs_atom_bases(init_estimate: dict, scene: dict, config: dict) -> tuple[list[np.ndarray], str]:
     """Return per-path EVS basis matrices for the configured global VP mode."""
     options = _global_vp_config(config)
+    vp_mode = _global_vp_mode(config)
+    if vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}:
+        return [_evs_linear_polarization_basis(scene, k) for k in range(scene["K"])], vp_mode
+    if vp_mode == "fixed_pol":
+        return [
+            _evs_legacy_full_polarization_atom(
+                _get_panel_ordered_stage1_factors(init_estimate, scene), scene, k
+            )
+            for k in range(scene["K"])
+        ], vp_mode
     evs_mode = str(options.get("evs_mode", "legacy_or_full_polarization"))
     stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
     if evs_mode == "legacy_or_full_polarization":
@@ -467,6 +511,291 @@ def _build_global_dictionary(
     return phi, aux
 
 
+def build_jones_vp_dictionary(
+    p_u: np.ndarray,
+    delta_t: float,
+    scene: dict,
+    config: dict,
+) -> np.ndarray:
+    """Build Psi(p_u, Delta_t) for Stage-I-regularized Jones-VP.
+
+    Columns are ordered as ``[path 0 basis 0, path 0 basis 1, path 1 basis 0, ...]``.
+    The tensor vectorization is exactly the raw ``I x N x T`` order used by
+    ``synthesize_raw_tensor`` and the legacy raw VP dictionary.
+    """
+    k_paths = int(scene["K"])
+    dummy = {
+        "A": np.zeros((scene["I"], k_paths), dtype=complex),
+        "poles": np.ones(k_paths, dtype=complex),
+        "ris_eta": np.zeros((k_paths, 3), dtype=float),
+        "gamma": np.zeros(k_paths, dtype=float),
+        "eta_pol": np.zeros(k_paths, dtype=float),
+        "assignment": list(range(k_paths)),
+        "panel_to_column_assignment": list(range(k_paths)),
+        "columns_are_panel_ordered": True,
+    }
+    mode_config = copy.deepcopy(config)
+    mode_config["global_vp"] = dict(mode_config.get("global_vp", {}))
+    mode_config["global_vp"]["mode"] = "jones_free"
+    psi, _ = _build_global_dictionary(
+        np.r_[np.asarray(p_u, dtype=float).reshape(3), float(delta_t)],
+        dummy,
+        scene,
+        mode_config,
+    )
+    return psi
+
+
+def extract_stage1_jones_directions(
+    stage1_estimate: dict,
+    scene: dict,
+    eps: float = 1.0e-12,
+) -> np.ndarray:
+    """Extract soft Stage-I Jones direction priors, shape K x 2.
+
+    Stage-I estimates the EVS factor up to CPD scaling and noise. This helper
+    projects that factor onto the known ``kron(v_B,k, Theta_k e_k)`` subspace
+    and returns only a unit-norm direction prior, not a known true polarization.
+    """
+    k_paths = int(scene["K"])
+    status = ["low_confidence_fallback"] * k_paths
+    source = None
+    for key in ("a_evs", "evs_factors", "A", "evs"):
+        if key in stage1_estimate:
+            arr = np.asarray(stage1_estimate[key], dtype=complex)
+            if arr.shape == (scene["I"], k_paths):
+                source = arr
+                break
+            if arr.shape == (k_paths, scene["I"]):
+                source = arr.T
+                break
+    e0 = np.zeros((k_paths, 2), dtype=complex)
+    if source is not None:
+        if not bool(stage1_estimate.get("columns_are_panel_ordered", False)):
+            panel_to_column = stage1_estimate.get("panel_to_column_assignment")
+            if panel_to_column is not None:
+                order = np.asarray(panel_to_column, dtype=int).reshape(k_paths)
+                source = source[:, order]
+        for k in range(k_paths):
+            try:
+                # a_EVS = kron(v_B, s), s = Theta e.  With NumPy's kron order,
+                # reshape(M_A, 6).T gives columns proportional to s*v_B[m].
+                a_matrix = source[:, k].reshape(scene["M_A"], 6).T
+                s_hat = a_matrix @ np.conj(scene["v_B"][k]) / (
+                    np.vdot(scene["v_B"][k], scene["v_B"][k]).real + eps
+                )
+                x0 = np.linalg.pinv(scene["Theta"][k], rcond=eps) @ s_hat
+                norm = np.linalg.norm(x0)
+                if np.isfinite(norm) and norm > eps:
+                    e0[k] = x0 / norm
+                    status[k] = "stage1_evs_factor"
+                    continue
+            except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+                pass
+            gamma = stage1_estimate.get("gamma")
+            eta_pol = stage1_estimate.get("eta_pol")
+            if gamma is not None and eta_pol is not None:
+                try:
+                    e_fallback = polarization_vector(float(gamma[k]), float(eta_pol[k]))
+                    e0[k] = e_fallback / max(np.linalg.norm(e_fallback), eps)
+                    status[k] = "stage1_gamma_eta_fallback"
+                    continue
+                except (IndexError, TypeError, ValueError):
+                    pass
+            e0[k] = np.array([1.0, 0.0], dtype=complex)
+    else:
+        for k in range(k_paths):
+            gamma = stage1_estimate.get("gamma")
+            eta_pol = stage1_estimate.get("eta_pol")
+            if gamma is not None and eta_pol is not None:
+                try:
+                    e_fallback = polarization_vector(float(gamma[k]), float(eta_pol[k]))
+                    e0[k] = e_fallback / max(np.linalg.norm(e_fallback), eps)
+                    status[k] = "stage1_gamma_eta_fallback"
+                    continue
+                except (IndexError, TypeError, ValueError):
+                    pass
+            e0[k] = np.array([1.0, 0.0], dtype=complex)
+    extract_stage1_jones_directions.last_status = status
+    return e0
+
+
+extract_stage1_jones_directions.last_status = []
+
+
+def _jones_regularizer(
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    y_vec: np.ndarray | None = None,
+    phi: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], float]:
+    """Return block-diagonal Jones prior Lambda and per-path rho values."""
+    options = _global_vp_config(config)
+    k_paths = int(scene["K"])
+    e0 = extract_stage1_jones_directions(init_estimate, scene)
+    status = list(getattr(extract_stage1_jones_directions, "last_status", []))
+    if len(status) != k_paths:
+        status = ["unknown"] * k_paths
+    mode = _global_vp_mode(config)
+    lambda_path = np.zeros(k_paths, dtype=float)
+    if mode in {"adaptive_jones", "jones_regularized"}:
+        if "jones_lambda_per_path" in init_estimate:
+            lambda_path = np.asarray(init_estimate["jones_lambda_per_path"], dtype=float)
+            if lambda_path.size == 1:
+                lambda_path = np.full(k_paths, float(lambda_path))
+            elif lambda_path.size < k_paths:
+                lambda_path = np.pad(lambda_path.reshape(-1), (0, k_paths - lambda_path.size), mode="edge")
+            lambda_path = lambda_path.reshape(-1)[:k_paths]
+        else:
+            lambda_path = np.full(k_paths, float(options.get("jones_lambda0", 1.0)))
+    if mode == "jones_regularized" and "jones_lambda_per_path" not in init_estimate:
+        tau = np.asarray(init_estimate.get("stage1_jones_tau", options.get("jones_tau", 0.25)), dtype=float)
+        if tau.size == 1:
+            tau = np.full(k_paths, float(tau))
+        elif tau.size < k_paths:
+            tau = np.pad(tau.reshape(-1), (0, k_paths - tau.size), mode="edge")
+        tau = np.clip(
+            tau.reshape(-1)[:k_paths],
+            float(options.get("jones_tau_min", 1.0e-3)),
+            float(options.get("jones_tau_max", 10.0)),
+        )
+        tau_ref = float(options.get("jones_tau", 0.25))
+        lambda_path *= (tau_ref**2) / (tau**2 + float(options.get("jones_snr_eps", 1.0e-12)))
+    elif mode == "jones_free":
+        lambda_path[:] = 0.0
+
+    lambda_path = np.clip(
+        lambda_path,
+        float(options.get("jones_lambda_min", 1.0e-4)),
+        float(options.get("jones_lambda_max", 1.0e8)),
+    )
+    if mode == "jones_free":
+        lambda_path[:] = 0.0
+
+    gram_scale = np.ones(k_paths, dtype=float)
+    if str(options.get("jones_regularization_scaling", "gram")) == "gram" and phi is not None:
+        for k in range(k_paths):
+            psi_k = phi[:, 2 * k : 2 * k + 2]
+            gram_scale[k] = 0.5 * float(np.trace(psi_k.conj().T @ psi_k).real)
+    rho = lambda_path * gram_scale
+
+    lam = np.zeros((2 * k_paths, 2 * k_paths), dtype=complex)
+    eye2 = np.eye(2, dtype=complex)
+    for k in range(k_paths):
+        e = e0[k].reshape(2, 1)
+        denom = np.vdot(e[:, 0], e[:, 0]).real
+        if denom <= 0.0:
+            p_perp = np.diag([0.0, 1.0]).astype(complex)
+        else:
+            p_perp = eye2 - (e @ e.conj().T) / denom
+        lam[2 * k : 2 * k + 2, 2 * k : 2 * k + 2] = rho[k] * p_perp
+    loading = float(options.get("jones_diagonal_loading", 1.0e-10))
+    return lam, rho, lambda_path, status, loading
+
+
+def _solve_linear_vp_regularized(
+    phi: np.ndarray,
+    y_vec: np.ndarray,
+    regularizer: np.ndarray | None,
+    diagonal_loading: float,
+) -> tuple[np.ndarray, dict]:
+    """Solve closed-form regularized LS for the current nonlinear state."""
+    gram_data = phi.conj().T @ phi
+    rhs = phi.conj().T @ y_vec
+    gram = gram_data.copy()
+    if regularizer is not None:
+        gram += np.asarray(regularizer, dtype=complex)
+    if diagonal_loading > 0.0:
+        gram += float(diagonal_loading) * np.eye(phi.shape[1], dtype=complex)
+    try:
+        coeff = np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        coeff = np.linalg.pinv(gram) @ rhs
+    try:
+        trace_h = float(np.trace(np.linalg.solve(gram, gram_data)).real)
+    except np.linalg.LinAlgError:
+        trace_h = float(np.trace(np.linalg.pinv(gram) @ gram_data).real)
+    singular = np.linalg.svd(gram_data, compute_uv=False)
+    rank = int(np.sum(singular > max(gram_data.shape) * np.finfo(float).eps * singular[0])) if singular.size else 0
+    if singular.size and singular[-1] > 0.0:
+        cond = float(singular[0] / singular[-1])
+    else:
+        cond = float("inf")
+    return coeff, {
+        "condition_number_gram": cond,
+        "rank_gram": rank,
+        "trace_H": trace_h,
+        "gram_singular_values": singular,
+    }
+
+
+def data_only_efim_diagnostic(
+    y_raw: np.ndarray,
+    p_u: np.ndarray,
+    delta_t: float,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    sigma2: float | None = None,
+) -> dict:
+    """Compute the data-only projected-Jacobian EFIM around a VP estimate."""
+    y_vec = np.asarray(y_raw, dtype=complex).reshape(-1)
+    efim_config = copy.deepcopy(config)
+    efim_config["global_vp"] = dict(efim_config.get("global_vp", {}))
+    efim_config["global_vp"]["mode"] = "jones_free"
+    xi = np.r_[np.asarray(p_u, dtype=float).reshape(3), float(delta_t)]
+    phi, aux = _build_global_dictionary(
+        xi, init_estimate, scene, efim_config, need_jacobian=True
+    )
+    coeff, linear_diag = _solve_linear_vp_regularized(phi, y_vec, None, 0.0)
+    d_model = np.column_stack([dphi @ coeff for dphi in aux["dPhi_dx"]])
+    try:
+        nuisance_fit = phi @ np.linalg.lstsq(phi, d_model, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        nuisance_fit = phi @ (np.linalg.pinv(phi) @ d_model)
+    projected = d_model - nuisance_fit
+    if sigma2 is None or not np.isfinite(float(sigma2)) or float(sigma2) <= 0.0:
+        residual = y_vec - phi @ coeff
+        sigma2 = float(np.vdot(residual, residual).real / max(y_vec.size, 1))
+    j_eq = (2.0 / max(float(sigma2), config.get("eps", 1.0e-10))) * np.real(
+        projected.conj().T @ projected
+    )
+    scale = np.diag([1.0, 1.0, 1.0, 1.0 / float(scene["c0"])])
+    j_eq_scaled = scale.T @ j_eq @ scale
+    eigvals = np.linalg.eigvalsh((j_eq + j_eq.T) * 0.5)
+    eigvals = np.maximum(eigvals, 0.0)
+    eigvals_scaled = np.maximum(
+        np.linalg.eigvalsh((j_eq_scaled + j_eq_scaled.T) * 0.5), 0.0
+    )
+    positive = eigvals[eigvals > 0.0]
+    positive_scaled = eigvals_scaled[eigvals_scaled > 0.0]
+    lambda_min = float(eigvals[0]) if eigvals.size else float("nan")
+    lambda_min_scaled = float(eigvals_scaled[0]) if eigvals_scaled.size else float("nan")
+    condition = (
+        float(eigvals[-1] / positive[0])
+        if eigvals.size and positive.size
+        else float("inf")
+    )
+    condition_scaled = (
+        float(eigvals_scaled[-1] / positive_scaled[0])
+        if eigvals_scaled.size and positive_scaled.size
+        else float("inf")
+    )
+    return {
+        "data_only_efim": j_eq,
+        "data_only_efim_eigvals": eigvals,
+        "data_only_efim_lambda_min": lambda_min,
+        "data_only_efim_condition_number": condition,
+        "data_only_scaled_efim": j_eq_scaled,
+        "data_only_scaled_efim_eigvals": eigvals_scaled,
+        "data_only_scaled_efim_lambda_min": lambda_min_scaled,
+        "data_only_scaled_efim_condition_number": condition_scaled,
+        "data_only_linear_condition_number_gram": linear_diag["condition_number_gram"],
+        "data_only_rank_gram": linear_diag["rank_gram"],
+    }
+
+
 def _apply_weight(vec: np.ndarray, weight: np.ndarray | None) -> np.ndarray:
     """Apply identity, diagonal, or dense sample weight."""
     if weight is None:
@@ -539,13 +868,28 @@ def _vp_objective_parts_and_grad(
 ) -> tuple[dict, np.ndarray]:
     """Return weighted VP objective parts and analytic total gradient."""
     options = _global_vp_config(config)
+    vp_mode = _global_vp_mode(config)
     beta_reg = float(options.get("beta_reg", 0.0))
     weight = _objective_weight_from_config(config, y_vec.size)
     objective_scale = 1.0 / float(y_vec.size)
     phi, aux = _build_global_dictionary(
         xi, init_estimate, scene, config, need_jacobian=True
     )
-    beta = _solve_beta_vp(phi, y_vec, weight, beta_reg, objective_scale)
+    regularizer = None
+    jones_rho = np.zeros(scene["K"], dtype=float)
+    jones_prior_status: list[str] = []
+    diagonal_loading = 0.0
+    linear_diag = {}
+    lambda_jones = np.zeros(scene["K"], dtype=float)
+    if vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}:
+        regularizer, jones_rho, lambda_jones, jones_prior_status, diagonal_loading = _jones_regularizer(
+            init_estimate, scene, config, y_vec, phi
+        )
+        beta, linear_diag = _solve_linear_vp_regularized(
+            phi, y_vec, regularizer, diagonal_loading
+        )
+    else:
+        beta = _solve_beta_vp(phi, y_vec, weight, beta_reg, objective_scale)
     residual = y_vec - phi @ beta
     raw_objective = float(
         objective_scale * np.real(_weighted_inner(residual, residual, weight))
@@ -553,6 +897,11 @@ def _vp_objective_parts_and_grad(
     beta_reg_objective = 0.0
     if beta_reg > 0.0:
         beta_reg_objective = float(beta_reg * np.real(np.vdot(beta, beta)))
+    jones_regularizer_objective = 0.0
+    if regularizer is not None:
+        jones_regularizer_objective = float(
+            objective_scale * np.real(np.vdot(beta, regularizer @ beta))
+        )
 
     grad = np.empty(4, dtype=float)
     for dim, dphi in enumerate(aux["dPhi_dx"]):
@@ -576,15 +925,26 @@ def _vp_objective_parts_and_grad(
             (tau_err / (sigma_tau**2))[:, None] * dtau_dx
         ).sum(axis=0)
 
-    total_objective = raw_objective + beta_reg_objective + delay_prior_objective
+    total_objective = (
+        raw_objective
+        + beta_reg_objective
+        + delay_prior_objective
+        + jones_regularizer_objective
+    )
     parts = {
         "raw_objective": raw_objective,
         "beta_reg_objective": beta_reg_objective,
+        "jones_regularizer_objective": jones_regularizer_objective,
         "delay_prior_objective": delay_prior_objective,
         "total_objective": float(total_objective),
         "beta": beta,
         "residual": residual,
         "aux": aux,
+        "vp_mode": vp_mode,
+        "jones_rho": jones_rho,
+        "lambda_jones_per_path": lambda_jones,
+        "jones_prior_status": jones_prior_status,
+        "linear_diagnostics": linear_diag,
     }
     return parts, grad
 
@@ -682,6 +1042,7 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     """
     assert y_raw.shape == (scene["I"], scene["N"], scene["T"])
     options = _global_vp_config(config)
+    beta_reg = float(options.get("beta_reg", 0.0))
     y_vec = y_raw.reshape(-1)
     stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
     xi0, init_diagnostics = _initial_xi_from_stage1_with_diagnostics(
@@ -766,32 +1127,61 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
         solver_method = "bounded_coordinate_search"
         solver_backend = "fallback"
 
-    phi0, _ = _build_global_dictionary(xi0, init_estimate, scene, config)
-    weight = _objective_weight_from_config(config, y_vec.size)
-    beta_reg = float(options.get("beta_reg", 0.0))
-    objective_scale = 1.0 / float(y_vec.size)
-    beta0 = _solve_beta_vp(phi0, y_vec, weight, beta_reg, objective_scale)
+    initial_parts = _vp_objective_parts(xi0, y_vec, init_estimate, scene, config)
+    beta0 = np.asarray(initial_parts["beta"], dtype=complex)
+    phi0 = _build_global_dictionary(xi0, init_estimate, scene, config)[0]
     initial_residual_vec = y_vec - phi0 @ beta0
     initial_residual = float(np.linalg.norm(initial_residual_vec) / np.sqrt(y_vec.size))
 
+    final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
     phi_final, aux = _build_global_dictionary(best_x, init_estimate, scene, config)
-    beta_final = _solve_beta_vp(phi_final, y_vec, weight, beta_reg, objective_scale)
+    beta_final = np.asarray(final_parts["beta"], dtype=complex)
     final_residual_vec = y_vec - phi_final @ beta_final
     final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
-    final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
     final_objective = float(final_parts["total_objective"])
     rollback_tolerance = float(options.get("objective_rollback_tolerance", 1.0e-12))
     if final_objective > initial_objective + rollback_tolerance:
         best_x = xi0.copy()
+        final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
         phi_final, aux = _build_global_dictionary(best_x, init_estimate, scene, config)
-        beta_final = _solve_beta_vp(phi_final, y_vec, weight, beta_reg, objective_scale)
+        beta_final = np.asarray(final_parts["beta"], dtype=complex)
         final_residual_vec = y_vec - phi_final @ beta_final
         final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
-        final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
         final_objective = float(final_parts["total_objective"])
         success = False
         message = "rollback_objective_increased"
     y_hat = (phi_final @ beta_final).reshape(scene["I"], scene["N"], scene["T"])
+    linear_dim = int(phi_final.shape[1])
+    vp_mode = str(final_parts.get("vp_mode", _global_vp_mode(config)))
+    gamma_hat = None
+    eta_hat = None
+    beta_path_hat = beta_final.copy()
+    if vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}:
+        x_blocks = beta_final.reshape(scene["K"], 2)
+        beta_path_hat = np.linalg.norm(x_blocks, axis=1)
+        e0_diag = extract_stage1_jones_directions(init_estimate, scene)
+        leakage = np.empty(scene["K"], dtype=float)
+        gamma_hat = np.empty(scene["K"], dtype=float)
+        eta_hat = np.empty(scene["K"], dtype=float)
+        for k in range(scene["K"]):
+            x1, x2 = x_blocks[k]
+            gain = np.linalg.norm(x_blocks[k])
+            e = e0_diag[k]
+            p_perp_x = x_blocks[k] - e * (np.vdot(e, x_blocks[k]) / (np.vdot(e, e).real + config.get("eps", 1.0e-10)))
+            leakage[k] = float(np.vdot(p_perp_x, p_perp_x).real / (gain**2 + config.get("eps", 1.0e-10)))
+            if gain <= config.get("eps", 1.0e-10):
+                gamma_hat[k] = 0.0
+                eta_hat[k] = 0.0
+            else:
+                gamma_hat[k] = float(np.arctan2(abs(x1), abs(x2)))
+                eta_hat[k] = float(np.angle(np.exp(1j * (np.angle(x1) - np.angle(x2)))))
+        a_evs_hat = np.empty((scene["K"], scene["I"]), dtype=complex)
+        for k in range(scene["K"]):
+            e = x_blocks[k] / (np.linalg.norm(x_blocks[k]) + config.get("eps", 1.0e-10))
+            a_evs_hat[k] = np.kron(scene["v_B"][k], scene["Theta"][k] @ e)
+    else:
+        a_evs_hat = np.asarray(stage1_factors["A_phys"], dtype=complex).T.copy()
+        leakage = np.array([], dtype=float)
 
     estimate = copy.deepcopy(init_estimate)
     estimate.update(
@@ -811,7 +1201,7 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
                 "azimuths": aux["azimuths"].copy(),
                 "d": aux["D"].T.copy(),
                 "c": aux["C"].T.copy(),
-                "a_EVS": np.asarray(stage1_factors["A_phys"], dtype=complex).T.copy(),
+                "a_EVS": a_evs_hat.copy(),
             },
             "raw_residual_rmse_noisy": final_residual,
             "raw_residual_initial": initial_residual,
@@ -830,10 +1220,31 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "total_objective": final_objective,
             "beta_reg_objective_initial": float(initial_parts["beta_reg_objective"]),
             "beta_reg_objective_final": float(final_parts["beta_reg_objective"]),
+            "jones_regularizer_objective_initial": float(
+                initial_parts.get("jones_regularizer_objective", 0.0)
+            ),
+            "jones_regularizer_objective_final": float(
+                final_parts.get("jones_regularizer_objective", 0.0)
+            ),
             "tau_stage1": np.asarray(stage1_factors["tau_phys"], dtype=float).copy(),
             "tau_after_global_vp": aux["tau"].copy(),
             "global_vp_solver": "lbfgsb_reduced",
-            "global_vp_evs_mode": str(options.get("evs_mode", "legacy_or_full_polarization")),
+            "global_vp_mode": vp_mode,
+            "vp_mode": vp_mode,
+            "global_vp_evs_mode": str(aux.get("evs_mode", options.get("evs_mode", "legacy_or_full_polarization"))),
+            "nonlinear_dim": 4,
+            "linear_nuisance_dim": linear_dim,
+            "jones_rho": np.asarray(final_parts.get("jones_rho", []), dtype=float).copy(),
+            "lambda_jones_per_path": np.asarray(final_parts.get("lambda_jones_per_path", []), dtype=float).copy(),
+            "jones_leakage_per_path": leakage.copy(),
+            "jones_prior_status": list(final_parts.get("jones_prior_status", [])),
+            "x_hat": beta_final.copy() if vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"} else None,
+            "condition_number_gram": float(
+                final_parts.get("linear_diagnostics", {}).get("condition_number_gram", np.nan)
+            ),
+            "rank_gram": int(final_parts.get("linear_diagnostics", {}).get("rank_gram", 0)),
+            "trace_H": float(final_parts.get("linear_diagnostics", {}).get("trace_H", np.nan)),
+            "raw_residual_norm": float(np.linalg.norm(final_residual_vec)),
             "global_vp_use_delay_prior": _delay_prior_enabled(config),
             "global_vp_trust_region_used": bool(trust_region_used),
             "global_vp_bounds_lower": lower.copy(),
@@ -871,6 +1282,10 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "final_refinement_method": "global_exact_spherical_vp",
         }
     )
+    if gamma_hat is not None and eta_hat is not None:
+        estimate["gamma"] = gamma_hat
+        estimate["eta_pol"] = eta_hat
+        estimate["beta"] = beta_path_hat
     if bool(options.get("overwrite_factor_keys", False)):
         estimate["C"] = aux["C"].copy()
         estimate["D"] = aux["D"].copy()
@@ -980,7 +1395,17 @@ def _augment_legacy_vp_result(
             "tau_stage1": np.asarray(stage1_factors["tau_phys"], dtype=float).copy(),
             "tau_after_global_vp": components["taus"].copy(),
             "global_vp_solver": "least_squares",
+            "global_vp_mode": "fixed_pol",
+            "vp_mode": "fixed_pol",
             "global_vp_evs_mode": "legacy_or_full_polarization",
+            "nonlinear_dim": 4 + 2 * int(scene["K"]),
+            "linear_nuisance_dim": int(scene["K"]),
+            "jones_rho": np.array([], dtype=float),
+            "jones_prior_status": [],
+            "x_hat": None,
+            "raw_residual_norm": float(final_rmse * np.sqrt(np.prod(legacy_result["Y_hat"].shape))),
+            "condition_number_gram": float("nan"),
+            "rank_gram": 0,
             "global_vp_use_delay_prior": False,
             "global_vp_trust_region_used": False,
             "global_vp_used_panel_to_column": stage1_factors[
@@ -1060,6 +1485,145 @@ def _global_exact_spherical_vp_refinement_least_squares(
     return result
 
 
+def _vp_family_score(raw_objective: float, sigma2_hat: float, d_eff: float, y_size: int) -> float:
+    return float(
+        2.0 * float(raw_objective) * float(y_size) / max(float(sigma2_hat), 1.0e-300)
+        + float(d_eff) * np.log(2.0 * float(y_size))
+    )
+
+
+def _adaptive_jones_lambdas(
+    fixed_result: dict,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate per-path effective SNR and adaptive dimensionless lambda_k."""
+    options = _global_vp_config(config)
+    e0 = extract_stage1_jones_directions(init_estimate, scene)
+    psi = build_jones_vp_dictionary(fixed_result["p_u"], fixed_result["delta_t"], scene, config)
+    beta_fix = np.asarray(
+        fixed_result.get("beta_raw", fixed_result.get("beta", np.ones(scene["K"], dtype=complex))),
+        dtype=complex,
+    ).reshape(-1)[: scene["K"]]
+    sigma2_hat = float(
+        init_estimate.get(
+            "noise_variance",
+            config.get("noise_variance", fixed_result.get("raw_objective_final", 1.0)),
+        )
+    )
+    m_samples = int(scene["I"]) * int(scene["N"]) * int(scene["T"])
+    snr_eff = np.empty(scene["K"], dtype=float)
+    for k in range(scene["K"]):
+        psi_e0 = psi[:, 2 * k : 2 * k + 2] @ e0[k]
+        snr_eff[k] = (
+            abs(beta_fix[k]) ** 2
+            * float(np.vdot(psi_e0, psi_e0).real)
+            / (float(m_samples) * max(sigma2_hat, config.get("eps", 1.0e-10)))
+        )
+    lambda_path = float(options.get("jones_lambda0", 1.0)) / (
+        snr_eff + float(options.get("jones_snr_eps", 1.0e-12))
+    )
+    if "stage1_jones_tau" in init_estimate:
+        tau = np.asarray(init_estimate["stage1_jones_tau"], dtype=float)
+        if tau.size == 1:
+            tau = np.full(scene["K"], float(tau))
+        elif tau.size < scene["K"]:
+            tau = np.pad(tau.reshape(-1), (0, scene["K"] - tau.size), mode="edge")
+        tau = tau.reshape(-1)[: scene["K"]]
+        tau_ref = float(options.get("jones_tau", 0.25))
+        lambda_path *= (tau_ref**2) / (
+            tau**2 + float(options.get("jones_snr_eps", 1.0e-12))
+        )
+    lambda_path = np.clip(
+        lambda_path,
+        float(options.get("jones_lambda_min", 1.0e-4)),
+        float(options.get("jones_lambda_max", 1.0e8)),
+    )
+    return snr_eff, lambda_path
+
+
+def _global_exact_spherical_vp_refinement_adaptive_jones(
+    y_raw: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Run fixed-pol anchor, adaptive Gram-scaled Jones-VP, then select by score."""
+    options = _global_vp_config(config)
+    fixed_config = copy.deepcopy(config)
+    fixed_config["global_vp"] = dict(fixed_config.get("global_vp", {}))
+    fixed_config["global_vp"]["mode"] = "fixed_pol"
+    fixed_result = _global_exact_spherical_vp_refinement_least_squares(
+        y_raw, init_estimate, scene, fixed_config
+    )
+
+    snr_eff, lambda_path = _adaptive_jones_lambdas(
+        fixed_result, init_estimate, scene, config
+    )
+    jones_init = copy.deepcopy(init_estimate)
+    jones_init["p_u"] = np.asarray(fixed_result["p_u"], dtype=float).copy()
+    jones_init["delta_t"] = float(fixed_result["delta_t"])
+    jones_init["jones_lambda_per_path"] = lambda_path.copy()
+    jones_config = copy.deepcopy(config)
+    jones_config["global_vp"] = dict(jones_config.get("global_vp", {}))
+    jones_config["global_vp"]["mode"] = "adaptive_jones"
+    jones_result = _global_exact_spherical_vp_refinement_lbfgsb_reduced(
+        y_raw, jones_init, scene, jones_config
+    )
+
+    m_samples = int(y_raw.size)
+    sigma2_hat = float(
+        init_estimate.get(
+            "noise_variance",
+            config.get("noise_variance", fixed_result.get("raw_objective_final", 1.0)),
+        )
+    )
+    d_eff_fixed = float(4 + 2 * int(scene["K"]))
+    trace_h = float(jones_result.get("trace_H", 2 * int(scene["K"])))
+    d_eff_jones = float(4.0 + 2.0 * trace_h)
+    fixed_score = _vp_family_score(
+        fixed_result["raw_objective_final"], sigma2_hat, d_eff_fixed, m_samples
+    )
+    jones_score = _vp_family_score(
+        jones_result["raw_objective_final"], sigma2_hat, d_eff_jones, m_samples
+    )
+    leakage = np.asarray(jones_result.get("jones_leakage_per_path", []), dtype=float)
+    fixed_raw = float(fixed_result["raw_objective_final"])
+    jones_raw = float(jones_result["raw_objective_final"])
+    rel_improvement = (fixed_raw - jones_raw) / max(fixed_raw, config.get("eps", 1.0e-10))
+    leakage_guard = bool(
+        leakage.size
+        and np.nanmax(leakage) > float(options.get("jones_leakage_threshold", 0.25))
+        and rel_improvement < float(options.get("jones_min_rel_improvement", 1.0e-3))
+    )
+    choose_jones = bool(jones_score < fixed_score and not leakage_guard)
+    selected = copy.deepcopy(jones_result if choose_jones else fixed_result)
+    selected_branch = "adaptive_jones" if choose_jones else "fixed_pol_anchor"
+
+    diagnostics = {
+        "global_vp_mode": "adaptive_jones",
+        "vp_mode": "adaptive_jones",
+        "selected_vp_family_branch": selected_branch,
+        "fixed_pol_score": fixed_score,
+        "jones_score": jones_score,
+        "d_eff_fixed": d_eff_fixed,
+        "d_eff_jones": d_eff_jones,
+        "snr_eff_per_path": snr_eff.copy(),
+        "lambda_jones_per_path": lambda_path.copy(),
+        "jones_leakage_per_path": leakage.copy(),
+        "jones_leakage_guard_triggered": leakage_guard,
+        "jones_relative_residual_improvement": float(rel_improvement),
+        "fixed_pol_anchor_raw_objective": fixed_raw,
+        "adaptive_jones_raw_objective": jones_raw,
+    }
+    selected.update(diagnostics)
+    selected["nonlinear_dim"] = 4
+    if not choose_jones:
+        selected["linear_nuisance_dim"] = int(scene["K"])
+    return selected
+
+
 def global_exact_spherical_vp_refinement(
     y_raw: np.ndarray,
     init_estimate: dict,
@@ -1073,7 +1637,17 @@ def global_exact_spherical_vp_refinement(
     EVS polarization angles while eliminating path gains. The reduced L-BFGS-B
     implementation is retained only as an experimental ablation.
     """
-    solver = str(_global_vp_config(config).get("solver", "least_squares"))
+    options = _global_vp_config(config)
+    mode = _global_vp_mode(config)
+    solver = str(options.get("solver", "least_squares"))
+    if mode == "adaptive_jones":
+        return _global_exact_spherical_vp_refinement_adaptive_jones(
+            y_raw, init_estimate, scene, config
+        )
+    if mode in {"jones_regularized", "jones_free"}:
+        return _global_exact_spherical_vp_refinement_lbfgsb_reduced(
+            y_raw, init_estimate, scene, config
+        )
     if solver == "least_squares":
         return _global_exact_spherical_vp_refinement_least_squares(
             y_raw, init_estimate, scene, config

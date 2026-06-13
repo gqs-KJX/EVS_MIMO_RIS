@@ -64,6 +64,7 @@ if __package__ in (None, ""):
         scaled_residual,
     )
     from src.robust_jnpp import robust_jnpp_basin_recovery
+    from src.global_vp import data_only_efim_diagnostic
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
@@ -104,6 +105,7 @@ else:
         scaled_residual,
     )
     from .robust_jnpp import robust_jnpp_basin_recovery
+    from .global_vp import data_only_efim_diagnostic
     from .tensor_utils import hankelize_frequency
     from .utils import scipy_is_available
 
@@ -577,9 +579,23 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     ).lower()
     global_vp_options = dict(config.get("global_vp", {}))
     global_vp_solver = str(global_vp_options.get("solver", "least_squares"))
+    global_vp_mode = str(global_vp_options.get("mode", "jones_regularized"))
     if not config.get("enable_global_vp", True) or final_method == "none":
         vp_solver_type = "skipped_global_vp"
         vp_backend = "skipped"
+    elif (
+        final_method == "global_exact_spherical_vp"
+        and global_vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}
+        and scipy_is_available()
+    ):
+        vp_solver_type = "scipy.optimize.minimize:L-BFGS-B"
+        vp_backend = "scipy.optimize"
+    elif (
+        final_method == "global_exact_spherical_vp"
+        and global_vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}
+    ):
+        vp_solver_type = "bounded_coordinate_search"
+        vp_backend = "fallback"
     elif (
         final_method == "global_exact_spherical_vp"
         and global_vp_solver == "least_squares"
@@ -656,6 +672,7 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
     print(f"final_refinement_method = {config.get('final_refinement_method', 'global_exact_spherical_vp')}")
     print(f"global_vp_solver = {global_vp_solver}")
+    print(f"global_vp_mode = {global_vp_mode}")
     print(f"vp_solver_type = {vp_solver_type}")
     print(f"vp_solver_backend = {vp_backend}")
     if str(config.get("diagnostic_mode", "performance")).lower() == "smoke":
@@ -1451,6 +1468,35 @@ def _branch_y_nmse(branch: dict) -> float:
     return float(relative_nmse(branch["final"]["Y_hat"], branch["Y_true"]))
 
 
+def _normal_quantile(p: float) -> float:
+    """Return a standard-normal quantile with scipy or a fixed fallback."""
+    if scipy_is_available():
+        from scipy.stats import norm
+
+        return float(norm.ppf(p))
+    # Acklam-style constants are overkill here; GOF only needs a stable fallback
+    # for the default p=0.95 used by the asymptotic chi-square approximation.
+    table = {
+        0.90: 1.2815515655446004,
+        0.95: 1.6448536269514722,
+        0.975: 1.959963984540054,
+        0.99: 2.3263478740408408,
+    }
+    nearest = min(table, key=lambda key: abs(key - p))
+    return table[nearest]
+
+
+def _chi_square_gate_threshold(p_fa: float, dof: int) -> float:
+    """Return chi-square 1-p_fa threshold or a normal approximation."""
+    q = 1.0 - float(p_fa)
+    if scipy_is_available():
+        from scipy.stats import chi2
+
+        return float(chi2.ppf(q, int(dof)))
+    z = _normal_quantile(q)
+    return float(dof + np.sqrt(2.0 * max(dof, 1)) * z)
+
+
 def evaluate_direct_vp_quality(
     direct_result: dict,
     stage1_result: dict,
@@ -1458,7 +1504,7 @@ def evaluate_direct_vp_quality(
     config: dict,
 ) -> dict:
     """Return observable direct-VP quality diagnostics for rescue gating."""
-    _ = stage1_result, scene
+    _ = stage1_result
     final = direct_result["final"]
     optimizer = final.get("optimizer", {})
     success = bool(final.get("global_vp_success", optimizer.get("success", False)))
@@ -1489,13 +1535,54 @@ def evaluate_direct_vp_quality(
             noise_variance
         )
         noise_floor_good = bool(raw_final <= noise_floor_threshold)
+    global_vp_options = dict(config.get("global_vp", {}))
+    k_paths = int(scene["K"])
+    sigma2_hat = float(noise_variance) if noise_variance is not None else raw_final
+    p_fa = float(global_vp_options.get("gof_pfa", 0.05))
+    gof_dof = max(1, 2 * int(scene["I"]) * int(scene["N"]) * int(scene["T"]) - 4 * k_paths - 4)
+    gof_stat = float(2.0 * raw_final * final["Y_hat"].size / max(sigma2_hat, config.get("eps", 1.0e-10)))
+    gof_threshold = _chi_square_gate_threshold(p_fa, gof_dof)
+    gof_pass = bool(np.isfinite(gof_stat) and gof_stat <= gof_threshold)
+
+    efim_diag = {}
+    if bool(global_vp_options.get("use_data_only_efim_gate", True)):
+        try:
+            efim_diag = data_only_efim_diagnostic(
+                direct_result["Y_noisy"],
+                final["p_u"],
+                final["delta_t"],
+                direct_result["estimate_initial"],
+                scene,
+                config,
+                sigma2=sigma2_hat,
+            )
+        except (ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
+            efim_diag = {
+                "data_only_efim_lambda_min": 0.0,
+                "data_only_efim_condition_number": float("inf"),
+                "data_only_scaled_efim_lambda_min": 0.0,
+                "data_only_scaled_efim_condition_number": float("inf"),
+                "data_only_efim_error": str(exc),
+            }
+    lambda_min = float(efim_diag.get("data_only_scaled_efim_lambda_min", efim_diag.get("data_only_efim_lambda_min", float("nan"))))
+    efim_cond = float(efim_diag.get("data_only_scaled_efim_condition_number", efim_diag.get("data_only_efim_condition_number", float("inf"))))
+    well_conditioned = bool(
+        np.isfinite(lambda_min)
+        and lambda_min >= float(global_vp_options.get("efim_lambda_min_threshold", 1.0e-8))
+        and np.isfinite(efim_cond)
+        and efim_cond <= float(global_vp_options.get("efim_cond_threshold", 1.0e12))
+    )
+    if gof_pass:
+        revised_decision = "direct_vp"
+    elif well_conditioned:
+        revised_decision = "jnpp_then_vp"
+    else:
+        revised_decision = "ill_conditioned"
 
     good = bool(
         success
         and finite_objective
-        and objective_decreased
-        and nfev_good
-        and noise_floor_good
+        and gof_pass
     )
     return {
         "good": good,
@@ -1509,6 +1596,17 @@ def evaluate_direct_vp_quality(
         "nfev_good": bool(nfev_good),
         "noise_floor_good": bool(noise_floor_good),
         "noise_floor_threshold": noise_floor_threshold,
+        "gof_stat": gof_stat,
+        "gof_dof": int(gof_dof),
+        "gof_threshold": gof_threshold,
+        "gof_pass": gof_pass,
+        "data_only_efim_lambda_min": lambda_min,
+        "data_only_efim_condition_number": efim_cond,
+        "data_only_scaled_efim_lambda_min": lambda_min,
+        "data_only_scaled_efim_condition_number": efim_cond,
+        "data_only_efim_well_conditioned": well_conditioned,
+        "reliability_decision": revised_decision,
+        **efim_diag,
     }
 
 
@@ -1615,6 +1713,35 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     direct_vp_quality = evaluate_direct_vp_quality(
         direct_result, stage1, data["scene"], config
     )
+    reliability = dict(reliability)
+    reliability["legacy_stage1_decision"] = reliability.get("decision", "unknown")
+    reliability["decision"] = str(direct_vp_quality.get("reliability_decision", "direct_vp"))
+    reliability.update(
+        {
+            "gof_stat": direct_vp_quality.get("gof_stat"),
+            "gof_dof": direct_vp_quality.get("gof_dof"),
+            "gof_threshold": direct_vp_quality.get("gof_threshold"),
+            "gof_pass": direct_vp_quality.get("gof_pass"),
+            "data_only_efim_lambda_min": direct_vp_quality.get(
+                "data_only_efim_lambda_min"
+            ),
+            "data_only_efim_condition_number": direct_vp_quality.get(
+                "data_only_efim_condition_number"
+            ),
+            "data_only_efim_well_conditioned": direct_vp_quality.get(
+                "data_only_efim_well_conditioned"
+            ),
+            "data_only_scaled_efim_lambda_min": direct_vp_quality.get(
+                "data_only_scaled_efim_lambda_min"
+            ),
+            "data_only_scaled_efim_condition_number": direct_vp_quality.get(
+                "data_only_scaled_efim_condition_number"
+            ),
+        }
+    )
+    direct_result["reliability"] = reliability
+    direct_result["final"] = dict(direct_result["final"])
+    direct_result["final"]["reliability"] = reliability
     direct_result["direct_vp_quality"] = direct_vp_quality
     branches = {"direct_vp": direct_result}
     rescue_result = None
@@ -1632,7 +1759,7 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
         allow_stage2
         and bool(config.get("stage2_adaptive", True))
         and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
-        and reliability["decision"] == "ris_only_stage2_then_vp"
+        and reliability["decision"] == "jnpp_then_vp"
         and not direct_vp_override
     )
     if rescue_requested:
@@ -1816,6 +1943,26 @@ def _print_global_vp_diagnostics(results: dict) -> None:
     print(f"global_vp_delay_prior_objective = {_fmt(final.get('delay_prior_objective'))}")
     print(f"global_vp_total_objective = {_fmt(final.get('total_objective'))}")
     print(f"global_vp_solver = {final.get('global_vp_solver', 'unknown')}")
+    print(f"global_vp_mode = {final.get('global_vp_mode', final.get('vp_mode', 'unknown'))}")
+    print(f"selected_vp_family_branch = {final.get('selected_vp_family_branch', 'NA')}")
+    print(f"fixed_pol_score = {_fmt(final.get('fixed_pol_score'))}")
+    print(f"jones_score = {_fmt(final.get('jones_score'))}")
+    print(f"snr_eff_per_path = {_fmt_vector(final.get('snr_eff_per_path', []))}")
+    print(f"lambda_jones_per_path = {_fmt_vector(final.get('lambda_jones_per_path', []))}")
+    print(f"jones_leakage_per_path = {_fmt_vector(final.get('jones_leakage_per_path', []))}")
+    print(f"linear_nuisance_dim = {final.get('linear_nuisance_dim', 'NA')}")
+    print(f"nonlinear_dim = {final.get('nonlinear_dim', 'NA')}")
+    rho = np.asarray(final.get("jones_rho", []), dtype=float)
+    if rho.size:
+        print(
+            "jones_rho_summary = "
+            f"min={_fmt(np.min(rho))}, median={_fmt(np.median(rho))}, max={_fmt(np.max(rho))}"
+        )
+    else:
+        print("jones_rho_summary = NA")
+    print(f"jones_prior_status = {final.get('jones_prior_status', [])}")
+    print(f"condition_number_gram = {_fmt(final.get('condition_number_gram'))}")
+    print(f"rank_gram = {final.get('rank_gram', 'NA')}")
     print(f"global_vp_evs_mode = {final.get('global_vp_evs_mode', 'unknown')}")
     print(f"global_vp_use_delay_prior = {final.get('global_vp_use_delay_prior', 'NA')}")
     print(f"global_vp_trust_region_used = {final.get('global_vp_trust_region_used', 'NA')}")
@@ -1854,6 +2001,7 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
     reasons = reliability.get("trigger_reasons", [])
     print("\n=== Stage-I reliability gate ===")
     print(f"reliability_decision = {reliability['decision']}")
+    print(f"legacy_stage1_decision = {reliability.get('legacy_stage1_decision', 'NA')}")
     print(f"selected_proposed_branch = {results.get('selected_branch', 'unknown')}")
     print(f"bad_score = {reliability['bad_score']}")
     print(f"trigger_reasons = {reasons if reasons else ['none']}")
@@ -1873,6 +2021,25 @@ def _print_reliability_gate_diagnostics(results: dict) -> None:
         f"max_ris_residual = {_fmt(max_ris_display) if not isinstance(max_ris_display, str) else max_ris_display}"
     )
     print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}")
+    print(f"gof_stat = {_fmt(reliability.get('gof_stat'))}")
+    print(f"gof_dof = {reliability.get('gof_dof', 'NA')}")
+    print(f"gof_pass = {reliability.get('gof_pass', 'NA')}")
+    print(
+        "data_only_efim_lambda_min = "
+        f"{_fmt(reliability.get('data_only_efim_lambda_min'))}"
+    )
+    print(
+        "data_only_efim_condition_number = "
+        f"{_fmt(reliability.get('data_only_efim_condition_number'))}"
+    )
+    print(
+        "data_only_scaled_efim_lambda_min = "
+        f"{_fmt(reliability.get('data_only_scaled_efim_lambda_min'))}"
+    )
+    print(
+        "data_only_scaled_efim_condition_number = "
+        f"{_fmt(reliability.get('data_only_scaled_efim_condition_number'))}"
+    )
     if reliability.get("severe_unreliable", False):
         print("WARNING_STAGE1_SEVERE_UNRELIABLE: Stage-I reliability gate crossed a severe threshold.")
     if _paper_balanced_good_snr_triggered_stage2(config, reliability):
@@ -1937,6 +2104,7 @@ def _print_reliability_warnings(results: dict) -> None:
 def _print_reliability_progress(reliability: dict) -> None:
     print("\n=== Stage-I reliability gate ===", flush=True)
     print(f"reliability_decision = {reliability['decision']}", flush=True)
+    print(f"legacy_stage1_decision = {reliability.get('legacy_stage1_decision', 'NA')}", flush=True)
     print(f"bad_score = {reliability['bad_score']}", flush=True)
     print(
         f"trigger_reasons = {reliability.get('trigger_reasons', []) or ['none']}",
@@ -1962,6 +2130,29 @@ def _print_reliability_progress(reliability: dict) -> None:
         flush=True,
     )
     print(f"severe_unreliable = {reliability.get('severe_unreliable', False)}", flush=True)
+    print(f"gof_stat = {_fmt(reliability.get('gof_stat'))}", flush=True)
+    print(f"gof_dof = {reliability.get('gof_dof', 'NA')}", flush=True)
+    print(f"gof_pass = {reliability.get('gof_pass', 'NA')}", flush=True)
+    print(
+        "data_only_efim_lambda_min = "
+        f"{_fmt(reliability.get('data_only_efim_lambda_min'))}",
+        flush=True,
+    )
+    print(
+        "data_only_efim_condition_number = "
+        f"{_fmt(reliability.get('data_only_efim_condition_number'))}",
+        flush=True,
+    )
+    print(
+        "data_only_scaled_efim_lambda_min = "
+        f"{_fmt(reliability.get('data_only_scaled_efim_lambda_min'))}",
+        flush=True,
+    )
+    print(
+        "data_only_scaled_efim_condition_number = "
+        f"{_fmt(reliability.get('data_only_scaled_efim_condition_number'))}",
+        flush=True,
+    )
 
 
 def _print_vp_branch_metrics(results: dict) -> None:
@@ -2022,7 +2213,14 @@ def _print_vp_branch_metrics(results: dict) -> None:
             f"success={quality.get('success')}, "
             f"nfev={quality.get('nfev')}, "
             f"noise_floor_good={quality.get('noise_floor_good')}, "
-            f"rel_decrease={_fmt(quality.get('relative_objective_decrease'))}"
+            f"rel_decrease={_fmt(quality.get('relative_objective_decrease'))}, "
+            f"gof_stat={_fmt(quality.get('gof_stat'))}, "
+            f"gof_dof={quality.get('gof_dof')}, "
+            f"gof_pass={quality.get('gof_pass')}, "
+            f"data_only_efim_lambda_min={_fmt(quality.get('data_only_efim_lambda_min'))}, "
+            f"data_only_efim_condition_number={_fmt(quality.get('data_only_efim_condition_number'))}, "
+            f"data_only_scaled_efim_condition_number={_fmt(quality.get('data_only_scaled_efim_condition_number'))}, "
+            f"reliability_decision={quality.get('reliability_decision')}"
         )
 
 
@@ -2921,6 +3119,7 @@ def print_run_summary(results: dict, config: dict) -> dict:
     else:
         _print_reliability_warnings(results)
     _print_vp_branch_metrics(results)
+    _print_global_vp_diagnostics(results)
     if not scipy_is_available():
         print("optimizer_note = scipy.optimize not found; using deterministic fallback optimizer")
     if bool(config.get("verbose_stage2", False)) and results["structured_diag"]["updates"]:

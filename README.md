@@ -9,5 +9,6 @@ python -m src.main_single_proposed
 ```
 
 The script generates one synthetic RIS-EVS-OFDM channel sample at 0 dB SNR,
-builds the Hankelized tensor for initialization and structured refinement, then
-performs the final variable-projection refinement in the raw OFDM domain.
+builds the Hankelized tensor for Stage-I initialization and reliability-gated
+Stage-II JNPP basin recovery, then performs Stage-I-regularized Jones-VP in the
+raw OFDM domain.

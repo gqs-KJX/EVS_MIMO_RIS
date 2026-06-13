@@ -19,11 +19,11 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["N"] == 63
     assert config["P"] == 32
     assert config["N"] - config["P"] + 1 == 32
-    assert config["K"] == 3
+    assert config["K"] == 2
     assert config["M_A"] == 16
     assert config["ris_shape"] == (64, 64)
     assert config["T"] == 256
-    assert config["SNR_dB"] == 0.0
+    assert config["SNR_dB"] == -20.0
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 1
     assert config["stage2_ris_rescue_max_iters"] == 1
@@ -34,7 +34,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["jnpp_rank_weight_rho"] == 2.0
     assert config["jnpp_min_weight"] == 0.05
     assert config["jnpp_use_leave_one_out"] is True
-    assert config["jnpp_max_candidates"] == 4
+    assert config["jnpp_max_candidates"] == 2
     assert config["jnpp_num_starts"] == 4
     assert config["jnpp_start_perturb_m"] == 0.25
     assert config["jnpp_use_coarse_grid"] is False
@@ -44,7 +44,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["jnpp_clock_tie_rel_tol"] == 1.0e-3
     assert config["jnpp_assignment_aware"] is False
     assert config["jnpp_assignment_margin_threshold"] == 0.2
-    assert config["jnpp_top_assignments"] == 3
+    assert config["jnpp_top_assignments"] == 1
     assert config["stage2_precise_ablation"] is False
     assert config["direct_vp_first"] is True
     assert config["direct_vp_max_good_nfev"] == 12
@@ -94,11 +94,28 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage2_enable_ris"] is True
     assert config["stage2_guarded"] is True
     assert config["global_vp"]["solver"] == "least_squares"
+    assert config["global_vp"]["mode"] == "adaptive_jones"
     assert config["global_vp"]["max_iter"] == 80
     assert config["global_vp"]["ftol"] == 1.0e-12
     assert config["global_vp"]["gtol"] == 1.0e-8
     assert config["global_vp"]["beta_reg"] == 0.0
     assert config["global_vp"]["evs_mode"] == "legacy_or_full_polarization"
+    assert config["global_vp"]["jones_regularization_scaling"] == "gram"
+    assert config["global_vp"]["jones_lambda0"] == 1.0
+    assert config["global_vp"]["jones_lambda_min"] == 1.0e-4
+    assert config["global_vp"]["jones_lambda_max"] == 1.0e8
+    assert config["global_vp"]["jones_snr_eps"] == 1.0e-12
+    assert config["global_vp"]["run_fixed_pol_anchor"] is True
+    assert config["global_vp"]["jones_leakage_threshold"] == 0.25
+    assert config["global_vp"]["jones_min_rel_improvement"] == 1.0e-3
+    assert config["global_vp"]["jones_tau"] == 0.25
+    assert config["global_vp"]["jones_tau_min"] == 1.0e-3
+    assert config["global_vp"]["jones_tau_max"] == 10.0
+    assert config["global_vp"]["jones_diagonal_loading"] == 1.0e-10
+    assert config["global_vp"]["gof_pfa"] == 0.05
+    assert config["global_vp"]["efim_lambda_min_threshold"] == 1.0e-8
+    assert config["global_vp"]["efim_cond_threshold"] == 1.0e12
+    assert config["global_vp"]["use_data_only_efim_gate"] is True
     assert config["global_vp"]["use_delay_prior"] is False
     assert config["global_vp"]["delay_prior_weight"] == 1.0
     assert config["global_vp"]["delay_prior_sigma_s"] == 2.0e-11
