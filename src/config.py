@@ -153,7 +153,7 @@ def default_config() -> dict:
     config = {
         "seed": 20260526,
         "trials": 1,
-        "SNR_dB": -25.0,
+        "SNR_dB": 0.0,
         "enable_global_vp": True,
         "stage2_mode": "none",
         "diagnostic_mode": "performance",
@@ -193,7 +193,7 @@ def default_config() -> dict:
         "reliability_ris_good": 0.3,
         "reliability_ris_bad": 0.7,
         "final_refinement_method": "global_exact_spherical_vp",
-        "K": 2,
+        "K": 1,
         "M_A": 16,
         "ris_shape": (64, 64),
         "N": 63,

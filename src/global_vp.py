@@ -623,6 +623,24 @@ def extract_stage1_jones_directions(
 extract_stage1_jones_directions.last_status = []
 
 
+def _as_path_vector(value, k_paths, name="path_value", default=0.0):
+    """Return a float vector with one value per path."""
+    if value is None:
+        value = default
+    arr = np.asarray(value, dtype=float)
+    if arr.size == 0:
+        arr = np.asarray(default, dtype=float)
+    flat = arr.reshape(-1)
+    if flat.size == 1:
+        return np.full(k_paths, float(flat[0]), dtype=float)
+    if flat.size == k_paths:
+        return flat.astype(float, copy=True)
+    raise ValueError(
+        f"{name} must be scalar or contain exactly {k_paths} path values; "
+        f"got shape {arr.shape} with size {arr.size}"
+    )
+
+
 def _jones_regularizer(
     init_estimate: dict,
     scene: dict,
@@ -641,22 +659,27 @@ def _jones_regularizer(
     lambda_path = np.zeros(k_paths, dtype=float)
     if mode in {"adaptive_jones", "jones_regularized"}:
         if "jones_lambda_per_path" in init_estimate:
-            lambda_path = np.asarray(init_estimate["jones_lambda_per_path"], dtype=float)
-            if lambda_path.size == 1:
-                lambda_path = np.full(k_paths, float(lambda_path))
-            elif lambda_path.size < k_paths:
-                lambda_path = np.pad(lambda_path.reshape(-1), (0, k_paths - lambda_path.size), mode="edge")
-            lambda_path = lambda_path.reshape(-1)[:k_paths]
+            lambda_path = _as_path_vector(
+                init_estimate["jones_lambda_per_path"],
+                k_paths,
+                name="jones_lambda_per_path",
+            )
         else:
-            lambda_path = np.full(k_paths, float(options.get("jones_lambda0", 1.0)))
+            lambda_path = _as_path_vector(
+                options.get("jones_lambda0", 1.0),
+                k_paths,
+                name="jones_lambda0",
+                default=1.0,
+            )
     if mode == "jones_regularized" and "jones_lambda_per_path" not in init_estimate:
-        tau = np.asarray(init_estimate.get("stage1_jones_tau", options.get("jones_tau", 0.25)), dtype=float)
-        if tau.size == 1:
-            tau = np.full(k_paths, float(tau))
-        elif tau.size < k_paths:
-            tau = np.pad(tau.reshape(-1), (0, k_paths - tau.size), mode="edge")
+        tau = _as_path_vector(
+            init_estimate.get("stage1_jones_tau", None),
+            k_paths,
+            name="stage1_jones_tau",
+            default=options.get("jones_tau", 0.25),
+        )
         tau = np.clip(
-            tau.reshape(-1)[:k_paths],
+            tau,
             float(options.get("jones_tau_min", 1.0e-3)),
             float(options.get("jones_tau_max", 10.0)),
         )
@@ -1500,12 +1523,13 @@ def _adaptive_jones_lambdas(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate per-path effective SNR and adaptive dimensionless lambda_k."""
     options = _global_vp_config(config)
+    k_paths = int(scene["K"])
     e0 = extract_stage1_jones_directions(init_estimate, scene)
     psi = build_jones_vp_dictionary(fixed_result["p_u"], fixed_result["delta_t"], scene, config)
     beta_fix = np.asarray(
-        fixed_result.get("beta_raw", fixed_result.get("beta", np.ones(scene["K"], dtype=complex))),
+        fixed_result.get("beta_raw", fixed_result.get("beta", np.ones(k_paths, dtype=complex))),
         dtype=complex,
-    ).reshape(-1)[: scene["K"]]
+    ).reshape(-1)[:k_paths]
     sigma2_hat = float(
         init_estimate.get(
             "noise_variance",
@@ -1513,24 +1537,29 @@ def _adaptive_jones_lambdas(
         )
     )
     m_samples = int(scene["I"]) * int(scene["N"]) * int(scene["T"])
-    snr_eff = np.empty(scene["K"], dtype=float)
-    for k in range(scene["K"]):
+    snr_eff = np.empty(k_paths, dtype=float)
+    for k in range(k_paths):
         psi_e0 = psi[:, 2 * k : 2 * k + 2] @ e0[k]
         snr_eff[k] = (
             abs(beta_fix[k]) ** 2
             * float(np.vdot(psi_e0, psi_e0).real)
             / (float(m_samples) * max(sigma2_hat, config.get("eps", 1.0e-10)))
         )
-    lambda_path = float(options.get("jones_lambda0", 1.0)) / (
+    lambda0_path = _as_path_vector(
+        options.get("jones_lambda0", 1.0),
+        k_paths,
+        name="jones_lambda0",
+        default=1.0,
+    )
+    lambda_path = lambda0_path / (
         snr_eff + float(options.get("jones_snr_eps", 1.0e-12))
     )
     if "stage1_jones_tau" in init_estimate:
-        tau = np.asarray(init_estimate["stage1_jones_tau"], dtype=float)
-        if tau.size == 1:
-            tau = np.full(scene["K"], float(tau))
-        elif tau.size < scene["K"]:
-            tau = np.pad(tau.reshape(-1), (0, scene["K"] - tau.size), mode="edge")
-        tau = tau.reshape(-1)[: scene["K"]]
+        tau = _as_path_vector(
+            init_estimate["stage1_jones_tau"],
+            k_paths,
+            name="stage1_jones_tau",
+        )
         tau_ref = float(options.get("jones_tau", 0.25))
         lambda_path *= (tau_ref**2) / (
             tau**2 + float(options.get("jones_snr_eps", 1.0e-12))

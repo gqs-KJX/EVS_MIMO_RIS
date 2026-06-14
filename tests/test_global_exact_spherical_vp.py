@@ -7,8 +7,10 @@ from src.channel_model import channel_components, generate_scene, synthesize_raw
 from src.config import default_config
 from src.estimators import run_proposed_estimator
 from src.global_vp import (
+    _as_path_vector,
     _build_global_dictionary,
     _get_panel_ordered_stage1_factors,
+    _jones_regularizer,
     _objective_weight_from_config,
     _solve_beta_vp,
     _vp_objective_parts,
@@ -18,7 +20,7 @@ from src.global_vp import (
 )
 from src.metrics import position_rmse, relative_nmse
 from src.utils import scipy_is_available
-from src.main_single_proposed import run_single_proposed_diagnostic
+from src.main_single_proposed import _fmt_vector, run_single_proposed_diagnostic
 
 
 def _small_config(k_paths: int = 2, beta_reg: float = 0.0) -> dict:
@@ -234,6 +236,56 @@ def test_jones_modes_report_four_nonlinear_and_2k_linear_dimensions():
         assert refined["nonlinear_dim"] == 4
         assert refined["linear_nuisance_dim"] == 2 * scene["K"]
         assert refined["x_hat"].shape == (2 * scene["K"],)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        0.5,
+        np.array(0.5),
+        np.array([0.5]),
+        np.array([[0.5]]),
+        [0.5, 0.6],
+        np.array([[0.5, 0.6]]),
+    ],
+)
+def test_as_path_vector_accepts_scalar_like_and_per_path_shapes(value):
+    expected = (
+        np.array([0.5, 0.5])
+        if np.asarray(value).size == 1
+        else np.array([0.5, 0.6])
+    )
+    np.testing.assert_allclose(_as_path_vector(value, 2, name="test_value"), expected)
+
+
+@pytest.mark.parametrize("value", [None, []])
+def test_as_path_vector_uses_default_for_none_or_empty(value):
+    np.testing.assert_allclose(
+        _as_path_vector(value, 2, name="test_value", default=0.7),
+        [0.7, 0.7],
+    )
+
+
+def test_as_path_vector_rejects_wrong_size():
+    with pytest.raises(ValueError, match="test_value.*exactly 2 path values"):
+        _as_path_vector([0.5, 0.6, 0.7], 2, name="test_value")
+
+
+def test_adaptive_jones_regularizer_accepts_k1_lambda_matrix():
+    scene = {"K": 1}
+    config = default_config()
+    config["global_vp"] = dict(config["global_vp"])
+    config["global_vp"]["mode"] = "adaptive_jones"
+    init_estimate = {"jones_lambda_per_path": np.array([[0.5]])}
+
+    _, _, lambda_path, _, _ = _jones_regularizer(init_estimate, scene, config)
+
+    assert lambda_path.shape == (1,)
+    np.testing.assert_allclose(lambda_path, [0.5])
+
+
+def test_k1_lambda_jones_formats_as_one_entry_list():
+    assert _fmt_vector(np.array([[0.5]])) == "[0.5000]"
 
 
 def test_large_jones_lambda_degenerates_to_fixed_pol_objective():
