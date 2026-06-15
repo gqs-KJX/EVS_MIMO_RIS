@@ -123,7 +123,12 @@ def _make_data(config: dict) -> dict:
         scene["eta_true"],
     )
     y_true = synthesize_raw_tensor(true_components, scene["beta_true"])
-    y_noisy, noise_variance = add_awgn(y_true, config["SNR_dB"], rng)
+    y_noisy, noise_variance = add_awgn(
+        y_true,
+        config["SNR_dB"],
+        rng,
+        active_mask=scene.get("evs_observation_mask"),
+    )
     data_generation_s = time.perf_counter() - data_start
 
     hankel_start = time.perf_counter()
@@ -1752,6 +1757,24 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
         and direct_vp_quality["good"]
         and reliability["decision"] != "direct_vp"
     )
+    stage2_policy = str(
+        config.get("proposed_stage2_policy", "reliability_gated_ris_only")
+    ).lower()
+    valid_stage2_policies = {
+        "reliability_gated",
+        "reliability_gated_ris_only",
+        "force_ris_only",
+    }
+    if stage2_policy not in valid_stage2_policies:
+        raise ValueError(f"unknown proposed_stage2_policy {stage2_policy!r}")
+    if stage2_policy == "force_ris_only":
+        reliability["decision"] = "jnpp_then_vp"
+        reliability["proposed_stage2_policy"] = stage2_policy
+        reliability["stage2_policy_forced"] = True
+        direct_vp_override = False
+    else:
+        reliability["proposed_stage2_policy"] = stage2_policy
+        reliability["stage2_policy_forced"] = False
     if direct_vp_override and progress_printed:
         print("GATE_OVERRIDE_DIRECT_VP_GOOD", flush=True)
 

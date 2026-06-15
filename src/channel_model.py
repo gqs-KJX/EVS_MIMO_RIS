@@ -16,6 +16,18 @@ from .geometry import (
 from .utils import check_finite, complex_awgn
 
 
+def evs_component_selection(mode: str = "full_6d") -> np.ndarray:
+    """Return the 6-component receiver observation mask for an EVS mode."""
+    mode = str(mode).lower()
+    if mode in {"full_6d", "full", "evs"}:
+        return np.ones(6, dtype=float)
+    if mode in {"dual_pol", "dual-polarized", "dual_polarized"}:
+        return np.array([1.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+    if mode in {"scalar", "scalar_receiver"}:
+        return np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+    raise ValueError(f"unknown receiver_mode {mode!r}")
+
+
 def generate_scene(config: dict, rng: np.random.Generator) -> dict:
     """Generate fixed infrastructure and random training/polarization values."""
     k_paths = config["K"]
@@ -32,6 +44,14 @@ def generate_scene(config: dict, rng: np.random.Generator) -> dict:
 
     p_b = np.asarray(config["p_B"], dtype=float)
     ris_centers = np.asarray(config["ris_centers"], dtype=float)
+    if ris_centers.shape[0] < k_paths:
+        raise ValueError(
+            f"config requests K={k_paths} RIS paths but only "
+            f"{ris_centers.shape[0]} ris_centers are configured"
+        )
+    receiver_mode = str(config.get("receiver_mode", config.get("evs_selection", "full_6d")))
+    evs_component_mask = evs_component_selection(receiver_mode)
+    evs_observation_mask = np.tile(evs_component_mask, config["M_A"]).astype(bool)
     a_rb = np.empty((k_paths, m_r), dtype=complex)
     v_b = np.empty((k_paths, config["M_A"]), dtype=complex)
     theta = np.empty((k_paths, 6, 2), dtype=complex)
@@ -57,6 +77,9 @@ def generate_scene(config: dict, rng: np.random.Generator) -> dict:
         "K": k_paths,
         "M_A": config["M_A"],
         "I": 6 * config["M_A"],
+        "receiver_mode": receiver_mode,
+        "evs_component_mask": evs_component_mask,
+        "evs_observation_mask": evs_observation_mask,
         "M_Rx": mx,
         "M_Ry": my,
         "M_R": m_r,
@@ -130,7 +153,7 @@ def channel_components(
         assert c_train[k].shape == (scene["T"],), "c_k must have shape (T,)"
 
         pol = scene["Theta"][k] @ polarization_vector(gamma[k], eta[k])
-        a_evs[k] = np.kron(scene["v_B"][k], pol)
+        a_evs[k] = np.kron(scene["v_B"][k], pol) * scene["evs_observation_mask"]
 
         tau = (range_m + scene["d_RB"][k]) / scene["c0"] + delta_t
         pole = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau)
@@ -179,9 +202,25 @@ def synthesize_raw_tensor(components: dict, beta: np.ndarray) -> np.ndarray:
     return y
 
 
-def add_awgn(y_true: np.ndarray, snr_db: float, rng: np.random.Generator) -> tuple[np.ndarray, float]:
+def add_awgn(
+    y_true: np.ndarray,
+    snr_db: float,
+    rng: np.random.Generator,
+    active_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]:
     """Add AWGN to a raw tensor at the requested SNR in dB."""
-    signal_power = float(np.mean(np.abs(y_true) ** 2))
+    if active_mask is None:
+        signal_view = y_true
+    else:
+        mask = np.asarray(active_mask, dtype=bool).reshape(-1)
+        if mask.size != y_true.shape[0]:
+            raise ValueError("active_mask length must match the EVS observation dimension")
+        signal_view = y_true[mask]
+    signal_power = float(np.mean(np.abs(signal_view) ** 2))
     noise_variance = signal_power / (10.0 ** (snr_db / 10.0))
-    y_noisy = y_true + complex_awgn(y_true.shape, noise_variance, rng)
+    if active_mask is None:
+        y_noisy = y_true + complex_awgn(y_true.shape, noise_variance, rng)
+    else:
+        y_noisy = y_true.copy()
+        y_noisy[mask] += complex_awgn(y_true[mask].shape, noise_variance, rng)
     return y_noisy, noise_variance

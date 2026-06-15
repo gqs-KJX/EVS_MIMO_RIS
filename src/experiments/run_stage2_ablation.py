@@ -1,4 +1,9 @@
-"""Run Stage-II module and guarded-mode ablations."""
+"""Run legacy Stage-II projection module and guarded-mode ablations.
+
+This script studies legacy EVS/delay/RIS Stage-II projection modules. It is
+not the main ablation for the revised Stage-I-regularized adaptive Jones-VP
+estimator.
+"""
 
 from __future__ import annotations
 
@@ -64,6 +69,12 @@ FIELDNAMES = [
     "vp_position_rmse_m",
     "vp_y_nmse",
 ]
+
+LEGACY_WARNING = (
+    "WARNING: run_stage2_ablation.py is a legacy structured-refinement ablation. "
+    "For the revised adaptive Jones-VP paper algorithm, use python -m "
+    "src.experiments.run_proposed_ablation."
+)
 
 
 def _variant_specs(enable_vp: bool) -> list[tuple[str, dict]]:
@@ -402,6 +413,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    print(LEGACY_WARNING, flush=True)
     args = parse_args()
     if args.n_trials <= 0:
         raise ValueError("--n-trials must be positive")
