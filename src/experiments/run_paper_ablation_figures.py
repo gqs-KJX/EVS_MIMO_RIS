@@ -63,6 +63,7 @@ else:
 
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
+DEFAULT_PAPER_K = 3
 FIGURE6_K_GRID = [1, 2, 3, 4]
 FIGURE_ORDER = ["fig1", "fig2", "fig3", "fig4", "fig5", "fig6"]
 FIGURE_PDFS = {
@@ -81,6 +82,18 @@ FIGURE_METRICS = {
     "fig5": "outlier_flag",
     "fig6": "position_rmse_m",
 }
+RAW_SUMMARY_METRICS = [
+    "position_rmse_m",
+    "y_nmse",
+    "range_rmse_m",
+    "tau_rmse_s",
+    "raw_objective_final",
+    "outlier_flag",
+    "peb_position_m",
+    "peb_scalar_m",
+    "peb_dual_m",
+    "peb_evs_m",
+]
 
 FIELDNAMES = [
     "figure",
@@ -129,6 +142,7 @@ FIELDNAMES = [
     "peb_scalar_m",
     "peb_dual_m",
     "peb_evs_m",
+    "warning",
 ]
 
 
@@ -136,6 +150,18 @@ def parse_snr_grid(value: str | Iterable[float] = DEFAULT_SNR_GRID) -> list[floa
     if isinstance(value, str):
         return [float(item.strip()) for item in value.split(",") if item.strip()]
     return [float(item) for item in value]
+
+
+def parse_k_grid(value: str | Iterable[int] = "1,2,3,4") -> list[int]:
+    if isinstance(value, str):
+        grid = [int(item.strip()) for item in value.split(",") if item.strip()]
+    else:
+        grid = [int(item) for item in value]
+    if not grid:
+        raise ValueError("--k-grid must contain at least one positive integer")
+    if any(k <= 0 for k in grid):
+        raise ValueError("--k-grid entries must be positive")
+    return grid
 
 
 def parse_figures(value: str) -> list[str]:
@@ -160,6 +186,32 @@ def apply_nested_update(config: dict, update_dict: dict) -> dict:
     return result
 
 
+def set_number_of_ris_paths(config: dict, k_paths: int) -> dict:
+    """Set the physical path/RIS count used by scene generation and estimators."""
+    k_paths = int(k_paths)
+    if k_paths <= 0:
+        raise ValueError("K must be positive")
+    config["K"] = k_paths
+    ris_centers = np.asarray(config.get("ris_centers"), dtype=float)
+    if ris_centers.ndim != 2 or ris_centers.shape[1] != 3:
+        raise ValueError("config['ris_centers'] must have shape (num_ris, 3)")
+    if ris_centers.shape[0] < k_paths:
+        extra = []
+        base_z = float(np.mean(ris_centers[:, 2])) if ris_centers.size else 1.2
+        while ris_centers.shape[0] + len(extra) < k_paths:
+            idx = ris_centers.shape[0] + len(extra)
+            side = -1.0 if idx % 2 else 1.0
+            y_offset = side * (2.8 + 0.35 * idx)
+            x_offset = 4.6 + 0.35 * idx
+            z_offset = base_z + 0.05 * ((idx % 3) - 1)
+            extra.append([x_offset, y_offset, z_offset])
+        ris_centers = np.vstack([ris_centers, np.asarray(extra, dtype=float)])
+    config["ris_centers"] = ris_centers
+    config["jnpp_max_candidates"] = max(int(config.get("jnpp_max_candidates", 1)), 1 + k_paths)
+    config["jnpp_top_assignments"] = min(3, math.factorial(k_paths))
+    return config
+
+
 def make_base_config(seed: int, snr_db: float, overrides: dict | None = None) -> dict:
     config = default_config()
     config["seed"] = int(seed)
@@ -169,9 +221,7 @@ def make_base_config(seed: int, snr_db: float, overrides: dict | None = None) ->
     config["run_full_legacy_comparison"] = False
     if overrides:
         config = apply_nested_update(config, overrides)
-    k_paths = int(config.get("K", 1))
-    config["jnpp_max_candidates"] = max(int(config.get("jnpp_max_candidates", 1)), 1 + k_paths)
-    config["jnpp_top_assignments"] = min(3, math.factorial(k_paths))
+    set_number_of_ris_paths(config, int(config.get("K", 1)))
     return config
 
 
@@ -389,6 +439,7 @@ def _truth_init_estimate(scene: dict, true_components: dict) -> dict:
 def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
     scene = data["scene"]
     init = _truth_init_estimate(scene, data["true_components"])
+    warning = ""
     try:
         diag = data_only_efim_diagnostic(
             data["Y_true"],
@@ -403,14 +454,18 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
         pos_efim = efim[:3, :3]
         cov = np.linalg.pinv((pos_efim + pos_efim.T) * 0.5)
         peb = float(np.sqrt(max(np.trace(cov), 0.0)))
-    except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError):
+        if not np.isfinite(peb):
+            warning = "data_only_efim_peb_nonfinite"
+    except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
         peb = float("nan")
+        warning = f"data_only_efim_peb_failed: {type(exc).__name__}: {exc}"
     mode = str(config.get("receiver_mode", "full_6d"))
     return {
         "peb_position_m": peb,
         "peb_scalar_m": peb if mode == "scalar" else float("nan"),
         "peb_dual_m": peb if mode == "dual_pol" else float("nan"),
         "peb_evs_m": peb if mode == "full_6d" else float("nan"),
+        "warning": warning,
     }
 
 
@@ -433,6 +488,7 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
     metrics = {
         "K": scene.get("K", ""),
         "receiver_mode": scene.get("receiver_mode", ""),
+        "warning": result.get("warning", ""),
         "position_rmse_m": pos_rmse,
         "y_nmse": y_nmse,
         "range_rmse_m": _rmse_array(components.get("ranges"), true_components.get("ranges")),
@@ -611,46 +667,110 @@ def _read_csv(path: pathlib.Path) -> list[dict[str, Any]]:
 
 
 def _to_float(value: Any) -> float:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return 1.0
+        if lowered == "false":
+            return 0.0
     try:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
 
 
+def _finite_metric_values(group: list[dict[str, Any]], metric: str) -> np.ndarray:
+    values = np.asarray(
+        [
+            _to_float(row.get(metric))
+            for row in group
+            if str(row.get("failed")) != "True"
+        ],
+        dtype=float,
+    )
+    return values[np.isfinite(values)]
+
+
+def _metric_available(group: list[dict[str, Any]], metric: str) -> bool:
+    return bool(_finite_metric_values(group, metric).size)
+
+
+def get_plot_metric(row_or_group: dict[str, Any] | list[dict[str, Any]], figure: str, variant: str) -> str | None:
+    """Return the source metric column to summarize and plot for a variant."""
+    group = row_or_group if isinstance(row_or_group, list) else [row_or_group]
+    if figure == "fig1":
+        return "peb_position_m" if variant == "PEB" else "position_rmse_m"
+    if figure == "fig2":
+        return None if "peb" in variant.lower() else "y_nmse"
+    if figure == "fig3":
+        return "peb_position_m" if variant == "full_6d_evs_peb" else "position_rmse_m"
+    if figure == "fig4":
+        preferred = {
+            "scalar_peb": "peb_scalar_m",
+            "dual_pol_peb": "peb_dual_m",
+            "full_6d_evs_peb": "peb_evs_m",
+        }.get(variant, "peb_position_m")
+        return preferred if _metric_available(group, preferred) else "peb_position_m"
+    if figure == "fig5":
+        return "outlier_flag"
+    if figure == "fig6":
+        return "peb_position_m" if variant == "proposed_peb" else "position_rmse_m"
+    raise ValueError(f"unknown figure {figure!r}")
+
+
+def _plot_metric_name(metric: str) -> str:
+    return "outlier_flag_mean" if metric == "outlier_flag" else metric
+
+
+def _summary_stats(values: np.ndarray) -> dict[str, float]:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size:
+        return {
+            "mean": float(np.mean(values)),
+            "median": float(np.median(values)),
+            "std": float(np.std(values)),
+            "p10": float(np.percentile(values, 10.0)),
+            "p90": float(np.percentile(values, 90.0)),
+        }
+    return {name: float("nan") for name in ("mean", "median", "std", "p10", "p90")}
+
+
 def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, Any]]:
-    metric = FIGURE_METRICS[figure]
     groups: dict[tuple[str, float], list[dict[str, Any]]] = {}
     for row in rows:
         key = (str(row["variant"]), _to_float(row["x_value"]))
         groups.setdefault(key, []).append(row)
     summary = []
     for (variant, x_value), group in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1])):
-        values = np.asarray([_to_float(row.get(metric)) for row in group if str(row.get("failed")) != "True"], dtype=float)
-        values = values[np.isfinite(values)]
+        metric = get_plot_metric(group, figure, variant)
+        if metric is None:
+            continue
+        values = _finite_metric_values(group, metric)
         failed_count = sum(str(row.get("failed")) == "True" for row in group)
         outliers = np.asarray([str(row.get("outlier_flag")) == "True" for row in group], dtype=float)
-        if values.size:
-            stats = {
-                "mean": float(np.mean(values)),
-                "median": float(np.median(values)),
-                "std": float(np.std(values)),
-                "p10": float(np.percentile(values, 10.0)),
-                "p90": float(np.percentile(values, 90.0)),
-            }
-        else:
-            stats = {name: float("nan") for name in ("mean", "median", "std", "p10", "p90")}
-        summary.append(
-            {
-                "figure": figure,
-                "variant": variant,
-                "x_value": x_value,
-                "metric": metric,
-                **stats,
-                "success_rate": float((len(group) - failed_count) / max(len(group), 1)),
-                "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
-                "n": len(group),
-            }
-        )
+        stats = _summary_stats(values)
+        row_summary = {
+            "figure": figure,
+            "variant": variant,
+            "x_value": x_value,
+            "metric": metric,
+            "plot_metric_name": _plot_metric_name(metric),
+            "plot_y_mean": stats["mean"],
+            "plot_y_median": stats["median"],
+            "plot_y_std": stats["std"],
+            "plot_y_p10": stats["p10"],
+            "plot_y_p90": stats["p90"],
+            **stats,
+            "success_rate": float((len(group) - failed_count) / max(len(group), 1)),
+            "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
+            "n": len(group),
+        }
+        for raw_metric in RAW_SUMMARY_METRICS:
+            raw_stats = _summary_stats(_finite_metric_values(group, raw_metric))
+            for name, value in raw_stats.items():
+                row_summary[f"{raw_metric}_{name}"] = value
+        summary.append(row_summary)
     return summary
 
 
@@ -674,7 +794,7 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     for idx, variant in enumerate(variants):
         rows = [row for row in summary_rows if row["variant"] == variant]
         xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
-        ys = np.asarray([_to_float(row["mean"]) for row in rows], dtype=float)
+        ys = np.asarray([_to_float(row["plot_y_mean"]) for row in rows], dtype=float)
         order = np.argsort(xs)
         ax.plot(xs[order], ys[order], marker=markers[idx % len(markers)], linewidth=1.5, label=variant)
     ax.set_xlabel(xlabel)
@@ -690,23 +810,41 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     plt.close(fig)
 
 
+def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
+    return {
+        "n_trials": int(args.n_trials),
+        "snr_grid": [float(value) for value in snr_grid],
+        "paper_k": int(args.paper_k),
+        "k_grid": [int(value) for value in args.k_grid_values],
+        "figures": list(figures),
+        "seed": int(args.seed),
+    }
+
+
 def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         commit = "unknown"
+    timestamp = datetime.now(timezone.utc).isoformat()
     return {
         "git_commit": commit,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp": timestamp,
+        "timestamp_utc": timestamp,
         "command_line": " ".join(sys.argv),
         "n_trials": int(args.n_trials),
         "jobs": int(args.jobs),
         "snr_grid": snr_grid,
+        "paper_k": int(args.paper_k),
+        "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
+        "seed": int(args.seed),
+        "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
         "config_overrides": {
             "seed": int(args.seed),
             "outlier_threshold_m": float(args.outlier_threshold_m),
-            "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+            "paper_k_for_fig1_to_fig5": int(args.paper_k),
+            "k_grid_for_fig6": [int(value) for value in args.k_grid_values],
         },
         "python": platform.python_version(),
         "numpy": np.__version__,
@@ -714,9 +852,94 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
     }
 
 
-def _figure_x_grid(figure: str, snr_grid: list[float]) -> tuple[str, list[float]]:
+def _read_metadata(path: pathlib.Path) -> dict[str, Any] | None:
+    try:
+        with path.open() as handle:
+            return json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _metadata_matches_request(
+    metadata: dict[str, Any] | None,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+    figures: list[str],
+) -> bool:
+    if not metadata:
+        return False
+    expected = _cache_signature(args, snr_grid, figures)
+    for key, expected_value in expected.items():
+        if metadata.get(key) != expected_value:
+            return False
+    return True
+
+
+def _expected_variant_names(figure: str) -> list[str]:
+    variants = {
+        **_variant_specs("fig1" if figure == "fig2" else figure),
+        **_extra_peb_specs(figure),
+    }
+    return list(variants)
+
+
+def _csv_matches_request(
+    rows: list[dict[str, Any]],
+    figure: str,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+) -> bool:
+    if not rows:
+        return False
+    x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
+    expected_variants = set(_expected_variant_names(figure))
+    expected_x_values = {float(value) for value in x_values}
+    groups: dict[tuple[str, float], int] = {}
+    for row in rows:
+        if row.get("figure") != figure:
+            return False
+        variant = str(row.get("variant"))
+        x_value = _to_float(row.get("x_value"))
+        if variant not in expected_variants or x_value not in expected_x_values:
+            return False
+        row_k = int(_to_float(row.get("K"))) if np.isfinite(_to_float(row.get("K"))) else None
+        expected_k = int(x_value) if figure == "fig6" else int(args.paper_k)
+        if row_k != expected_k:
+            return False
+        if row.get("x_name") != x_name:
+            return False
+        groups[(variant, x_value)] = groups.get((variant, x_value), 0) + 1
+    expected_groups = {
+        (variant, x_value)
+        for variant in expected_variants
+        for x_value in expected_x_values
+    }
+    return set(groups) == expected_groups and all(
+        count == int(args.n_trials) for count in groups.values()
+    )
+
+
+def _can_reuse_csv(
+    trial_csv: pathlib.Path,
+    figure: str,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+    figures: list[str],
+    existing_metadata: dict[str, Any] | None,
+) -> tuple[bool, list[dict[str, Any]]]:
+    if not trial_csv.exists() or args.force_rerun:
+        return False, []
+    rows = _read_csv(trial_csv)
+    if args.reuse_existing:
+        return True, rows
+    metadata_ok = _metadata_matches_request(existing_metadata, args, snr_grid, figures)
+    csv_ok = _csv_matches_request(rows, figure, args, snr_grid)
+    return bool(metadata_ok and csv_ok), rows
+
+
+def _figure_x_grid(figure: str, snr_grid: list[float], k_grid: list[int]) -> tuple[str, list[float]]:
     if figure == "fig6":
-        return "K", [float(k) for k in FIGURE6_K_GRID]
+        return "K", [float(k) for k in k_grid]
     return "snr_db", snr_grid
 
 
@@ -727,11 +950,14 @@ def _config_for_point(
     seed: int,
     snr_db: float,
     x_value: float,
+    paper_k: int,
 ) -> dict:
     overrides = copy.deepcopy(variant_updates)
     if figure == "fig6":
         overrides["K"] = int(x_value)
         snr_db = 0.0
+    else:
+        overrides["K"] = int(paper_k)
     return make_base_config(seed, snr_db, overrides)
 
 
@@ -761,6 +987,7 @@ def _run_trial_task(task: dict[str, Any]) -> tuple[dict[str, Any], str]:
             seed=task["trial_seed"],
             snr_db=task["snr_db"],
             x_value=task["x_value"],
+            paper_k=task["paper_k"],
         )
         return run_one_trial(
             config,
@@ -788,6 +1015,7 @@ def _trial_tasks(
     trial_seeds: list[int],
     outlier_threshold_m: float,
     verbose: bool,
+    paper_k: int,
 ) -> list[dict[str, Any]]:
     tasks = []
     for x_value in x_values:
@@ -804,6 +1032,7 @@ def _trial_tasks(
                         "snr_db": snr_db,
                         "x_name": x_name,
                         "x_value": float(x_value),
+                        "paper_k": int(paper_k),
                         "outlier_threshold_m": float(outlier_threshold_m),
                         "verbose": bool(verbose),
                         "runner": str(updates.get("_runner", "proposed")),
@@ -819,33 +1048,42 @@ def _run_figure(
     args: argparse.Namespace,
     snr_grid: list[float],
     trial_seeds: list[int],
+    figures: list[str],
+    existing_metadata: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     out_dir = pathlib.Path(args.out_dir)
     trial_csv = out_dir / f"{figure}_trials.csv"
     summary_csv = out_dir / f"{figure}_summary.csv"
     log_path = out_dir / f"{figure}_raw.log"
-    if trial_csv.exists() and not args.force_rerun:
-        rows = _read_csv(trial_csv)
+    can_reuse, cached_rows = _can_reuse_csv(
+        trial_csv, figure, args, snr_grid, figures, existing_metadata
+    )
+    if can_reuse:
+        rows = cached_rows
         summary = summarize_rows(rows, figure)
         _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
         return rows
     if figure == "fig2" and not args.force_rerun:
         fig1_csv = out_dir / "fig1_trials.csv"
         if fig1_csv.exists():
-            allowed = set(_variant_specs("fig2"))
-            rows = [
-                {**row, "figure": "fig2"}
-                for row in _read_csv(fig1_csv)
-                if row.get("variant") in allowed
-            ]
-            _write_csv(trial_csv, rows, FIELDNAMES)
-            summary = summarize_rows(rows, figure)
-            _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
-            with log_path.open("w") as log_handle:
-                log_handle.write("Reused fig1_trials.csv for Figure 2 NMSE curves.\n")
-            return rows
+            fig1_reusable, fig1_rows = _can_reuse_csv(
+                fig1_csv, "fig1", args, snr_grid, figures, existing_metadata
+            )
+            if fig1_reusable or args.reuse_existing:
+                allowed = set(_variant_specs("fig2"))
+                rows = [
+                    {**row, "figure": "fig2"}
+                    for row in fig1_rows
+                    if row.get("variant") in allowed
+                ]
+                _write_csv(trial_csv, rows, FIELDNAMES)
+                summary = summarize_rows(rows, figure)
+                _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
+                with log_path.open("w") as log_handle:
+                    log_handle.write("Reused fig1_trials.csv for Figure 2 NMSE curves.\n")
+                return rows
 
-    x_name, x_values = _figure_x_grid(figure, snr_grid)
+    x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
     variants = {
         **_variant_specs("fig1" if figure == "fig2" else figure),
         **_extra_peb_specs(figure),
@@ -860,6 +1098,7 @@ def _run_figure(
         trial_seeds=trial_seeds,
         outlier_threshold_m=float(args.outlier_threshold_m),
         verbose=bool(args.verbose),
+        paper_k=int(args.paper_k),
     )
     processes = min(int(args.jobs), max(len(tasks), 1))
     with log_path.open("w") as log_handle:
@@ -886,14 +1125,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--figures", default="all")
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
+    parser.add_argument("--paper-k", type=int, default=DEFAULT_PAPER_K)
+    parser.add_argument("--k-grid", default="1,2,3,4")
     parser.add_argument("--out-dir", type=pathlib.Path, default=pathlib.Path("results/ablation_paper"))
     parser.add_argument("--seed", type=int, default=20260526)
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
     parser.add_argument("--force-rerun", action="store_true")
+    parser.add_argument("--reuse-existing", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--jobs", type=int, default=10)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.k_grid_values = parse_k_grid(args.k_grid)
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -902,19 +1146,30 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--n-trials must be positive")
     if args.jobs <= 0:
         raise ValueError("--jobs must be positive")
+    if args.paper_k <= 0:
+        raise ValueError("--paper-k must be positive")
     figures = parse_figures(args.figures)
     snr_grid = parse_snr_grid(args.snr_grid)
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = args.out_dir / "experiment_metadata.json"
+    existing_metadata = _read_metadata(metadata_path)
     seed_sequence = np.random.SeedSequence(args.seed)
     trial_seeds = [_trial_seed(child) for child in seed_sequence.spawn(args.n_trials)]
-    with (args.out_dir / "metadata.json").open("w") as handle:
-        json.dump(_metadata(args, snr_grid, figures), handle, indent=2)
 
     for figure in figures:
-        rows = _run_figure(figure, args=args, snr_grid=snr_grid, trial_seeds=trial_seeds)
+        rows = _run_figure(
+            figure,
+            args=args,
+            snr_grid=snr_grid,
+            trial_seeds=trial_seeds,
+            figures=figures,
+            existing_metadata=existing_metadata,
+        )
         summary = summarize_rows(rows, figure)
         if not args.no_plots:
             _plot_figure(figure, summary, args.out_dir)
+    with metadata_path.open("w") as handle:
+        json.dump(_metadata(args, snr_grid, figures), handle, indent=2)
     print(f"Wrote paper ablation outputs to {args.out_dir}")
 
 

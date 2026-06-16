@@ -34,11 +34,14 @@ Generate the revised paper ablation CSVs, logs, metadata, summaries, and PDF
 figures with:
 
 ```bash
-python -m src.experiments.run_paper_ablation_figures --figures all --n-trials 50 --out-dir results/ablation_paper
-python -m src.experiments.run_paper_ablation_figures --figures fig1,fig2 --n-trials 50
+python -m src.experiments.run_paper_ablation_figures --figures all --n-trials 50 --paper-k 3 --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" --out-dir results/ablation_paper --force-rerun
+python -m src.experiments.run_paper_ablation_figures --figures fig1,fig2 --n-trials 50 --paper-k 3
 ```
 
 The paper figure runner targets the revised pipeline: Stage-I initialization,
 reliability-gated RIS/JNPP basin recovery, and adaptive Stage-I-regularized
-Jones-VP. The older `run_stage2_ablation.py` entry point remains available only
-for legacy structured-refinement module ablations.
+Jones-VP. Figures 1--5 use `K=3` by default through the actual simulation
+configuration. Figure 6 ignores `--paper-k` and sweeps `K=1,2,3,4` at 0 dB.
+PEB curves are plotted from the data-only EFIM/CRB calculation. The older
+`run_stage2_ablation.py` entry point remains available only for legacy
+structured-refinement module ablations.
