@@ -1,0 +1,78 @@
+{
+  "git_commit": "00676bc7cd3d861598d8882f400ba94033268c50",
+  "timestamp": "2026-06-16T15:08:29.587294+00:00",
+  "timestamp_utc": "2026-06-16T15:08:29.587294+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_paper_ablation_figures.py --figures fig1,fig2 --n-trials 1 --snr-grid -30 --paper-k 3 --out-dir results/ablation_grouped_smoke --force-rerun --jobs 2 --blas-threads 1 --task-grouping grouped --no-store-large-arrays",
+  "n_trials": 1,
+  "jobs": 2,
+  "max_workers": 2,
+  "maxtasksperchild": 1,
+  "task_grouping": "grouped",
+  "streaming_csv": true,
+  "store_large_arrays": false,
+  "blas_threads": 1,
+  "profile_memory": false,
+  "snr_grid": [
+    -30.0
+  ],
+  "paper_k": 3,
+  "k_grid": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "figures": [
+    "fig1",
+    "fig2"
+  ],
+  "seed": 20260526,
+  "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+  "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation.",
+  "config_overrides": {
+    "seed": 20260526,
+    "outlier_threshold_m": 0.1,
+    "paper_k_for_fig1_to_fig5": 3,
+    "k_grid_for_fig6": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "shared_cache_signatures": {
+    "fig1_fig2": {
+      "n_trials": 1,
+      "snr_grid": [
+        -30.0
+      ],
+      "paper_k": 3,
+      "k_grid": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "figures": [
+        "fig1_fig2"
+      ],
+      "seed": 20260526,
+      "variant_list": {
+        "fig1_fig2": [
+          "stage1_only",
+          "fixed_pol_vp",
+          "free_jones_vp",
+          "regularized_jones_vp",
+          "adaptive_jones_vp_proposed",
+          "PEB"
+        ]
+      },
+      "git_commit": "00676bc7cd3d861598d8882f400ba94033268c50",
+      "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+      "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation."
+    }
+  },
+  "python": "3.13.12",
+  "numpy": "2.4.6",
+  "scipy_available": true
+}

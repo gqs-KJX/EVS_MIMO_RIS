@@ -181,3 +181,4 @@ def test_csv_fieldnames_include_required_diagnostics():
 def test_jobs_cli_default_and_override():
     assert figures.parse_args([]).jobs == 10
     assert figures.parse_args(["--jobs", "1"]).jobs == 1
+    assert figures.parse_args(["--max-workers", "2"]).max_workers == 2

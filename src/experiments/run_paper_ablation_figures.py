@@ -6,6 +6,8 @@ import argparse
 import contextlib
 import copy
 import csv
+import gc
+import hashlib
 import io
 import json
 import math
@@ -16,6 +18,7 @@ import platform
 import subprocess
 import sys
 import time
+import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -35,7 +38,9 @@ if __package__ in (None, ""):
     )
     from src.global_vp import data_only_efim_diagnostic
     from src.main_single_proposed import (
+        _apply_main_single_defaults,
         _make_data,
+        run_from_existing_stage1,
         run_single_proposed_diagnostic,
         run_stage1_only,
     )
@@ -53,7 +58,9 @@ else:
     )
     from ..global_vp import data_only_efim_diagnostic
     from ..main_single_proposed import (
+        _apply_main_single_defaults,
         _make_data,
+        run_from_existing_stage1,
         run_single_proposed_diagnostic,
         run_stage1_only,
     )
@@ -64,8 +71,21 @@ else:
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
 DEFAULT_PAPER_K = 3
+DEFAULT_BLAS_THREADS = 1
+LARGE_ARRAY_ELEMENT_THRESHOLD = 1_000_000
+RECEIVER_NOISE_CONVENTION = (
+    "AWGN is added only on active EVS observation components with variance set "
+    "by active-component signal power."
+)
+RECEIVER_MODE_CONVENTION = (
+    "receiver_mode selects the EVS component observation mask before noise "
+    "generation and estimator evaluation."
+)
 FIGURE6_K_GRID = [1, 2, 3, 4]
 FIGURE_ORDER = ["fig1", "fig2", "fig3", "fig4", "fig5", "fig6"]
+FIG1_FIG2_SHARED_FIGURE = "fig1_fig2"
+FIG1_FIG2_SHARED_TRIAL_CSV = "fig1_fig2_vp_family_trials.csv"
+FIG1_FIG2_SHARED_SUMMARY_CSV = "fig1_fig2_vp_family_summary.csv"
 FIGURE_PDFS = {
     "fig1": "fig1_vp_family_rmse_vs_snr.pdf",
     "fig2": "fig2_vp_family_nmse_vs_snr.pdf",
@@ -142,8 +162,20 @@ FIELDNAMES = [
     "peb_scalar_m",
     "peb_dual_m",
     "peb_evs_m",
+    "rss_mb_before",
+    "rss_mb_after",
+    "rss_mb_delta",
     "warning",
 ]
+
+_PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_WORKER_BASE_CONFIG: dict[str, Any] | None = None
+_WORKER_OUT_DIR: pathlib.Path | None = None
+_WORKER_BLAS_THREADS: int = DEFAULT_BLAS_THREADS
+
+
+def _is_fig1_fig2(figure: str) -> bool:
+    return figure in {"fig1", "fig2", FIG1_FIG2_SHARED_FIGURE}
 
 
 def parse_snr_grid(value: str | Iterable[float] = DEFAULT_SNR_GRID) -> list[float]:
@@ -164,6 +196,17 @@ def parse_k_grid(value: str | Iterable[int] = "1,2,3,4") -> list[int]:
     return grid
 
 
+def _apply_blas_thread_env(blas_threads: int) -> None:
+    value = str(int(blas_threads))
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ.setdefault(name, value)
+
+
 def parse_figures(value: str) -> list[str]:
     if value == "all":
         return list(FIGURE_ORDER)
@@ -171,7 +214,8 @@ def parse_figures(value: str) -> list[str]:
     unknown = [item for item in figures if item not in FIGURE_ORDER]
     if unknown:
         raise ValueError(f"unknown figure ids: {unknown}")
-    return figures
+    requested = set(figures)
+    return [figure for figure in FIGURE_ORDER if figure in requested]
 
 
 def apply_nested_update(config: dict, update_dict: dict) -> dict:
@@ -226,7 +270,7 @@ def make_base_config(seed: int, snr_db: float, overrides: dict | None = None) ->
 
 
 def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
-    if figure in {"fig1", "fig2"}:
+    if _is_fig1_fig2(figure):
         return {
             "stage1_only": {
                 "enable_global_vp": False,
@@ -303,7 +347,7 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 
 
 def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
-    if figure == "fig1":
+    if _is_fig1_fig2(figure):
         return {"PEB": {"receiver_mode": "full_6d", "_runner": "peb_only"}}
     if figure == "fig3":
         return {
@@ -406,10 +450,67 @@ def _empty_row() -> dict[str, Any]:
         "peb_scalar_m",
         "peb_dual_m",
         "peb_evs_m",
+        "rss_mb_before",
+        "rss_mb_after",
+        "rss_mb_delta",
     ]
     for field in numeric_fields:
         row[field] = float("nan")
     return row
+
+
+def _rss_mb() -> float:
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError:
+        return float("nan")
+    try:
+        return float(psutil.Process(os.getpid()).memory_info().rss / (1024.0**2))
+    except Exception:  # noqa: BLE001 - memory profiling is best-effort only.
+        return float("nan")
+
+
+def compact_experiment_result(
+    result: Any,
+    keep_large_arrays: bool = False,
+    *,
+    large_array_threshold: int = LARGE_ARRAY_ELEMENT_THRESHOLD,
+) -> Any:
+    """Drop large tensors from a diagnostic result after metrics are extracted."""
+    if keep_large_arrays:
+        return result
+    large_names = {
+        "Y_true",
+        "Y_noisy",
+        "Y_hat",
+        "Z_true",
+        "Z_noisy",
+        "Z_hat",
+        "tensor",
+        "hankel",
+        "raw_tensor",
+        "raw_tensors",
+    }
+
+    def _compact(value: Any, key: str | None = None) -> Any:
+        if isinstance(value, np.ndarray):
+            key_lower = "" if key is None else key.lower()
+            if key in large_names or key_lower in large_names or value.size > large_array_threshold:
+                return None
+            return value
+        if isinstance(value, dict):
+            for child_key in list(value.keys()):
+                value[child_key] = _compact(value[child_key], str(child_key))
+            return value
+        if isinstance(value, list):
+            for idx, item in enumerate(value):
+                value[idx] = _compact(item)
+            return value
+        if isinstance(value, tuple):
+            return tuple(_compact(item) for item in value)
+        return value
+
+    return _compact(result)
 
 
 def _truth_init_estimate(scene: dict, true_components: dict) -> dict:
@@ -434,6 +535,134 @@ def _truth_init_estimate(scene: dict, true_components: dict) -> dict:
         "Z_hat": np.zeros((scene["I"], scene["P"], scene["L"], scene["T"]), dtype=complex),
         "beta_z": np.ones(k_paths, dtype=complex),
     }
+
+
+def _hash_array(value: Any) -> str:
+    arr = np.asarray(value)
+    if np.issubdtype(arr.dtype, np.floating):
+        arr = np.round(arr.astype(float), decimals=12)
+    payload = np.ascontiguousarray(arr).view(np.uint8)
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def peb_cache_key(config: dict) -> tuple[Any, ...]:
+    """Return a deterministic key for data-only EFIM PEB computations."""
+    return (
+        float(config.get("SNR_dB")),
+        int(config.get("K")),
+        str(config.get("receiver_mode", config.get("evs_selection", "full_6d"))),
+        int(config.get("seed")),
+        float(config.get("fc")),
+        tuple(int(item) for item in config.get("ris_shape", ())),
+        int(config.get("M_A")),
+        int(config.get("N")),
+        int(config.get("P")),
+        int(config.get("T")),
+        _hash_array(config.get("p_B")),
+        _hash_array(config.get("p_u_true")),
+        _hash_array(config.get("ris_centers")),
+        float(config.get("delta_t_true")),
+        _hash_config_for_peb(config),
+    )
+
+
+def _hash_config_for_peb(config: dict) -> str:
+    payload = {
+        "global_vp": config.get("global_vp", {}),
+        "eps": config.get("eps", None),
+        "delta_f": config.get("delta_f", None),
+        "wavelength": config.get("wavelength", None),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+
+def _json_safe_float(value: Any) -> float | None:
+    try:
+        value_float = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value_float if np.isfinite(value_float) else None
+
+
+def _restore_cached_float(value: Any) -> float:
+    return float("nan") if value is None else float(value)
+
+
+def _peb_cache_path(out_dir: pathlib.Path | None) -> pathlib.Path | None:
+    if out_dir is None:
+        return None
+    return pathlib.Path(out_dir) / ".cache" / "peb_cache.sqlite"
+
+
+def _init_peb_cache(db_path: pathlib.Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path, timeout=30.0) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS peb_cache (
+                cache_key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def _peb_cache_key_string(config: dict) -> str:
+    return json.dumps(peb_cache_key(config), sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> dict[str, Any] | None:
+    db_path = _peb_cache_path(out_dir)
+    if db_path is None or not db_path.exists():
+        return None
+    cache_key = _peb_cache_key_string(config)
+    try:
+        with sqlite3.connect(db_path, timeout=30.0) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM peb_cache WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    payload = json.loads(row[0])
+    return {
+        "peb_position_m": _restore_cached_float(payload.get("peb_position_m")),
+        "peb_scalar_m": _restore_cached_float(payload.get("peb_scalar_m")),
+        "peb_dual_m": _restore_cached_float(payload.get("peb_dual_m")),
+        "peb_evs_m": _restore_cached_float(payload.get("peb_evs_m")),
+        "warning": payload.get("warning", ""),
+    }
+
+
+def _write_persistent_peb_cache(
+    config: dict,
+    out_dir: pathlib.Path | None,
+    value: dict[str, Any],
+) -> None:
+    db_path = _peb_cache_path(out_dir)
+    if db_path is None:
+        return
+    _init_peb_cache(db_path)
+    payload = {
+        "peb_position_m": _json_safe_float(value.get("peb_position_m")),
+        "peb_scalar_m": _json_safe_float(value.get("peb_scalar_m")),
+        "peb_dual_m": _json_safe_float(value.get("peb_dual_m")),
+        "peb_evs_m": _json_safe_float(value.get("peb_evs_m")),
+        "warning": str(value.get("warning", "")),
+    }
+    with sqlite3.connect(db_path, timeout=30.0) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "INSERT OR REPLACE INTO peb_cache(cache_key, value_json) VALUES (?, ?)",
+            (_peb_cache_key_string(config), json.dumps(payload, sort_keys=True)),
+        )
+        conn.commit()
 
 
 def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
@@ -594,9 +823,191 @@ def _oracle_result(config: dict) -> dict:
     }
 
 
-def _peb_result(config: dict) -> dict:
+def _stage1_only_result_from_shared(data: dict, stage1: dict, config: dict) -> dict:
+    estimate = copy.deepcopy(stage1["estimate"])
+    y_hat = reconstruct_raw_tensor_from_structured_estimate(estimate, data["scene"])
+    try:
+        p_hat = estimate_position_from_local_ris(data["scene"], estimate, config)
+    except (KeyError, ValueError, np.linalg.LinAlgError):
+        p_hat = estimate_position_from_ris_eta(data["scene"], estimate)
+    tau_hat = np.array([tau_from_pole(pole, data["scene"]["delta_f"]) for pole in estimate["poles"]])
+    ranges = np.asarray(estimate["ris_eta"], dtype=float)[:, 0]
+    raw_residual = y_hat - data["Y_noisy"]
+    final = {
+        "Y_hat": y_hat,
+        "p_u": p_hat,
+        "components": {"taus": tau_hat, "ranges": ranges},
+        "raw_objective_final": float(
+            np.vdot(raw_residual.reshape(-1), raw_residual.reshape(-1)).real
+            / data["Y_noisy"].size
+        ),
+        "final_refinement_method": "stage1_only",
+        "vp_mode": "none",
+        "global_vp_mode": "none",
+        "linear_nuisance_dim": 0,
+        "nonlinear_dim": 0,
+    }
+    return {
+        **data,
+        "estimate_initial": estimate,
+        "estimate_used": estimate,
+        "final": final,
+        "timing": {
+            **data.get("timing", {}),
+            **stage1["timing"],
+            "stage2": 0.0,
+            "vp": 0.0,
+            "total": float(
+                sum(data.get("timing", {}).values()) + stage1["timing"].get("stage1", 0.0)
+            ),
+        },
+        "reliability": {},
+        "selected_branch": "stage1_only",
+    }
+
+
+def _oracle_result_from_shared(data: dict, config: dict) -> dict:
+    init = _truth_init_estimate(data["scene"], data["true_components"])
+    vp_start = time.perf_counter()
+    final = global_exact_spherical_vp_refinement(data["Y_noisy"], init, data["scene"], config)
+    vp_s = time.perf_counter() - vp_start
+    final["selected_branch"] = "oracle_init_vp"
+    final["final_refinement_method"] = "global_exact_spherical_vp"
+    return {
+        **data,
+        "estimate_initial": init,
+        "estimate_used": init,
+        "final": final,
+        "timing": {**data.get("timing", {}), "stage1": 0.0, "stage2": 0.0, "vp": vp_s, "total": vp_s},
+        "reliability": {"decision": "oracle_init_vp", "trigger_reasons": ["oracle_truth_initialization"]},
+        "selected_branch": "oracle_init_vp",
+    }
+
+
+def run_stage1_shared_trial(data: dict, config: dict) -> tuple[dict, dict, dict]:
+    stage1 = run_stage1_only(data, config)
+    reliability_base: dict[str, Any] = {}
+    return stage1["estimate"], stage1["timing"], reliability_base
+
+
+def _result_to_row(
+    result: dict,
+    *,
+    figure: str,
+    variant: str,
+    trial_id: int,
+    trial_seed: int,
+    snr_db: float,
+    x_name: str,
+    x_value: float,
+    outlier_threshold_m: float,
+    runtime_s: float,
+    store_large_arrays: bool,
+    rss_before: float,
+    profile_memory: bool,
+    compact_result: bool = True,
+) -> dict[str, Any]:
+    row = _empty_row()
+    row.update(
+        {
+            "figure": figure,
+            "variant": variant,
+            "trial_id": int(trial_id),
+            "seed": int(trial_seed),
+            "snr_db": float(snr_db),
+            "x_name": x_name,
+            "x_value": float(x_value),
+            "failed": False,
+            "error": "",
+        }
+    )
+    row.update(extract_metrics(result, outlier_threshold_m))
+    if compact_result:
+        compact_experiment_result(result, keep_large_arrays=store_large_arrays)
+    rss_after = _rss_mb() if profile_memory else float("nan")
+    row["rss_mb_before"] = rss_before
+    row["rss_mb_after"] = rss_after
+    row["rss_mb_delta"] = (
+        rss_after - rss_before
+        if np.isfinite(rss_before) and np.isfinite(rss_after)
+        else float("nan")
+    )
+    row["runtime_s"] = float(runtime_s)
+    return row
+
+
+def _failure_row_from_payload(
+    *,
+    figure: str,
+    variant: str,
+    trial_id: int,
+    trial_seed: int,
+    snr_db: float,
+    x_name: str,
+    x_value: float,
+    k_paths: int,
+    receiver_mode: str,
+    exc: BaseException,
+) -> dict[str, Any]:
+    row = _empty_row()
+    row.update(
+        {
+            "figure": figure,
+            "variant": variant,
+            "trial_id": int(trial_id),
+            "seed": int(trial_seed),
+            "snr_db": float(snr_db),
+            "x_name": x_name,
+            "x_value": float(x_value),
+            "K": int(k_paths),
+            "receiver_mode": receiver_mode,
+            "failed": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    )
+    return row
+
+
+def run_final_vp_from_shared_stage1(
+    data: dict,
+    stage1: dict,
+    config: dict,
+    variant_spec: dict[str, Any],
+    allow_stage2: bool,
+) -> dict:
+    _ = variant_spec
+    return run_from_existing_stage1(
+        data,
+        {"estimate": copy.deepcopy(stage1["estimate"]), "timing": dict(stage1["timing"])},
+        config,
+        allow_stage2=allow_stage2,
+    )
+
+
+def _peb_result(config: dict, out_dir: pathlib.Path | None = None) -> dict:
+    key = peb_cache_key(config)
+    cached = _PEB_CACHE.get(key)
+    if cached is None:
+        cached = _read_persistent_peb_cache(config, out_dir)
+        if cached is not None:
+            _PEB_CACHE[key] = copy.deepcopy(cached)
+    if cached is not None:
+        return {
+            "scene": {
+                "K": int(config.get("K", "")),
+                "receiver_mode": str(
+                    config.get("receiver_mode", config.get("evs_selection", "full_6d"))
+                ),
+            },
+            **copy.deepcopy(cached),
+            "final": {},
+            "timing": {},
+        }
     data = _make_data(config)
-    return {**data, **_peb_from_efim(data, config), "final": {}, "timing": data.get("timing", {})}
+    peb_metrics = _peb_from_efim(data, config)
+    _PEB_CACHE[key] = copy.deepcopy(peb_metrics)
+    _write_persistent_peb_cache(config, out_dir, peb_metrics)
+    return {**data, **peb_metrics, "final": {}, "timing": data.get("timing", {})}
 
 
 def run_one_trial(
@@ -612,11 +1023,19 @@ def run_one_trial(
     verbose: bool = False,
     runner: str = "proposed",
     allow_stage2: bool = True,
+    store_large_arrays: bool = False,
+    profile_memory: bool = False,
+    blas_threads: int = DEFAULT_BLAS_THREADS,
+    out_dir: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], str]:
+    _apply_blas_thread_env(blas_threads)
     config = copy.deepcopy(config)
     config["seed"] = int(trial_seed)
+    config["experiment"] = dict(config.get("experiment", {}))
+    config["experiment"]["store_large_arrays"] = bool(store_large_arrays)
     log_buffer = io.StringIO()
     start = time.perf_counter()
+    rss_before = _rss_mb() if profile_memory else float("nan")
     row = _empty_row()
     row.update(
         {
@@ -639,16 +1058,27 @@ def run_one_trial(
             elif runner == "oracle_init_vp":
                 result = _oracle_result(config)
             elif runner == "peb_only":
-                result = _peb_result(config)
+                result = _peb_result(config, out_dir)
             else:
                 result = run_single_proposed_diagnostic(config, allow_stage2=allow_stage2)
         row.update(extract_metrics(result, outlier_threshold_m))
+        compact_experiment_result(result, keep_large_arrays=store_large_arrays)
+        del result
     except Exception as exc:  # noqa: BLE001 - failed trials must be logged as rows.
         row["failed"] = True
         row["error"] = f"{type(exc).__name__}: {exc}"
         row["K"] = config.get("K", "")
         row["receiver_mode"] = config.get("receiver_mode", "full_6d")
         log_buffer.write(f"\nERROR {type(exc).__name__}: {exc}\n")
+    gc.collect()
+    rss_after = _rss_mb() if profile_memory else float("nan")
+    row["rss_mb_before"] = rss_before
+    row["rss_mb_after"] = rss_after
+    row["rss_mb_delta"] = (
+        rss_after - rss_before
+        if np.isfinite(rss_before) and np.isfinite(rss_after)
+        else float("nan")
+    )
     row["runtime_s"] = float(time.perf_counter() - start)
     return row, log_buffer.getvalue()
 
@@ -659,6 +1089,46 @@ def _write_csv(path: pathlib.Path, rows: list[dict[str, Any]], fieldnames: list[
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_rows_atomic_csv(path: pathlib.Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    with StreamingCsvWriter(path, fieldnames) as writer:
+        for row in rows:
+            writer.writerow(row)
+
+
+class StreamingCsvWriter:
+    """Write trial rows to a temporary CSV and atomically publish on completion."""
+
+    def __init__(self, final_path: pathlib.Path, fieldnames: list[str]):
+        self.final_path = pathlib.Path(final_path)
+        self.tmp_path = self.final_path.with_name(f"{self.final_path.name}.tmp")
+        self.fieldnames = fieldnames
+        self.handle: Any | None = None
+        self.writer: csv.DictWriter | None = None
+
+    def __enter__(self) -> "StreamingCsvWriter":
+        self.final_path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.tmp_path.open("w", newline="")
+        self.writer = csv.DictWriter(
+            self.handle, fieldnames=self.fieldnames, extrasaction="ignore"
+        )
+        self.writer.writeheader()
+        self.handle.flush()
+        return self
+
+    def writerow(self, row: dict[str, Any]) -> None:
+        if self.writer is None or self.handle is None:
+            raise RuntimeError("StreamingCsvWriter is not open")
+        self.writer.writerow(row)
+        self.handle.flush()
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if self.handle is not None:
+            self.handle.close()
+        if exc_type is None:
+            os.replace(self.tmp_path, self.final_path)
+        return False
 
 
 def _read_csv(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -774,6 +1244,14 @@ def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, An
     return summary
 
 
+def summarize_fig1_fig2_shared_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    shared_summary: list[dict[str, Any]] = []
+    for plot_name in ("fig1", "fig2"):
+        for row in summarize_rows(rows, plot_name):
+            shared_summary.append({"plot_name": plot_name, **row})
+    return shared_summary
+
+
 def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathlib.Path) -> None:
     mpl_config = out_dir / ".matplotlib"
     mpl_config.mkdir(parents=True, exist_ok=True)
@@ -818,14 +1296,22 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": list(figures),
         "seed": int(args.seed),
+        "variant_list": {figure: _expected_variant_names(figure) for figure in figures},
+        "git_commit": _git_commit_hash(),
+        "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
+        "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
     }
 
 
-def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
+def _git_commit_hash() -> str:
     try:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        commit = "unknown"
+        return "unknown"
+
+
+def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
+    commit = _git_commit_hash()
     timestamp = datetime.now(timezone.utc).isoformat()
     return {
         "git_commit": commit,
@@ -834,17 +1320,30 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "command_line": " ".join(sys.argv),
         "n_trials": int(args.n_trials),
         "jobs": int(args.jobs),
+        "max_workers": int(args.jobs),
+        "maxtasksperchild": int(args.maxtasksperchild),
+        "task_grouping": str(args.task_grouping),
+        "streaming_csv": bool(args.streaming_csv),
+        "store_large_arrays": bool(args.store_large_arrays),
+        "blas_threads": int(args.blas_threads),
+        "profile_memory": bool(args.profile_memory),
         "snr_grid": snr_grid,
         "paper_k": int(args.paper_k),
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
         "seed": int(args.seed),
-        "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+        "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
+        "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
         "config_overrides": {
             "seed": int(args.seed),
             "outlier_threshold_m": float(args.outlier_threshold_m),
             "paper_k_for_fig1_to_fig5": int(args.paper_k),
             "k_grid_for_fig6": [int(value) for value in args.k_grid_values],
+        },
+        "shared_cache_signatures": {
+            FIG1_FIG2_SHARED_FIGURE: _cache_signature(
+                args, snr_grid, [FIG1_FIG2_SHARED_FIGURE]
+            )
         },
         "python": platform.python_version(),
         "numpy": np.__version__,
@@ -869,6 +1368,10 @@ def _metadata_matches_request(
     if not metadata:
         return False
     expected = _cache_signature(args, snr_grid, figures)
+    if figures == [FIG1_FIG2_SHARED_FIGURE]:
+        shared = metadata.get("shared_cache_signatures", {})
+        if shared.get(FIG1_FIG2_SHARED_FIGURE) == expected:
+            return True
     for key, expected_value in expected.items():
         if metadata.get(key) != expected_value:
             return False
@@ -877,7 +1380,7 @@ def _metadata_matches_request(
 
 def _expected_variant_names(figure: str) -> list[str]:
     variants = {
-        **_variant_specs("fig1" if figure == "fig2" else figure),
+        **_variant_specs(FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure),
         **_extra_peb_specs(figure),
     }
     return list(variants)
@@ -891,19 +1394,25 @@ def _csv_matches_request(
 ) -> bool:
     if not rows:
         return False
-    x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
+    canonical_figure = FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure
+    x_name, x_values = _figure_x_grid(canonical_figure, snr_grid, args.k_grid_values)
     expected_variants = set(_expected_variant_names(figure))
     expected_x_values = {float(value) for value in x_values}
     groups: dict[tuple[str, float], int] = {}
     for row in rows:
-        if row.get("figure") != figure:
+        row_figure = row.get("figure")
+        if _is_fig1_fig2(figure):
+            if row_figure not in {"fig1", "fig2", FIG1_FIG2_SHARED_FIGURE}:
+                return False
+        elif row_figure != figure:
             return False
         variant = str(row.get("variant"))
         x_value = _to_float(row.get("x_value"))
         if variant not in expected_variants or x_value not in expected_x_values:
             return False
-        row_k = int(_to_float(row.get("K"))) if np.isfinite(_to_float(row.get("K"))) else None
-        expected_k = int(x_value) if figure == "fig6" else int(args.paper_k)
+        row_k_value = _to_float(row.get("K"))
+        row_k = int(row_k_value) if np.isfinite(row_k_value) else None
+        expected_k = int(x_value) if canonical_figure == "fig6" else int(args.paper_k)
         if row_k != expected_k:
             return False
         if row.get("x_name") != x_name:
@@ -961,7 +1470,7 @@ def _config_for_point(
     return make_base_config(seed, snr_db, overrides)
 
 
-def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[dict[str, Any], str]:
+def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[list[dict[str, Any]], str]:
     row = _empty_row()
     row.update(
         {
@@ -976,20 +1485,20 @@ def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[di
             "error": f"{type(exc).__name__}: {exc}",
         }
     )
-    return row, f"\nERROR {type(exc).__name__}: {exc}\n"
+    return [row], f"\nERROR {type(exc).__name__}: {exc}\n"
 
 
-def _run_trial_task(task: dict[str, Any]) -> tuple[dict[str, Any], str]:
+def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     try:
-        config = _config_for_point(
+        k_paths = int(task["x_value"]) if task["figure"] == "fig6" else int(task["paper_k"])
+        config = _config_from_base(
             figure=task["figure"],
-            variant_updates=task["updates"],
             seed=task["trial_seed"],
             snr_db=task["snr_db"],
-            x_value=task["x_value"],
-            paper_k=task["paper_k"],
+            k_paths=k_paths,
+            updates=task["updates"],
         )
-        return run_one_trial(
+        row, log_text = run_one_trial(
             config,
             task["trial_seed"],
             task["variant"],
@@ -1001,7 +1510,12 @@ def _run_trial_task(task: dict[str, Any]) -> tuple[dict[str, Any], str]:
             verbose=task["verbose"],
             runner=task["runner"],
             allow_stage2=task["allow_stage2"],
+            store_large_arrays=task["store_large_arrays"],
+            profile_memory=task["profile_memory"],
+            blas_threads=task["blas_threads"],
+            out_dir=pathlib.Path(task["out_dir"]) if task.get("out_dir") else None,
         )
+        return [row], log_text
     except Exception as exc:  # noqa: BLE001 - preserve failed-trial logging.
         return _failure_row_from_task(task, exc)
 
@@ -1016,6 +1530,10 @@ def _trial_tasks(
     outlier_threshold_m: float,
     verbose: bool,
     paper_k: int,
+    store_large_arrays: bool,
+    profile_memory: bool,
+    blas_threads: int,
+    out_dir: pathlib.Path,
 ) -> list[dict[str, Any]]:
     tasks = []
     for x_value in x_values:
@@ -1037,9 +1555,573 @@ def _trial_tasks(
                         "verbose": bool(verbose),
                         "runner": str(updates.get("_runner", "proposed")),
                         "allow_stage2": bool(updates.get("_allow_stage2", True)),
+                        "store_large_arrays": bool(store_large_arrays),
+                        "profile_memory": bool(profile_memory),
+                        "blas_threads": int(blas_threads),
+                        "out_dir": str(out_dir),
                     }
                 )
     return tasks
+
+
+def _grouped_tasks(
+    *,
+    figure: str,
+    group: str,
+    x_name: str,
+    x_values: list[float],
+    trial_seeds: list[int],
+    outlier_threshold_m: float,
+    paper_k: int,
+    store_large_arrays: bool,
+    profile_memory: bool,
+    blas_threads: int,
+    out_dir: pathlib.Path,
+) -> list[dict[str, Any]]:
+    tasks = []
+    for x_value in x_values:
+        snr_db = float(x_value) if x_name == "snr_db" else 0.0
+        k_paths = int(x_value) if figure == "fig6" else int(paper_k)
+        for trial_id, trial_seed in enumerate(trial_seeds):
+            tasks.append(
+                {
+                    "task_kind": "grouped",
+                    "figure": figure,
+                    "group": group,
+                    "trial_id": int(trial_id),
+                    "trial_seed": int(trial_seed),
+                    "snr_db": float(snr_db),
+                    "x_name": x_name,
+                    "x_value": float(x_value),
+                    "K": int(k_paths),
+                    "outlier_threshold_m": float(outlier_threshold_m),
+                    "store_large_arrays": bool(store_large_arrays),
+                    "profile_memory": bool(profile_memory),
+                    "blas_threads": int(blas_threads),
+                    "out_dir": str(out_dir),
+                }
+            )
+    return tasks
+
+
+def _tasks_for_figure(
+    *,
+    figure: str,
+    x_name: str,
+    x_values: list[float],
+    variants: dict[str, dict[str, Any]],
+    trial_seeds: list[int],
+    args: argparse.Namespace,
+    grouped_group: str | None = None,
+) -> list[dict[str, Any]]:
+    if args.task_grouping == "grouped" and grouped_group is not None:
+        return _grouped_tasks(
+            figure=figure,
+            group=grouped_group,
+            x_name=x_name,
+            x_values=x_values,
+            trial_seeds=trial_seeds,
+            outlier_threshold_m=float(args.outlier_threshold_m),
+            paper_k=int(args.paper_k),
+            store_large_arrays=bool(args.store_large_arrays),
+            profile_memory=bool(args.profile_memory),
+            blas_threads=int(args.blas_threads),
+            out_dir=pathlib.Path(args.out_dir),
+        )
+    tasks = _trial_tasks(
+        figure=figure,
+        x_name=x_name,
+        x_values=x_values,
+        variants=variants,
+        trial_seeds=trial_seeds,
+        outlier_threshold_m=float(args.outlier_threshold_m),
+        verbose=bool(args.verbose),
+        paper_k=int(args.paper_k),
+        store_large_arrays=bool(args.store_large_arrays),
+        profile_memory=bool(args.profile_memory),
+        blas_threads=int(args.blas_threads),
+        out_dir=pathlib.Path(args.out_dir),
+    )
+    if args.task_grouping == "grouped" and grouped_group is None and figure == "fig3":
+        for task in tasks:
+            task["task_grouping_warning"] = (
+                "Fig.3 receiver modes change observation masks/noise; using variant tasks."
+            )
+    return tasks
+
+
+def _init_worker(base_config: dict, out_dir: str, blas_threads: int) -> None:
+    global _WORKER_BASE_CONFIG, _WORKER_OUT_DIR, _WORKER_BLAS_THREADS
+    _WORKER_BASE_CONFIG = base_config
+    _WORKER_OUT_DIR = pathlib.Path(out_dir)
+    _WORKER_BLAS_THREADS = int(blas_threads)
+    _apply_blas_thread_env(_WORKER_BLAS_THREADS)
+    cache_path = _peb_cache_path(_WORKER_OUT_DIR)
+    if cache_path is not None:
+        _init_peb_cache(cache_path)
+
+
+def _base_worker_config() -> dict:
+    if _WORKER_BASE_CONFIG is not None:
+        return copy.deepcopy(_WORKER_BASE_CONFIG)
+    return default_config()
+
+
+def _config_from_base(
+    *,
+    figure: str,
+    seed: int,
+    snr_db: float,
+    k_paths: int,
+    updates: dict[str, Any] | None = None,
+) -> dict:
+    config = copy.deepcopy(_base_worker_config())
+    config["seed"] = int(seed)
+    config["SNR_dB"] = float(0.0 if figure == "fig6" else snr_db)
+    config["print_progress"] = False
+    config["verbose_stage2"] = False
+    config["run_full_legacy_comparison"] = False
+    config = apply_nested_update(config, updates or {})
+    set_number_of_ris_paths(config, int(k_paths))
+    return _apply_main_single_defaults(config)
+
+
+def _sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
+    clean = {}
+    for key, value in row.items():
+        if isinstance(value, np.ndarray):
+            clean[key] = _vector_string(value) if value.size <= 16 else ""
+        elif isinstance(value, np.generic):
+            clean[key] = value.item()
+        else:
+            clean[key] = value
+    return clean
+
+
+def _peb_metrics_result_for_config(
+    config: dict,
+    out_dir: pathlib.Path | None,
+    data: dict | None = None,
+) -> dict:
+    key = peb_cache_key(config)
+    cached = _PEB_CACHE.get(key)
+    if cached is None:
+        cached = _read_persistent_peb_cache(config, out_dir)
+        if cached is not None:
+            _PEB_CACHE[key] = copy.deepcopy(cached)
+    if cached is None:
+        if data is None:
+            result = _peb_result(config, out_dir)
+            return result
+        cached = _peb_from_efim(data, config)
+        _PEB_CACHE[key] = copy.deepcopy(cached)
+        _write_persistent_peb_cache(config, out_dir, cached)
+    return {
+        "scene": {
+            "K": int(config.get("K", "")),
+            "receiver_mode": str(config.get("receiver_mode", config.get("evs_selection", "full_6d"))),
+        },
+        **copy.deepcopy(cached),
+        "final": {},
+        "timing": {},
+    }
+
+
+def _row_for_result_or_failure(
+    *,
+    result_factory,
+    figure: str,
+    variant: str,
+    trial_id: int,
+    trial_seed: int,
+    snr_db: float,
+    x_name: str,
+    x_value: float,
+    k_paths: int,
+    receiver_mode: str,
+    outlier_threshold_m: float,
+    store_large_arrays: bool,
+    profile_memory: bool,
+) -> tuple[dict[str, Any], str]:
+    start = time.perf_counter()
+    rss_before = _rss_mb() if profile_memory else float("nan")
+    try:
+        result = result_factory()
+        row = _result_to_row(
+            result,
+            figure=figure,
+            variant=variant,
+            trial_id=trial_id,
+            trial_seed=trial_seed,
+            snr_db=snr_db,
+            x_name=x_name,
+            x_value=x_value,
+            outlier_threshold_m=outlier_threshold_m,
+            runtime_s=time.perf_counter() - start,
+            store_large_arrays=store_large_arrays,
+            rss_before=rss_before,
+            profile_memory=profile_memory,
+            compact_result=False,
+        )
+        del result
+        return _sanitize_row(row), ""
+    except Exception as exc:  # noqa: BLE001 - failed variants must be logged as rows.
+        row = _failure_row_from_payload(
+            figure=figure,
+            variant=variant,
+            trial_id=trial_id,
+            trial_seed=trial_seed,
+            snr_db=snr_db,
+            x_name=x_name,
+            x_value=x_value,
+            k_paths=k_paths,
+            receiver_mode=receiver_mode,
+            exc=exc,
+        )
+        return _sanitize_row(row), f"\nERROR {variant} {type(exc).__name__}: {exc}\n"
+
+
+def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    _apply_blas_thread_env(int(task.get("blas_threads", _WORKER_BLAS_THREADS)))
+    figure = str(task["figure"])
+    group = str(task["group"])
+    trial_id = int(task["trial_id"])
+    trial_seed = int(task["trial_seed"])
+    snr_db = float(task["snr_db"])
+    x_name = str(task["x_name"])
+    x_value = float(task["x_value"])
+    k_paths = int(task["K"])
+    out_dir = pathlib.Path(task["out_dir"]) if task.get("out_dir") else _WORKER_OUT_DIR
+    outlier_threshold_m = float(task["outlier_threshold_m"])
+    store_large_arrays = bool(task["store_large_arrays"])
+    profile_memory = bool(task["profile_memory"])
+    rows: list[dict[str, Any]] = []
+    logs: list[str] = []
+    data = None
+    stage1 = None
+    try:
+        base_config = _config_from_base(
+            figure=figure,
+            seed=trial_seed,
+            snr_db=snr_db,
+            k_paths=k_paths,
+        )
+        receiver_mode = str(base_config.get("receiver_mode", base_config.get("evs_selection", "full_6d")))
+        if group in {"fig1_fig2", "fig5", "fig6"}:
+            data = _make_data(base_config)
+            if group != "fig4":
+                stage1 = run_stage1_only(data, base_config)
+        if group == "fig1_fig2":
+            variants = _variant_specs(FIG1_FIG2_SHARED_FIGURE)
+            for variant, updates in variants.items():
+                config = apply_nested_update(copy.deepcopy(base_config), updates)
+                allow_stage2 = bool(updates.get("_allow_stage2", True))
+                runner = str(updates.get("_runner", "proposed"))
+                if runner == "stage1_only":
+                    factory = lambda data=data, stage1=stage1, config=config: _stage1_only_result_from_shared(data, stage1, config)
+                else:
+                    factory = lambda data=data, stage1=stage1, config=config, updates=updates, allow_stage2=allow_stage2: run_final_vp_from_shared_stage1(
+                        data, stage1, config, updates, allow_stage2
+                    )
+                row, log = _row_for_result_or_failure(
+                    result_factory=factory,
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    receiver_mode=receiver_mode,
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+            peb_config = apply_nested_update(copy.deepcopy(base_config), _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"])
+            row, log = _row_for_result_or_failure(
+                result_factory=lambda config=peb_config, data=data: _peb_metrics_result_for_config(config, out_dir, data),
+                figure=figure,
+                variant="PEB",
+                trial_id=trial_id,
+                trial_seed=trial_seed,
+                snr_db=snr_db,
+                x_name=x_name,
+                x_value=x_value,
+                k_paths=k_paths,
+                receiver_mode="full_6d",
+                outlier_threshold_m=outlier_threshold_m,
+                store_large_arrays=store_large_arrays,
+                profile_memory=profile_memory,
+            )
+            rows.append(row)
+            if log:
+                logs.append(log)
+        elif group == "fig5":
+            for variant, updates in _variant_specs("fig5").items():
+                config = apply_nested_update(copy.deepcopy(base_config), updates)
+                allow_stage2 = bool(updates.get("_allow_stage2", True))
+                runner = str(updates.get("_runner", "proposed"))
+                if runner == "oracle_init_vp":
+                    factory = lambda data=data, config=config: _oracle_result_from_shared(data, config)
+                else:
+                    factory = lambda data=data, stage1=stage1, config=config, updates=updates, allow_stage2=allow_stage2: run_final_vp_from_shared_stage1(
+                        data, stage1, config, updates, allow_stage2
+                    )
+                row, log = _row_for_result_or_failure(
+                    result_factory=factory,
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    receiver_mode=receiver_mode,
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+        elif group == "fig6":
+            for variant, updates in _variant_specs("fig6").items():
+                if str(updates.get("_runner", "proposed")) == "peb_only":
+                    continue
+                config = apply_nested_update(copy.deepcopy(base_config), updates)
+                row, log = _row_for_result_or_failure(
+                    result_factory=lambda data=data, stage1=stage1, config=config, updates=updates: run_final_vp_from_shared_stage1(
+                        data, stage1, config, updates, bool(updates.get("_allow_stage2", True))
+                    ),
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=0.0,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    receiver_mode=receiver_mode,
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+            peb_config = apply_nested_update(copy.deepcopy(base_config), _variant_specs("fig6")["proposed_peb"])
+            row, log = _row_for_result_or_failure(
+                result_factory=lambda config=peb_config, data=data: _peb_metrics_result_for_config(config, out_dir, data),
+                figure=figure,
+                variant="proposed_peb",
+                trial_id=trial_id,
+                trial_seed=trial_seed,
+                snr_db=0.0,
+                x_name=x_name,
+                x_value=x_value,
+                k_paths=k_paths,
+                receiver_mode=receiver_mode,
+                outlier_threshold_m=outlier_threshold_m,
+                store_large_arrays=store_large_arrays,
+                profile_memory=profile_memory,
+            )
+            rows.append(row)
+            if log:
+                logs.append(log)
+        elif group == "fig4":
+            for variant, updates in _variant_specs("fig4").items():
+                config = _config_from_base(
+                    figure=figure,
+                    seed=trial_seed,
+                    snr_db=snr_db,
+                    k_paths=k_paths,
+                    updates=updates,
+                )
+                row, log = _row_for_result_or_failure(
+                    result_factory=lambda config=config: _peb_result(config, out_dir),
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    receiver_mode=str(config.get("receiver_mode", "full_6d")),
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+        else:
+            raise ValueError(f"unsupported grouped task group {group!r}")
+    finally:
+        del data, stage1
+        gc.collect()
+    return rows, "".join(logs)
+
+
+def _iter_task_results(
+    tasks: list[dict[str, Any]],
+    *,
+    jobs: int,
+    maxtasksperchild: int,
+    base_config: dict,
+    out_dir: pathlib.Path,
+    blas_threads: int,
+) -> Iterable[tuple[list[dict[str, Any]], str]]:
+    if jobs == 1:
+        _init_worker(base_config, str(out_dir), blas_threads)
+        for task in tasks:
+            if task.get("task_kind") == "grouped":
+                yield _run_grouped_task(task)
+            else:
+                yield _run_trial_task(task)
+        return
+    processes = min(int(jobs), max(len(tasks), 1))
+    worker = _run_grouped_task if tasks and tasks[0].get("task_kind") == "grouped" else _run_trial_task
+    with mp.Pool(
+        processes=processes,
+        maxtasksperchild=int(maxtasksperchild),
+        initializer=_init_worker,
+        initargs=(base_config, str(out_dir), int(blas_threads)),
+    ) as pool:
+        for result in pool.imap_unordered(worker, tasks, chunksize=1):
+            yield result
+
+
+def _write_trial_results(
+    trial_csv: pathlib.Path,
+    tasks: list[dict[str, Any]],
+    log_path: pathlib.Path,
+    args: argparse.Namespace,
+) -> list[dict[str, Any]]:
+    jobs = min(int(args.jobs), max(len(tasks), 1))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    base_config = default_config()
+    out_dir = pathlib.Path(args.out_dir)
+    writer_context = (
+        StreamingCsvWriter(trial_csv, FIELDNAMES)
+        if args.streaming_csv
+        else contextlib.nullcontext()
+    )
+    buffered_rows: list[dict[str, Any]] = []
+    with log_path.open("w") as log_handle, writer_context as csv_writer:
+        log_handle.write(f"parallel_jobs={jobs}\n")
+        log_handle.write(f"task_grouping={args.task_grouping}\n")
+        log_handle.write(f"streaming_csv={bool(args.streaming_csv)}\n")
+        log_handle.write(f"store_large_arrays={bool(args.store_large_arrays)}\n")
+        if tasks and tasks[0].get("task_grouping_warning"):
+            log_handle.write(f"WARNING: {tasks[0]['task_grouping_warning']}\n")
+        for row_batch, log_text in _iter_task_results(
+            tasks,
+            jobs=jobs,
+            maxtasksperchild=int(args.maxtasksperchild),
+            base_config=base_config,
+            out_dir=out_dir,
+            blas_threads=int(args.blas_threads),
+        ):
+            for row in row_batch:
+                if args.streaming_csv:
+                    csv_writer.writerow(row)
+                else:
+                    buffered_rows.append(row)
+                log_handle.write(
+                    f"figure={row['figure']} variant={row['variant']} trial={row['trial_id']} "
+                    f"seed={row['seed']} x={row['x_value']} failed={row['failed']}\n"
+                )
+                log_handle.flush()
+            if log_text:
+                log_handle.write(log_text)
+                if not log_text.endswith("\n"):
+                    log_handle.write("\n")
+                log_handle.flush()
+    if not args.streaming_csv:
+        with StreamingCsvWriter(trial_csv, FIELDNAMES) as writer:
+            for row in buffered_rows:
+                writer.writerow(row)
+        return buffered_rows
+    return _read_csv(trial_csv)
+
+
+def _fig1_fig2_shared_trial_csv(out_dir: pathlib.Path) -> pathlib.Path:
+    return out_dir / FIG1_FIG2_SHARED_TRIAL_CSV
+
+
+def _fig1_fig2_shared_summary_csv(out_dir: pathlib.Path) -> pathlib.Path:
+    return out_dir / FIG1_FIG2_SHARED_SUMMARY_CSV
+
+
+def _write_fig1_fig2_derived_outputs(out_dir: pathlib.Path, rows: list[dict[str, Any]]) -> None:
+    fig1_rows = [{**row, "figure": "fig1"} for row in rows]
+    fig2_rows = [{**row, "figure": "fig2"} for row in rows]
+    _write_rows_atomic_csv(out_dir / "fig1_trials.csv", fig1_rows, FIELDNAMES)
+    _write_rows_atomic_csv(out_dir / "fig2_trials.csv", fig2_rows, FIELDNAMES)
+    fig1_summary = summarize_rows(rows, "fig1")
+    fig2_summary = summarize_rows(rows, "fig2")
+    _write_csv(
+        out_dir / "fig1_summary.csv",
+        fig1_summary,
+        list(fig1_summary[0].keys()) if fig1_summary else [],
+    )
+    _write_csv(
+        out_dir / "fig2_summary.csv",
+        fig2_summary,
+        list(fig2_summary[0].keys()) if fig2_summary else [],
+    )
+
+
+def _run_fig1_fig2_shared_trials(
+    *,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+    trial_seeds: list[int],
+    existing_metadata: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    out_dir = pathlib.Path(args.out_dir)
+    shared_trial_csv = _fig1_fig2_shared_trial_csv(out_dir)
+    shared_summary_csv = _fig1_fig2_shared_summary_csv(out_dir)
+    log_path = out_dir / "fig1_fig2_vp_family_raw.log"
+    can_reuse, rows = _can_reuse_csv(
+        shared_trial_csv,
+        FIG1_FIG2_SHARED_FIGURE,
+        args,
+        snr_grid,
+        [FIG1_FIG2_SHARED_FIGURE],
+        existing_metadata,
+    )
+    if not can_reuse:
+        x_name, x_values = _figure_x_grid(FIG1_FIG2_SHARED_FIGURE, snr_grid, args.k_grid_values)
+        variants = {
+            **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
+            **_extra_peb_specs(FIG1_FIG2_SHARED_FIGURE),
+        }
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tasks = _tasks_for_figure(
+            figure=FIG1_FIG2_SHARED_FIGURE,
+            grouped_group="fig1_fig2",
+            x_name=x_name,
+            x_values=x_values,
+            variants=variants,
+            trial_seeds=trial_seeds,
+            args=args,
+        )
+        rows = _write_trial_results(shared_trial_csv, tasks, log_path, args)
+    shared_summary = summarize_fig1_fig2_shared_rows(rows)
+    _write_csv(
+        shared_summary_csv,
+        shared_summary,
+        list(shared_summary[0].keys()) if shared_summary else [],
+    )
+    _write_fig1_fig2_derived_outputs(out_dir, rows)
+    return rows
 
 
 def _run_figure(
@@ -1050,7 +2132,15 @@ def _run_figure(
     trial_seeds: list[int],
     figures: list[str],
     existing_metadata: dict[str, Any] | None,
+    completed_figures: set[str],
 ) -> list[dict[str, Any]]:
+    if _is_fig1_fig2(figure):
+        return _run_fig1_fig2_shared_trials(
+            args=args,
+            snr_grid=snr_grid,
+            trial_seeds=trial_seeds,
+            existing_metadata=existing_metadata,
+        )
     out_dir = pathlib.Path(args.out_dir)
     trial_csv = out_dir / f"{figure}_trials.csv"
     summary_csv = out_dir / f"{figure}_summary.csv"
@@ -1063,58 +2153,30 @@ def _run_figure(
         summary = summarize_rows(rows, figure)
         _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
         return rows
-    if figure == "fig2" and not args.force_rerun:
-        fig1_csv = out_dir / "fig1_trials.csv"
-        if fig1_csv.exists():
-            fig1_reusable, fig1_rows = _can_reuse_csv(
-                fig1_csv, "fig1", args, snr_grid, figures, existing_metadata
-            )
-            if fig1_reusable or args.reuse_existing:
-                allowed = set(_variant_specs("fig2"))
-                rows = [
-                    {**row, "figure": "fig2"}
-                    for row in fig1_rows
-                    if row.get("variant") in allowed
-                ]
-                _write_csv(trial_csv, rows, FIELDNAMES)
-                summary = summarize_rows(rows, figure)
-                _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
-                with log_path.open("w") as log_handle:
-                    log_handle.write("Reused fig1_trials.csv for Figure 2 NMSE curves.\n")
-                return rows
 
     x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
     variants = {
         **_variant_specs("fig1" if figure == "fig2" else figure),
         **_extra_peb_specs(figure),
     }
-    rows: list[dict[str, Any]] = []
     out_dir.mkdir(parents=True, exist_ok=True)
-    tasks = _trial_tasks(
+    grouped_group = {
+        "fig4": "fig4",
+        "fig5": "fig5",
+        "fig6": "fig6",
+    }.get(figure)
+    if figure == "fig3":
+        grouped_group = None
+    tasks = _tasks_for_figure(
         figure=figure,
+        grouped_group=grouped_group,
         x_name=x_name,
         x_values=x_values,
         variants=variants,
         trial_seeds=trial_seeds,
-        outlier_threshold_m=float(args.outlier_threshold_m),
-        verbose=bool(args.verbose),
-        paper_k=int(args.paper_k),
+        args=args,
     )
-    processes = min(int(args.jobs), max(len(tasks), 1))
-    with log_path.open("w") as log_handle:
-        log_handle.write(f"parallel_jobs={processes}\n")
-        with mp.Pool(processes=processes) as pool:
-            for row, log_text in pool.map(_run_trial_task, tasks):
-                rows.append(row)
-                log_handle.write(
-                    f"figure={figure} variant={row['variant']} trial={row['trial_id']} "
-                    f"seed={row['seed']} x={row['x_value']} failed={row['failed']}\n"
-                )
-                if log_text:
-                    log_handle.write(log_text)
-                    if not log_text.endswith("\n"):
-                        log_handle.write("\n")
-    _write_csv(trial_csv, rows, FIELDNAMES)
+    rows = _write_trial_results(trial_csv, tasks, log_path, args)
     summary = summarize_rows(rows, figure)
     _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
     return rows
@@ -1132,10 +2194,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--reuse-existing", action="store_true")
+    parser.add_argument("--jobs", type=int, default=None)
+    parser.add_argument("--max-workers", type=int, default=None)
+    parser.add_argument("--maxtasksperchild", type=int, default=1)
+    parser.add_argument(
+        "--task-grouping",
+        choices=("grouped", "variant"),
+        default="grouped",
+    )
+    parser.add_argument(
+        "--streaming-csv",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--store-large-arrays",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--blas-threads", type=int, default=DEFAULT_BLAS_THREADS)
+    parser.add_argument("--profile-memory", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--jobs", type=int, default=10)
     args = parser.parse_args(argv)
+    if args.jobs is None and args.max_workers is None:
+        args.jobs = 10
+        args.max_workers = 10
+    elif args.jobs is None:
+        args.jobs = args.max_workers
+    elif args.max_workers is None:
+        args.max_workers = args.jobs
+    elif args.max_workers != args.jobs:
+        raise ValueError("--jobs and --max-workers were both provided with different values")
     args.k_grid_values = parse_k_grid(args.k_grid)
     return args
 
@@ -1146,8 +2236,13 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--n-trials must be positive")
     if args.jobs <= 0:
         raise ValueError("--jobs must be positive")
+    if args.maxtasksperchild <= 0:
+        raise ValueError("--maxtasksperchild must be positive")
+    if args.blas_threads <= 0:
+        raise ValueError("--blas-threads must be positive")
     if args.paper_k <= 0:
         raise ValueError("--paper-k must be positive")
+    _apply_blas_thread_env(args.blas_threads)
     figures = parse_figures(args.figures)
     snr_grid = parse_snr_grid(args.snr_grid)
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -1156,18 +2251,32 @@ def main(argv: list[str] | None = None) -> None:
     seed_sequence = np.random.SeedSequence(args.seed)
     trial_seeds = [_trial_seed(child) for child in seed_sequence.spawn(args.n_trials)]
 
+    completed_figures: set[str] = set()
+    fig1_fig2_shared_rows: list[dict[str, Any]] | None = None
     for figure in figures:
-        rows = _run_figure(
-            figure,
-            args=args,
-            snr_grid=snr_grid,
-            trial_seeds=trial_seeds,
-            figures=figures,
-            existing_metadata=existing_metadata,
-        )
+        if _is_fig1_fig2(figure):
+            if fig1_fig2_shared_rows is None:
+                fig1_fig2_shared_rows = _run_fig1_fig2_shared_trials(
+                    args=args,
+                    snr_grid=snr_grid,
+                    trial_seeds=trial_seeds,
+                    existing_metadata=existing_metadata,
+                )
+            rows = fig1_fig2_shared_rows
+        else:
+            rows = _run_figure(
+                figure,
+                args=args,
+                snr_grid=snr_grid,
+                trial_seeds=trial_seeds,
+                figures=figures,
+                existing_metadata=existing_metadata,
+                completed_figures=completed_figures,
+            )
         summary = summarize_rows(rows, figure)
         if not args.no_plots:
             _plot_figure(figure, summary, args.out_dir)
+        completed_figures.add(figure)
     with metadata_path.open("w") as handle:
         json.dump(_metadata(args, snr_grid, figures), handle, indent=2)
     print(f"Wrote paper ablation outputs to {args.out_dir}")

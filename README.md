@@ -34,8 +34,8 @@ Generate the revised paper ablation CSVs, logs, metadata, summaries, and PDF
 figures with:
 
 ```bash
-python -m src.experiments.run_paper_ablation_figures --figures all --n-trials 50 --paper-k 3 --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" --out-dir results/ablation_paper --force-rerun
-python -m src.experiments.run_paper_ablation_figures --figures fig1,fig2 --n-trials 50 --paper-k 3
+python -m src.experiments.run_paper_ablation_figures --figures all --n-trials 50 --paper-k 3 --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" --out-dir results/ablation_paper --force-rerun --jobs 10 --task-grouping grouped --blas-threads 1
+python -m src.experiments.run_paper_ablation_figures --figures fig1,fig2 --n-trials 50 --paper-k 3 --jobs 30 --task-grouping grouped --blas-threads 1
 ```
 
 The paper figure runner targets the revised pipeline: Stage-I initialization,
@@ -45,3 +45,9 @@ configuration. Figure 6 ignores `--paper-k` and sweeps `K=1,2,3,4` at 0 dB.
 PEB curves are plotted from the data-only EFIM/CRB calculation. The older
 `run_stage2_ablation.py` entry point remains available only for legacy
 structured-refinement module ablations.
+
+The paper runner defaults to `--jobs 10`, `--task-grouping grouped`, and
+`--blas-threads 1`. Grouped execution reuses data generation and Stage-I
+initialization within each Monte Carlo trial before evaluating the requested
+VP/JNPP variants; it does not change the estimator or physical channel model.
+Use `--jobs 30` on machines with enough memory and cores.

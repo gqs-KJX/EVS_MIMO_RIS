@@ -1,0 +1,9 @@
+parallel_jobs=1
+streaming_csv=True
+store_large_arrays=False
+figure=fig1 variant=stage1_only trial=0 seed=3147786918 x=-30.0 failed=False
+figure=fig1 variant=fixed_pol_vp trial=0 seed=3147786918 x=-30.0 failed=False
+figure=fig1 variant=free_jones_vp trial=0 seed=3147786918 x=-30.0 failed=False
+figure=fig1 variant=regularized_jones_vp trial=0 seed=3147786918 x=-30.0 failed=False
+figure=fig1 variant=adaptive_jones_vp_proposed trial=0 seed=3147786918 x=-30.0 failed=False
+figure=fig1 variant=PEB trial=0 seed=3147786918 x=-30.0 failed=False

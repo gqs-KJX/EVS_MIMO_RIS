@@ -1678,14 +1678,19 @@ def select_proposed_branch(
     return selected, bool(no_gain)
 
 
-def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> dict:
-    """Run one reliability-gated proposed diagnostic realization."""
-    total_start = time.perf_counter()
+def run_from_existing_stage1(
+    data: dict,
+    stage1: dict,
+    config: dict,
+    allow_stage2: bool = True,
+    *,
+    total_start: float | None = None,
+) -> dict:
+    """Run the proposed post-Stage-I pipeline for an existing realization."""
+    if total_start is None:
+        total_start = time.perf_counter()
     config = _apply_main_single_defaults(copy.deepcopy(config))
-    data = _make_data(config)
     base_timing = dict(data.get("timing", {}))
-
-    stage1 = run_stage1_only(data, config)
     stage1_estimate = stage1["estimate"]
     base_timing.update(stage1["timing"])
     stage1_profile_reference = None
@@ -1840,6 +1845,21 @@ def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> d
     result["timing"] = dict(result["timing"])
     result["timing"]["diagnostic_total"] = time.perf_counter() - total_start
     return result
+
+
+def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> dict:
+    """Run one reliability-gated proposed diagnostic realization."""
+    total_start = time.perf_counter()
+    config = _apply_main_single_defaults(copy.deepcopy(config))
+    data = _make_data(config)
+    stage1 = run_stage1_only(data, config)
+    return run_from_existing_stage1(
+        data,
+        stage1,
+        config,
+        allow_stage2=allow_stage2,
+        total_start=total_start,
+    )
 
 
 def _run_single_pipeline(config: dict, use_structured: bool) -> dict:
