@@ -73,6 +73,7 @@ DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
 DEFAULT_PAPER_K = 3
 DEFAULT_BLAS_THREADS = 1
 LARGE_ARRAY_ELEMENT_THRESHOLD = 1_000_000
+WORKER_ROW_ARRAY_JSON_THRESHOLD = 16
 RECEIVER_NOISE_CONVENTION = (
     "AWGN is added only on active EVS observation components with variance set "
     "by active-component signal power."
@@ -172,6 +173,7 @@ _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 _WORKER_BASE_CONFIG: dict[str, Any] | None = None
 _WORKER_OUT_DIR: pathlib.Path | None = None
 _WORKER_BLAS_THREADS: int = DEFAULT_BLAS_THREADS
+_WORKER_RESPECT_EXISTING_BLAS_ENV = False
 
 
 def _is_fig1_fig2(figure: str) -> bool:
@@ -196,7 +198,11 @@ def parse_k_grid(value: str | Iterable[int] = "1,2,3,4") -> list[int]:
     return grid
 
 
-def _apply_blas_thread_env(blas_threads: int) -> None:
+def _apply_blas_thread_env(
+    blas_threads: int,
+    *,
+    respect_existing_blas_env: bool = False,
+) -> None:
     value = str(int(blas_threads))
     for name in (
         "OMP_NUM_THREADS",
@@ -204,7 +210,10 @@ def _apply_blas_thread_env(blas_threads: int) -> None:
         "OPENBLAS_NUM_THREADS",
         "NUMEXPR_NUM_THREADS",
     ):
-        os.environ.setdefault(name, value)
+        if respect_existing_blas_env:
+            os.environ.setdefault(name, value)
+        else:
+            os.environ[name] = value
 
 
 def parse_figures(value: str) -> list[str]:
@@ -1026,9 +1035,13 @@ def run_one_trial(
     store_large_arrays: bool = False,
     profile_memory: bool = False,
     blas_threads: int = DEFAULT_BLAS_THREADS,
+    respect_existing_blas_env: bool = False,
     out_dir: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], str]:
-    _apply_blas_thread_env(blas_threads)
+    _apply_blas_thread_env(
+        blas_threads,
+        respect_existing_blas_env=respect_existing_blas_env,
+    )
     config = copy.deepcopy(config)
     config["seed"] = int(trial_seed)
     config["experiment"] = dict(config.get("experiment", {}))
@@ -1100,10 +1113,18 @@ def _write_rows_atomic_csv(path: pathlib.Path, rows: list[dict[str, Any]], field
 class StreamingCsvWriter:
     """Write trial rows to a temporary CSV and atomically publish on completion."""
 
-    def __init__(self, final_path: pathlib.Path, fieldnames: list[str]):
+    def __init__(
+        self,
+        final_path: pathlib.Path,
+        fieldnames: list[str],
+        *,
+        flush_every: int = 1,
+    ):
         self.final_path = pathlib.Path(final_path)
         self.tmp_path = self.final_path.with_name(f"{self.final_path.name}.tmp")
         self.fieldnames = fieldnames
+        self.flush_every = int(flush_every)
+        self.rows_since_flush = 0
         self.handle: Any | None = None
         self.writer: csv.DictWriter | None = None
 
@@ -1121,10 +1142,14 @@ class StreamingCsvWriter:
         if self.writer is None or self.handle is None:
             raise RuntimeError("StreamingCsvWriter is not open")
         self.writer.writerow(row)
-        self.handle.flush()
+        self.rows_since_flush += 1
+        if self.flush_every <= 1 or self.rows_since_flush >= self.flush_every:
+            self.handle.flush()
+            self.rows_since_flush = 0
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
         if self.handle is not None:
+            self.handle.flush()
             self.handle.close()
         if exc_type is None:
             os.replace(self.tmp_path, self.final_path)
@@ -1324,8 +1349,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "maxtasksperchild": int(args.maxtasksperchild),
         "task_grouping": str(args.task_grouping),
         "streaming_csv": bool(args.streaming_csv),
+        "csv_flush_every": int(args.csv_flush_every),
         "store_large_arrays": bool(args.store_large_arrays),
         "blas_threads": int(args.blas_threads),
+        "respect_existing_blas_env": bool(args.respect_existing_blas_env),
         "profile_memory": bool(args.profile_memory),
         "snr_grid": snr_grid,
         "paper_k": int(args.paper_k),
@@ -1485,7 +1512,7 @@ def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[li
             "error": f"{type(exc).__name__}: {exc}",
         }
     )
-    return [row], f"\nERROR {type(exc).__name__}: {exc}\n"
+    return _ensure_worker_result_rows_safe([row]), f"\nERROR {type(exc).__name__}: {exc}\n"
 
 
 def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
@@ -1513,11 +1540,12 @@ def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             store_large_arrays=task["store_large_arrays"],
             profile_memory=task["profile_memory"],
             blas_threads=task["blas_threads"],
+            respect_existing_blas_env=bool(task.get("respect_existing_blas_env", False)),
             out_dir=pathlib.Path(task["out_dir"]) if task.get("out_dir") else None,
         )
-        return [row], log_text
     except Exception as exc:  # noqa: BLE001 - preserve failed-trial logging.
         return _failure_row_from_task(task, exc)
+    return _ensure_worker_result_rows_safe([row]), log_text
 
 
 def _trial_tasks(
@@ -1533,6 +1561,7 @@ def _trial_tasks(
     store_large_arrays: bool,
     profile_memory: bool,
     blas_threads: int,
+    respect_existing_blas_env: bool,
     out_dir: pathlib.Path,
 ) -> list[dict[str, Any]]:
     tasks = []
@@ -1558,6 +1587,7 @@ def _trial_tasks(
                         "store_large_arrays": bool(store_large_arrays),
                         "profile_memory": bool(profile_memory),
                         "blas_threads": int(blas_threads),
+                        "respect_existing_blas_env": bool(respect_existing_blas_env),
                         "out_dir": str(out_dir),
                     }
                 )
@@ -1576,6 +1606,7 @@ def _grouped_tasks(
     store_large_arrays: bool,
     profile_memory: bool,
     blas_threads: int,
+    respect_existing_blas_env: bool,
     out_dir: pathlib.Path,
 ) -> list[dict[str, Any]]:
     tasks = []
@@ -1598,6 +1629,7 @@ def _grouped_tasks(
                     "store_large_arrays": bool(store_large_arrays),
                     "profile_memory": bool(profile_memory),
                     "blas_threads": int(blas_threads),
+                    "respect_existing_blas_env": bool(respect_existing_blas_env),
                     "out_dir": str(out_dir),
                 }
             )
@@ -1626,6 +1658,7 @@ def _tasks_for_figure(
             store_large_arrays=bool(args.store_large_arrays),
             profile_memory=bool(args.profile_memory),
             blas_threads=int(args.blas_threads),
+            respect_existing_blas_env=bool(args.respect_existing_blas_env),
             out_dir=pathlib.Path(args.out_dir),
         )
     tasks = _trial_tasks(
@@ -1640,6 +1673,7 @@ def _tasks_for_figure(
         store_large_arrays=bool(args.store_large_arrays),
         profile_memory=bool(args.profile_memory),
         blas_threads=int(args.blas_threads),
+        respect_existing_blas_env=bool(args.respect_existing_blas_env),
         out_dir=pathlib.Path(args.out_dir),
     )
     if args.task_grouping == "grouped" and grouped_group is None and figure == "fig3":
@@ -1650,12 +1684,22 @@ def _tasks_for_figure(
     return tasks
 
 
-def _init_worker(base_config: dict, out_dir: str, blas_threads: int) -> None:
+def _init_worker(
+    base_config: dict,
+    out_dir: str,
+    blas_threads: int,
+    respect_existing_blas_env: bool = False,
+) -> None:
     global _WORKER_BASE_CONFIG, _WORKER_OUT_DIR, _WORKER_BLAS_THREADS
+    global _WORKER_RESPECT_EXISTING_BLAS_ENV
     _WORKER_BASE_CONFIG = base_config
     _WORKER_OUT_DIR = pathlib.Path(out_dir)
     _WORKER_BLAS_THREADS = int(blas_threads)
-    _apply_blas_thread_env(_WORKER_BLAS_THREADS)
+    _WORKER_RESPECT_EXISTING_BLAS_ENV = bool(respect_existing_blas_env)
+    _apply_blas_thread_env(
+        _WORKER_BLAS_THREADS,
+        respect_existing_blas_env=_WORKER_RESPECT_EXISTING_BLAS_ENV,
+    )
     cache_path = _peb_cache_path(_WORKER_OUT_DIR)
     if cache_path is not None:
         _init_peb_cache(cache_path)
@@ -1686,16 +1730,35 @@ def _config_from_base(
     return _apply_main_single_defaults(config)
 
 
-def _sanitize_row(row: dict[str, Any]) -> dict[str, Any]:
-    clean = {}
-    for key, value in row.items():
-        if isinstance(value, np.ndarray):
-            clean[key] = _vector_string(value) if value.size <= 16 else ""
-        elif isinstance(value, np.generic):
-            clean[key] = value.item()
-        else:
-            clean[key] = value
-    return clean
+def _worker_row_value(value: Any, *, row_index: int, key: str) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.size > WORKER_ROW_ARRAY_JSON_THRESHOLD:
+            raise ValueError(
+                f"worker row {row_index} field {key!r} contains ndarray with "
+                f"{value.size} elements"
+            )
+        return _vector_string(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _ensure_worker_result_rows_safe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_rows: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        safe_row = {
+            key: _worker_row_value(value, row_index=row_index, key=str(key))
+            for key, value in row.items()
+        }
+        ndarray_fields = [
+            key for key, value in safe_row.items() if isinstance(value, np.ndarray)
+        ]
+        if ndarray_fields:
+            raise AssertionError(
+                f"worker row {row_index} still contains ndarray fields: {ndarray_fields}"
+            )
+        safe_rows.append(safe_row)
+    return safe_rows
 
 
 def _peb_metrics_result_for_config(
@@ -1764,7 +1827,6 @@ def _row_for_result_or_failure(
             compact_result=False,
         )
         del result
-        return _sanitize_row(row), ""
     except Exception as exc:  # noqa: BLE001 - failed variants must be logged as rows.
         row = _failure_row_from_payload(
             figure=figure,
@@ -1778,11 +1840,20 @@ def _row_for_result_or_failure(
             receiver_mode=receiver_mode,
             exc=exc,
         )
-        return _sanitize_row(row), f"\nERROR {variant} {type(exc).__name__}: {exc}\n"
+        return (
+            _ensure_worker_result_rows_safe([row])[0],
+            f"\nERROR {variant} {type(exc).__name__}: {exc}\n",
+        )
+    return _ensure_worker_result_rows_safe([row])[0], ""
 
 
 def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
-    _apply_blas_thread_env(int(task.get("blas_threads", _WORKER_BLAS_THREADS)))
+    _apply_blas_thread_env(
+        int(task.get("blas_threads", _WORKER_BLAS_THREADS)),
+        respect_existing_blas_env=bool(
+            task.get("respect_existing_blas_env", _WORKER_RESPECT_EXISTING_BLAS_ENV)
+        ),
+    )
     figure = str(task["figure"])
     group = str(task["group"])
     trial_id = int(task["trial_id"])
@@ -1806,22 +1877,43 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             snr_db=snr_db,
             k_paths=k_paths,
         )
-        receiver_mode = str(base_config.get("receiver_mode", base_config.get("evs_selection", "full_6d")))
+        receiver_mode = str(
+            base_config.get("receiver_mode", base_config.get("evs_selection", "full_6d"))
+        )
         if group in {"fig1_fig2", "fig5", "fig6"}:
             data = _make_data(base_config)
             if group != "fig4":
                 stage1 = run_stage1_only(data, base_config)
         if group == "fig1_fig2":
             variants = _variant_specs(FIG1_FIG2_SHARED_FIGURE)
+            validation_variants = {
+                str(name) for name in task.get("validation_variants", [])
+            }
+            if validation_variants:
+                variants = {
+                    name: spec
+                    for name, spec in variants.items()
+                    if name in validation_variants
+                }
             for variant, updates in variants.items():
                 config = apply_nested_update(copy.deepcopy(base_config), updates)
                 allow_stage2 = bool(updates.get("_allow_stage2", True))
                 runner = str(updates.get("_runner", "proposed"))
                 if runner == "stage1_only":
-                    factory = lambda data=data, stage1=stage1, config=config: _stage1_only_result_from_shared(data, stage1, config)
+                    factory = (
+                        lambda data=data, stage1=stage1, config=config: (
+                            _stage1_only_result_from_shared(data, stage1, config)
+                        )
+                    )
                 else:
-                    factory = lambda data=data, stage1=stage1, config=config, updates=updates, allow_stage2=allow_stage2: run_final_vp_from_shared_stage1(
-                        data, stage1, config, updates, allow_stage2
+                    factory = (
+                        lambda data=data,
+                        stage1=stage1,
+                        config=config,
+                        updates=updates,
+                        allow_stage2=allow_stage2: run_final_vp_from_shared_stage1(
+                            data, stage1, config, updates, allow_stage2
+                        )
                     )
                 row, log = _row_for_result_or_failure(
                     result_factory=factory,
@@ -1841,25 +1933,31 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 rows.append(row)
                 if log:
                     logs.append(log)
-            peb_config = apply_nested_update(copy.deepcopy(base_config), _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"])
-            row, log = _row_for_result_or_failure(
-                result_factory=lambda config=peb_config, data=data: _peb_metrics_result_for_config(config, out_dir, data),
-                figure=figure,
-                variant="PEB",
-                trial_id=trial_id,
-                trial_seed=trial_seed,
-                snr_db=snr_db,
-                x_name=x_name,
-                x_value=x_value,
-                k_paths=k_paths,
-                receiver_mode="full_6d",
-                outlier_threshold_m=outlier_threshold_m,
-                store_large_arrays=store_large_arrays,
-                profile_memory=profile_memory,
-            )
-            rows.append(row)
-            if log:
-                logs.append(log)
+            if not validation_variants or "PEB" in validation_variants:
+                peb_config = apply_nested_update(
+                    copy.deepcopy(base_config),
+                    _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"],
+                )
+                row, log = _row_for_result_or_failure(
+                    result_factory=lambda config=peb_config, data=data: (
+                        _peb_metrics_result_for_config(config, out_dir, data)
+                    ),
+                    figure=figure,
+                    variant="PEB",
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    receiver_mode="full_6d",
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
         elif group == "fig5":
             for variant, updates in _variant_specs("fig5").items():
                 config = apply_nested_update(copy.deepcopy(base_config), updates)
@@ -1965,7 +2063,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     finally:
         del data, stage1
         gc.collect()
-    return rows, "".join(logs)
+    return _ensure_worker_result_rows_safe(rows), "".join(logs)
 
 
 def _iter_task_results(
@@ -1976,9 +2074,10 @@ def _iter_task_results(
     base_config: dict,
     out_dir: pathlib.Path,
     blas_threads: int,
+    respect_existing_blas_env: bool,
 ) -> Iterable[tuple[list[dict[str, Any]], str]]:
     if jobs == 1:
-        _init_worker(base_config, str(out_dir), blas_threads)
+        _init_worker(base_config, str(out_dir), blas_threads, respect_existing_blas_env)
         for task in tasks:
             if task.get("task_kind") == "grouped":
                 yield _run_grouped_task(task)
@@ -1991,7 +2090,12 @@ def _iter_task_results(
         processes=processes,
         maxtasksperchild=int(maxtasksperchild),
         initializer=_init_worker,
-        initargs=(base_config, str(out_dir), int(blas_threads)),
+        initargs=(
+            base_config,
+            str(out_dir),
+            int(blas_threads),
+            bool(respect_existing_blas_env),
+        ),
     ) as pool:
         for result in pool.imap_unordered(worker, tasks, chunksize=1):
             yield result
@@ -2004,11 +2108,16 @@ def _write_trial_results(
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
     jobs = min(int(args.jobs), max(len(tasks), 1))
+    return_trial_rows = bool(getattr(args, "return_trial_rows", True))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     base_config = default_config()
     out_dir = pathlib.Path(args.out_dir)
     writer_context = (
-        StreamingCsvWriter(trial_csv, FIELDNAMES)
+        StreamingCsvWriter(
+            trial_csv,
+            FIELDNAMES,
+            flush_every=int(args.csv_flush_every),
+        )
         if args.streaming_csv
         else contextlib.nullcontext()
     )
@@ -2027,6 +2136,7 @@ def _write_trial_results(
             base_config=base_config,
             out_dir=out_dir,
             blas_threads=int(args.blas_threads),
+            respect_existing_blas_env=bool(args.respect_existing_blas_env),
         ):
             for row in row_batch:
                 if args.streaming_csv:
@@ -2044,11 +2154,26 @@ def _write_trial_results(
                     log_handle.write("\n")
                 log_handle.flush()
     if not args.streaming_csv:
-        with StreamingCsvWriter(trial_csv, FIELDNAMES) as writer:
+        with StreamingCsvWriter(
+            trial_csv,
+            FIELDNAMES,
+            flush_every=int(args.csv_flush_every),
+        ) as writer:
             for row in buffered_rows:
                 writer.writerow(row)
-        return buffered_rows
-    return _read_csv(trial_csv)
+        if return_trial_rows:
+            return buffered_rows
+        buffered_rows.clear()
+        return []
+    if return_trial_rows:
+        return _read_csv(trial_csv)
+    return []
+
+
+def _args_without_trial_row_return(args: argparse.Namespace) -> argparse.Namespace:
+    no_rows_args = copy.copy(args)
+    no_rows_args.return_trial_rows = False
+    return no_rows_args
 
 
 def _fig1_fig2_shared_trial_csv(out_dir: pathlib.Path) -> pathlib.Path:
@@ -2059,23 +2184,50 @@ def _fig1_fig2_shared_summary_csv(out_dir: pathlib.Path) -> pathlib.Path:
     return out_dir / FIG1_FIG2_SHARED_SUMMARY_CSV
 
 
+def _figure_trial_csv(out_dir: pathlib.Path, figure: str) -> pathlib.Path:
+    return out_dir / f"{figure}_trials.csv"
+
+
+def _figure_summary_csv(out_dir: pathlib.Path, figure: str) -> pathlib.Path:
+    return out_dir / f"{figure}_summary.csv"
+
+
+def _summarize_trial_csv(trial_csv: pathlib.Path, figure: str) -> list[dict[str, Any]]:
+    return summarize_rows(_read_csv(trial_csv), figure)
+
+
+def _summarize_fig1_fig2_shared_csv(shared_trial_csv: pathlib.Path) -> list[dict[str, Any]]:
+    return summarize_fig1_fig2_shared_rows(_read_csv(shared_trial_csv))
+
+
 def _write_fig1_fig2_derived_outputs(out_dir: pathlib.Path, rows: list[dict[str, Any]]) -> None:
     fig1_rows = [{**row, "figure": "fig1"} for row in rows]
     fig2_rows = [{**row, "figure": "fig2"} for row in rows]
-    _write_rows_atomic_csv(out_dir / "fig1_trials.csv", fig1_rows, FIELDNAMES)
-    _write_rows_atomic_csv(out_dir / "fig2_trials.csv", fig2_rows, FIELDNAMES)
+    _write_rows_atomic_csv(_figure_trial_csv(out_dir, "fig1"), fig1_rows, FIELDNAMES)
+    _write_rows_atomic_csv(_figure_trial_csv(out_dir, "fig2"), fig2_rows, FIELDNAMES)
     fig1_summary = summarize_rows(rows, "fig1")
     fig2_summary = summarize_rows(rows, "fig2")
     _write_csv(
-        out_dir / "fig1_summary.csv",
+        _figure_summary_csv(out_dir, "fig1"),
         fig1_summary,
         list(fig1_summary[0].keys()) if fig1_summary else [],
     )
     _write_csv(
-        out_dir / "fig2_summary.csv",
+        _figure_summary_csv(out_dir, "fig2"),
         fig2_summary,
         list(fig2_summary[0].keys()) if fig2_summary else [],
     )
+
+
+def _write_fig1_fig2_derived_outputs_from_csv(
+    out_dir: pathlib.Path,
+    shared_trial_csv: pathlib.Path,
+) -> None:
+    rows = _read_csv(shared_trial_csv)
+    try:
+        _write_fig1_fig2_derived_outputs(out_dir, rows)
+    finally:
+        del rows
 
 
 def _run_fig1_fig2_shared_trials(
@@ -2122,6 +2274,123 @@ def _run_fig1_fig2_shared_trials(
     )
     _write_fig1_fig2_derived_outputs(out_dir, rows)
     return rows
+
+
+def _ensure_fig1_fig2_shared_outputs(
+    *,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+    trial_seeds: list[int],
+    existing_metadata: dict[str, Any] | None,
+) -> None:
+    out_dir = pathlib.Path(args.out_dir)
+    shared_trial_csv = _fig1_fig2_shared_trial_csv(out_dir)
+    shared_summary_csv = _fig1_fig2_shared_summary_csv(out_dir)
+    log_path = out_dir / "fig1_fig2_vp_family_raw.log"
+    can_reuse, cached_rows = _can_reuse_csv(
+        shared_trial_csv,
+        FIG1_FIG2_SHARED_FIGURE,
+        args,
+        snr_grid,
+        [FIG1_FIG2_SHARED_FIGURE],
+        existing_metadata,
+    )
+    if not can_reuse:
+        x_name, x_values = _figure_x_grid(FIG1_FIG2_SHARED_FIGURE, snr_grid, args.k_grid_values)
+        variants = {
+            **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
+            **_extra_peb_specs(FIG1_FIG2_SHARED_FIGURE),
+        }
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tasks = _tasks_for_figure(
+            figure=FIG1_FIG2_SHARED_FIGURE,
+            grouped_group="fig1_fig2",
+            x_name=x_name,
+            x_values=x_values,
+            variants=variants,
+            trial_seeds=trial_seeds,
+            args=args,
+        )
+        _write_trial_results(
+            shared_trial_csv,
+            tasks,
+            log_path,
+            _args_without_trial_row_return(args),
+        )
+        shared_summary = _summarize_fig1_fig2_shared_csv(shared_trial_csv)
+    else:
+        shared_summary = summarize_fig1_fig2_shared_rows(cached_rows)
+        del cached_rows
+    _write_csv(
+        shared_summary_csv,
+        shared_summary,
+        list(shared_summary[0].keys()) if shared_summary else [],
+    )
+    _write_fig1_fig2_derived_outputs_from_csv(out_dir, shared_trial_csv)
+
+
+def _ensure_figure_outputs(
+    figure: str,
+    *,
+    args: argparse.Namespace,
+    snr_grid: list[float],
+    trial_seeds: list[int],
+    figures: list[str],
+    existing_metadata: dict[str, Any] | None,
+    completed_figures: set[str],
+) -> list[dict[str, Any]]:
+    if _is_fig1_fig2(figure):
+        _ = completed_figures
+        _ensure_fig1_fig2_shared_outputs(
+            args=args,
+            snr_grid=snr_grid,
+            trial_seeds=trial_seeds,
+            existing_metadata=existing_metadata,
+        )
+        return _read_csv(_figure_summary_csv(pathlib.Path(args.out_dir), figure))
+
+    out_dir = pathlib.Path(args.out_dir)
+    trial_csv = _figure_trial_csv(out_dir, figure)
+    summary_csv = _figure_summary_csv(out_dir, figure)
+    log_path = out_dir / f"{figure}_raw.log"
+    can_reuse, cached_rows = _can_reuse_csv(
+        trial_csv, figure, args, snr_grid, figures, existing_metadata
+    )
+    if not can_reuse:
+        x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
+        variants = {
+            **_variant_specs("fig1" if figure == "fig2" else figure),
+            **_extra_peb_specs(figure),
+        }
+        out_dir.mkdir(parents=True, exist_ok=True)
+        grouped_group = {
+            "fig4": "fig4",
+            "fig5": "fig5",
+            "fig6": "fig6",
+        }.get(figure)
+        if figure == "fig3":
+            grouped_group = None
+        tasks = _tasks_for_figure(
+            figure=figure,
+            grouped_group=grouped_group,
+            x_name=x_name,
+            x_values=x_values,
+            variants=variants,
+            trial_seeds=trial_seeds,
+            args=args,
+        )
+        _write_trial_results(
+            trial_csv,
+            tasks,
+            log_path,
+            _args_without_trial_row_return(args),
+        )
+        summary = _summarize_trial_csv(trial_csv, figure)
+    else:
+        summary = summarize_rows(cached_rows, figure)
+        del cached_rows
+    _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
+    return summary
 
 
 def _run_figure(
@@ -2182,7 +2451,169 @@ def _run_figure(
     return rows
 
 
+def _clone_args_for_validation(
+    args: argparse.Namespace,
+    *,
+    task_grouping: str,
+    out_dir: pathlib.Path,
+) -> argparse.Namespace:
+    validation_args = copy.copy(args)
+    validation_args.task_grouping = task_grouping
+    validation_args.out_dir = out_dir
+    validation_args.n_trials = 1
+    validation_args.paper_k = 1
+    validation_args.no_plots = True
+    validation_args.force_rerun = True
+    validation_args.reuse_existing = False
+    return validation_args
+
+
+def _validation_rows_for_grouping(
+    args: argparse.Namespace,
+    *,
+    task_grouping: str,
+    snr_db: float,
+    trial_seed: int,
+) -> list[dict[str, Any]]:
+    validation_out_dir = pathlib.Path(args.out_dir) / f"grouped_equivalence_{task_grouping}"
+    validation_args = _clone_args_for_validation(
+        args,
+        task_grouping=task_grouping,
+        out_dir=validation_out_dir,
+    )
+    variants = {
+        name: spec
+        for name, spec in _variant_specs(FIG1_FIG2_SHARED_FIGURE).items()
+        if name
+        in {
+            "fixed_pol_vp",
+            "free_jones_vp",
+            "regularized_jones_vp",
+            "adaptive_jones_vp_proposed",
+        }
+    }
+    tasks = _tasks_for_figure(
+        figure=FIG1_FIG2_SHARED_FIGURE,
+        grouped_group="fig1_fig2",
+        x_name="snr_db",
+        x_values=[float(snr_db)],
+        variants=variants,
+        trial_seeds=[int(trial_seed)],
+        args=validation_args,
+    )
+    if task_grouping == "grouped":
+        for task in tasks:
+            task["validation_variants"] = list(variants)
+    rows: list[dict[str, Any]] = []
+    for row_batch, log_text in _iter_task_results(
+        tasks,
+        jobs=min(int(validation_args.jobs), max(len(tasks), 1)),
+        maxtasksperchild=int(validation_args.maxtasksperchild),
+        base_config=default_config(),
+        out_dir=validation_out_dir,
+        blas_threads=int(validation_args.blas_threads),
+        respect_existing_blas_env=bool(validation_args.respect_existing_blas_env),
+    ):
+        rows.extend(row_batch)
+        if log_text:
+            sys.stderr.write(log_text)
+            if not log_text.endswith("\n"):
+                sys.stderr.write("\n")
+    return rows
+
+
+def _single_row_by_variant(rows: list[dict[str, Any]], variant: str) -> dict[str, Any]:
+    matches = [row for row in rows if str(row.get("variant")) == variant]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected exactly one validation row for {variant}, got {len(matches)}")
+    return matches[0]
+
+
+def _raise_grouped_equivalence_mismatch(
+    *,
+    variant: str,
+    metric: str,
+    grouped_row: dict[str, Any],
+    variant_row: dict[str, Any],
+    reason: str,
+) -> None:
+    payload = {
+        "variant": variant,
+        "metric": metric,
+        "reason": reason,
+        "grouped_row": grouped_row,
+        "variant_row": variant_row,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str), file=sys.stderr)
+    raise RuntimeError(
+        f"grouped equivalence validation failed for {variant} {metric}: {reason}"
+    )
+
+
+def validate_grouped_equivalence(args: argparse.Namespace, snr_grid: list[float]) -> None:
+    _ = snr_grid
+    variants = [
+        "fixed_pol_vp",
+        "free_jones_vp",
+        "regularized_jones_vp",
+        "adaptive_jones_vp_proposed",
+    ]
+    metrics = ["position_rmse_m", "y_nmse", "raw_objective_final"]
+    snr_db = 0.0
+    trial_seed = int(args.seed)
+    grouped_rows = _validation_rows_for_grouping(
+        args,
+        task_grouping="grouped",
+        snr_db=snr_db,
+        trial_seed=trial_seed,
+    )
+    variant_rows = _validation_rows_for_grouping(
+        args,
+        task_grouping="variant",
+        snr_db=snr_db,
+        trial_seed=trial_seed,
+    )
+    for variant in variants:
+        grouped_row = _single_row_by_variant(grouped_rows, variant)
+        variant_row = _single_row_by_variant(variant_rows, variant)
+        if str(grouped_row.get("failed")) == "True" or str(variant_row.get("failed")) == "True":
+            _raise_grouped_equivalence_mismatch(
+                variant=variant,
+                metric="failed",
+                grouped_row=grouped_row,
+                variant_row=variant_row,
+                reason="one or both validation rows failed",
+            )
+        for metric in metrics:
+            grouped_value = _to_float(grouped_row.get(metric))
+            variant_value = _to_float(variant_row.get(metric))
+            if not np.isclose(
+                grouped_value,
+                variant_value,
+                rtol=1e-6,
+                atol=1e-8,
+                equal_nan=True,
+            ):
+                _raise_grouped_equivalence_mismatch(
+                    variant=variant,
+                    metric=metric,
+                    grouped_row=grouped_row,
+                    variant_row=variant_row,
+                    reason=f"grouped={grouped_value!r} variant={variant_value!r}",
+                )
+    print(
+        "Grouped equivalence validation passed "
+        f"(fig1_fig2, seed={trial_seed}, snr_db={snr_db})"
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    argv_list = sys.argv[1:] if argv is None else list(argv)
+    jobs_provided = any(item == "--jobs" or item.startswith("--jobs=") for item in argv_list)
+    max_workers_provided = any(
+        item == "--max-workers" or item.startswith("--max-workers=")
+        for item in argv_list
+    )
     parser = argparse.ArgumentParser(description="Generate paper ablation figures.")
     parser.add_argument("--figures", default="all")
     parser.add_argument("--n-trials", type=int, default=50)
@@ -2194,7 +2625,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--reuse-existing", action="store_true")
-    parser.add_argument("--jobs", type=int, default=None)
+    parser.add_argument("--jobs", type=int, default=10)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument("--maxtasksperchild", type=int, default=1)
     parser.add_argument(
@@ -2213,19 +2644,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
     )
     parser.add_argument("--blas-threads", type=int, default=DEFAULT_BLAS_THREADS)
+    parser.add_argument("--respect-existing-blas-env", action="store_true")
+    parser.add_argument("--csv-flush-every", type=int, default=10)
+    parser.add_argument("--validate-grouped-equivalence", action="store_true")
     parser.add_argument("--profile-memory", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args(argv)
-    if args.jobs is None and args.max_workers is None:
-        args.jobs = 10
-        args.max_workers = 10
-    elif args.jobs is None:
-        args.jobs = args.max_workers
-    elif args.max_workers is None:
+    args = parser.parse_args(argv_list)
+    if args.max_workers is None:
         args.max_workers = args.jobs
+    elif jobs_provided and max_workers_provided and args.max_workers != args.jobs:
+        raise ValueError("--jobs and --max-workers were both provided with different values")
+    elif not jobs_provided:
+        args.jobs = args.max_workers
     elif args.max_workers != args.jobs:
         raise ValueError("--jobs and --max-workers were both provided with different values")
+    args.max_workers = args.jobs
     args.k_grid_values = parse_k_grid(args.k_grid)
     return args
 
@@ -2242,29 +2676,36 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--blas-threads must be positive")
     if args.paper_k <= 0:
         raise ValueError("--paper-k must be positive")
-    _apply_blas_thread_env(args.blas_threads)
+    _apply_blas_thread_env(
+        args.blas_threads,
+        respect_existing_blas_env=bool(args.respect_existing_blas_env),
+    )
     figures = parse_figures(args.figures)
     snr_grid = parse_snr_grid(args.snr_grid)
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.validate_grouped_equivalence:
+        validate_grouped_equivalence(args, snr_grid)
+        return
     metadata_path = args.out_dir / "experiment_metadata.json"
     existing_metadata = _read_metadata(metadata_path)
     seed_sequence = np.random.SeedSequence(args.seed)
     trial_seeds = [_trial_seed(child) for child in seed_sequence.spawn(args.n_trials)]
 
     completed_figures: set[str] = set()
-    fig1_fig2_shared_rows: list[dict[str, Any]] | None = None
+    fig1_fig2_shared_done = False
     for figure in figures:
         if _is_fig1_fig2(figure):
-            if fig1_fig2_shared_rows is None:
-                fig1_fig2_shared_rows = _run_fig1_fig2_shared_trials(
+            if not fig1_fig2_shared_done:
+                _ensure_fig1_fig2_shared_outputs(
                     args=args,
                     snr_grid=snr_grid,
                     trial_seeds=trial_seeds,
                     existing_metadata=existing_metadata,
                 )
-            rows = fig1_fig2_shared_rows
+                fig1_fig2_shared_done = True
+            summary = _read_csv(_figure_summary_csv(args.out_dir, figure))
         else:
-            rows = _run_figure(
+            summary = _ensure_figure_outputs(
                 figure,
                 args=args,
                 snr_grid=snr_grid,
@@ -2273,7 +2714,6 @@ def main(argv: list[str] | None = None) -> None:
                 existing_metadata=existing_metadata,
                 completed_figures=completed_figures,
             )
-        summary = summarize_rows(rows, figure)
         if not args.no_plots:
             _plot_figure(figure, summary, args.out_dir)
         completed_figures.add(figure)

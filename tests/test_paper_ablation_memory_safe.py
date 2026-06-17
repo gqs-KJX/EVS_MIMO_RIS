@@ -31,6 +31,42 @@ def test_streaming_csv_writer_writes_rows_immediately(tmp_path):
     assert not (tmp_path / "fig1_trials.csv.tmp").exists()
 
 
+def test_write_trial_results_can_skip_trial_row_readback(tmp_path, monkeypatch):
+    args = figures.parse_args(["--out-dir", str(tmp_path), "--no-plots"])
+    args.return_trial_rows = False
+    row = {field: "" for field in figures.FIELDNAMES}
+    row.update(
+        {
+            "figure": "fig1",
+            "variant": "fixed_pol_vp",
+            "trial_id": 0,
+            "seed": 1,
+            "x_value": -30.0,
+            "failed": False,
+        }
+    )
+
+    def fake_iter_task_results(*args, **kwargs):
+        yield [row], ""
+
+    monkeypatch.setattr(figures, "_iter_task_results", fake_iter_task_results)
+    monkeypatch.setattr(
+        figures,
+        "_read_csv",
+        lambda path: (_ for _ in ()).throw(AssertionError("unexpected readback")),
+    )
+
+    rows = figures._write_trial_results(
+        tmp_path / "fig1_trials.csv",
+        [{"figure": "fig1"}],
+        tmp_path / "fig1_raw.log",
+        args,
+    )
+
+    assert rows == []
+    assert (tmp_path / "fig1_trials.csv").exists()
+
+
 def test_compact_experiment_result_removes_large_arrays_and_keeps_scalars():
     result = {
         "Y_true": np.ones((2, 2)),
