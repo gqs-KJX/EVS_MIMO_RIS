@@ -91,6 +91,9 @@ FIELDNAMES = [
     "nuisance_model",
     "clock_eliminated",
     "efim_condition_number",
+    "efim_parameter_order",
+    "peb_reference_type",
+    "peb_reference_data_hash",
     "batch_size",
     "max_batch_memory_mb",
     "num_batches",
@@ -272,6 +275,11 @@ def _peb_row(data: dict, config: dict, trial_id: int) -> dict[str, Any]:
         "nuisance_model": str(metrics.get("nuisance_model", "jones_linear")),
         "clock_eliminated": bool(metrics.get("clock_eliminated", True)),
         "efim_condition_number": metrics.get("efim_condition_number", float("inf")),
+        "efim_parameter_order": metrics.get("efim_parameter_order", []),
+        "peb_reference_type": metrics.get(
+            "peb_reference_type", "matched_model"
+        ),
+        "peb_reference_data_hash": data_hash(data),
         "warning": metrics.get("warning", ""),
     }
 
@@ -317,6 +325,9 @@ def _failure_row(
         "nuisance_model": "",
         "clock_eliminated": "",
         "efim_condition_number": float("nan"),
+        "efim_parameter_order": "",
+        "peb_reference_type": "",
+        "peb_reference_data_hash": "",
         "warning": "",
     }
 

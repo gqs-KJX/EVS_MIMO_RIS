@@ -807,10 +807,24 @@ def data_only_efim_diagnostic(
     )
     return {
         "data_only_efim": j_eq,
+        "data_only_efim_parameter_order": [
+            "p_x_m",
+            "p_y_m",
+            "p_z_m",
+            "delta_t_s",
+        ],
+        "data_only_efim_clock_eliminated": False,
         "data_only_efim_eigvals": eigvals,
         "data_only_efim_lambda_min": lambda_min,
         "data_only_efim_condition_number": condition,
         "data_only_scaled_efim": j_eq_scaled,
+        "data_only_scaled_efim_parameter_order": [
+            "p_x_m",
+            "p_y_m",
+            "p_z_m",
+            "c_delta_t_m",
+        ],
+        "data_only_scaled_efim_clock_eliminated": False,
         "data_only_scaled_efim_eigvals": eigvals_scaled,
         "data_only_scaled_efim_lambda_min": lambda_min_scaled,
         "data_only_scaled_efim_condition_number": condition_scaled,

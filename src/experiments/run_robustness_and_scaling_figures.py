@@ -129,6 +129,13 @@ FIELDNAMES = [
     "nuisance_model",
     "clock_eliminated",
     "efim_condition_number",
+    "efim_parameter_order",
+    "peb_reference_type",
+    "peb_reference_data_hash",
+    "k_mismatch_scene_mode",
+    "true_scene_hash",
+    "estimator_scene_hash",
+    "first_trueK_preserved",
     "rss_mb_before",
     "rss_mb_after",
 ]
@@ -144,6 +151,20 @@ _PATH_ARRAY_KEYS = (
     "gamma_true",
     "eta_true",
     "beta_true",
+    "gamma",
+    "eta",
+    "eta_pol",
+    "beta",
+    "gains",
+    "path_gains",
+    "ranges",
+    "path_ranges",
+    "taus",
+    "path_delays",
+    "poles",
+    "path_poles",
+    "elevations",
+    "azimuths",
 )
 _WORKER_BLAS_THREADS = 1
 _WORKER_PROFILE_MEMORY = False
@@ -213,6 +234,29 @@ def _git_commit() -> str:
 
 def _array_hash(value: Any) -> str:
     return hashlib.sha256(np.ascontiguousarray(np.asarray(value)).view(np.uint8)).hexdigest()[:16]
+
+
+def scene_hash(scene: dict) -> str:
+    """Hash a complete scene, including complex calibration/model arrays."""
+    digest = hashlib.sha256()
+    for key in sorted(scene):
+        value = scene[key]
+        digest.update(str(key).encode())
+        if isinstance(value, np.ndarray):
+            array = np.ascontiguousarray(value)
+            digest.update(str(array.dtype).encode())
+            digest.update(str(array.shape).encode())
+            digest.update(array.view(np.uint8))
+        elif isinstance(value, np.generic):
+            digest.update(repr(value.item()).encode())
+        else:
+            digest.update(repr(value).encode())
+    return digest.hexdigest()[:16]
+
+
+def reference_data_hash(data: dict) -> str:
+    payload = f"{data_hash(data)}:{scene_hash(data['scene'])}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def inject_ris_bs_calibration_phase_error(
@@ -340,36 +384,176 @@ def _slice_scene(scene: dict, k_paths: int) -> dict:
     if not 0 < int(k_paths) <= original_k:
         raise ValueError(f"cannot slice scene K={original_k} to K={k_paths}")
     sliced["K"] = int(k_paths)
-    for key in _PATH_ARRAY_KEYS:
+    for key in _scene_path_keys(scene):
         if key in sliced:
             sliced[key] = np.asarray(sliced[key])[: int(k_paths)].copy()
     return sliced
 
 
+def _scene_path_keys(scene: dict) -> list[str]:
+    """Return known and explicitly named per-path scene fields."""
+    keys = {key for key in _PATH_ARRAY_KEYS if key in scene}
+    for key, value in scene.items():
+        lowered = str(key).lower()
+        array = np.asarray(value)
+        explicitly_per_path = (
+            lowered.startswith("path_")
+            or lowered.endswith("_per_path")
+            or "jones" in lowered
+            or "polarization" in lowered
+        )
+        if explicitly_per_path and array.ndim > 0:
+            keys.add(str(key))
+    return sorted(keys)
+
+
+def _path_prefix_equal(
+    scene_true: dict,
+    scene_other: dict,
+    true_k: int,
+) -> bool:
+    for key in _scene_path_keys(scene_true):
+        if key not in scene_true:
+            continue
+        if key not in scene_other:
+            return False
+        true_value = np.asarray(scene_true[key])
+        other_value = np.asarray(scene_other[key])
+        if true_value.ndim == 0 or true_value.shape[0] < int(true_k):
+            raise ValueError(
+                f"scene path field {key!r} has fewer than {true_k} path entries"
+            )
+        if other_value.ndim == 0 or other_value.shape[0] < int(true_k):
+            return False
+        if not np.array_equal(
+            true_value[: int(true_k)],
+            other_value[: int(true_k)],
+        ):
+            return False
+    return True
+
+
+def extend_scene_preserving_true_paths(
+    scene_true: dict,
+    target_K: int,
+    config: dict,
+    seed: int,
+) -> dict:
+    """Append deterministic candidate paths without changing physical paths."""
+    true_k = int(scene_true["K"])
+    target_k = int(target_K)
+    if target_k < true_k:
+        raise ValueError("target_K must be at least the physical scene K")
+    if target_k == true_k:
+        return copy.deepcopy(scene_true)
+
+    candidate_config = copy.deepcopy(config)
+    set_number_of_ris_paths(candidate_config, target_k)
+    candidate_scene = generate_scene(
+        candidate_config,
+        np.random.default_rng(int(seed)),
+    )
+    candidate_components: dict[str, Any] | None = None
+    extended = copy.deepcopy(scene_true)
+    extended["K"] = target_k
+    component_aliases = {
+        "ranges": "ranges",
+        "path_ranges": "ranges",
+        "taus": "taus",
+        "path_delays": "taus",
+        "poles": "poles",
+        "path_poles": "poles",
+        "elevations": "elevations",
+        "azimuths": "azimuths",
+    }
+    for key in _scene_path_keys(scene_true):
+        if key not in scene_true:
+            continue
+        if key in candidate_scene:
+            candidate_field = candidate_scene[key]
+        elif key in component_aliases:
+            if candidate_components is None:
+                candidate_components = channel_components(
+                    candidate_scene,
+                    candidate_scene["p_u_true"],
+                    candidate_scene["delta_t_true"],
+                    candidate_scene["gamma_true"],
+                    candidate_scene["eta_true"],
+                )
+            candidate_field = candidate_components[component_aliases[key]]
+        else:
+            raise ValueError(
+                f"cannot safely extend scene path field {key!r}: no deterministic "
+                "candidate-field generator is defined"
+            )
+        true_value = np.asarray(scene_true[key])
+        candidate_value = np.asarray(candidate_field)
+        if true_value.ndim == 0 or true_value.shape[0] < true_k:
+            raise ValueError(
+                f"cannot safely extend {key!r}: expected at least {true_k} entries"
+            )
+        if (
+            candidate_value.ndim != true_value.ndim
+            or candidate_value.shape[0] < target_k
+            or candidate_value.shape[1:] != true_value.shape[1:]
+        ):
+            raise ValueError(
+                f"cannot safely extend {key!r}: incompatible generated shape "
+                f"{candidate_value.shape}, physical shape {true_value.shape}"
+            )
+        extended[key] = np.concatenate(
+            [
+                true_value[:true_k].copy(),
+                candidate_value[true_k:target_k].copy(),
+            ],
+            axis=0,
+        )
+    if not _path_prefix_equal(scene_true, extended, true_k):
+        raise RuntimeError("extended estimator scene changed a physical true-K path")
+    return extended
+
+
 def make_k_mismatch_data(
     true_config: dict,
     assumed_k: int,
-    max_assumed_k: int,
+    max_assumed_k: int | None = None,
 ) -> tuple[dict, dict]:
     """Generate true-K data and return a K-hat estimator view of the same tensor."""
+    del max_assumed_k  # Compatibility with older callers; no catalog is generated.
+    true_config = copy.deepcopy(true_config)
+    true_k = int(true_config["K"])
+    assumed_k = int(assumed_k)
     physical_data = _make_data(true_config)
-    target_k = max(int(true_config["K"]), int(max_assumed_k))
-    if target_k == int(true_config["K"]):
-        catalog_scene = physical_data["scene"]
+    physical_scene = physical_data["scene"]
+    if assumed_k < true_k:
+        estimator_scene = _slice_scene(physical_scene, assumed_k)
+        scene_mode = "slice_physical_scene"
+    elif assumed_k == true_k:
+        estimator_scene = physical_scene
+        scene_mode = "matched_physical_scene"
     else:
-        catalog_config = copy.deepcopy(true_config)
-        set_number_of_ris_paths(catalog_config, target_k)
-        catalog_scene = generate_scene(catalog_config, np.random.default_rng(catalog_config["seed"]))
+        estimator_scene = extend_scene_preserving_true_paths(
+            physical_scene,
+            assumed_k,
+            true_config,
+            int(true_config["seed"]),
+        )
+        scene_mode = "extended_physical_scene"
     estimator_data = dict(physical_data)
-    estimator_data["scene"] = _slice_scene(catalog_scene, int(assumed_k))
+    estimator_data["scene"] = estimator_scene
     estimator_data["physical_ris_centroid"] = np.mean(
-        np.asarray(physical_data["scene"]["ris_centers"], dtype=float)[
-            : int(true_config["K"])
-        ],
+        np.asarray(physical_scene["ris_centers"], dtype=float)[:true_k],
         axis=0,
     )
-    true_k_data = dict(physical_data)
-    return estimator_data, true_k_data
+    estimator_data["k_mismatch_scene_mode"] = scene_mode
+    estimator_data["true_scene_hash"] = scene_hash(physical_scene)
+    estimator_data["estimator_scene_hash"] = scene_hash(estimator_scene)
+    estimator_data["first_trueK_preserved"] = _path_prefix_equal(
+        physical_scene,
+        estimator_scene,
+        min(true_k, assumed_k),
+    )
+    return estimator_data, physical_data
 
 
 def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
@@ -407,6 +591,10 @@ def _common_row_fields(task: dict[str, Any], data: dict, baseline: str) -> dict[
         "baseline": baseline,
         "data_hash": data_hash(data),
         "y_noisy_hash": y_noisy_hash(data),
+        "k_mismatch_scene_mode": str(data.get("k_mismatch_scene_mode", "")),
+        "true_scene_hash": str(data.get("true_scene_hash", "")),
+        "estimator_scene_hash": str(data.get("estimator_scene_hash", "")),
+        "first_trueK_preserved": data.get("first_trueK_preserved", ""),
     }
 
 
@@ -448,13 +636,16 @@ def _peb_result_row(
     config: dict,
     task: dict[str, Any],
     baseline: str,
-    warning_prefix: str = "",
+    *,
+    peb_reference_type: str,
+    peb_reference_data_hash: str,
+    reference_warning: str = "",
 ) -> dict[str, Any]:
     start = time.perf_counter()
     metrics = _peb_from_efim(data, config)
     warning = str(metrics.get("warning", ""))
-    if warning_prefix:
-        warning = warning_prefix + (f"; {warning}" if warning else "")
+    if reference_warning:
+        warning = reference_warning + (f"; {warning}" if warning else "")
     return {
         "baseline": baseline,
         "trial_id": int(task["trial_id"]),
@@ -466,8 +657,10 @@ def _peb_result_row(
         "runtime_s": time.perf_counter() - start,
         "failed": False,
         "error": "",
-        "warning": warning,
         **metrics,
+        "warning": warning,
+        "peb_reference_type": str(peb_reference_type),
+        "peb_reference_data_hash": str(peb_reference_data_hash),
     }
 
 
@@ -482,6 +675,8 @@ def _failure_row(task: dict[str, Any], data: dict, baseline: str, exc: BaseExcep
         "error": f"{type(exc).__name__}: {exc}",
         "warning": "",
         "peb_position_m": float("nan"),
+        "peb_reference_type": "",
+        "peb_reference_data_hash": "",
     }
 
 
@@ -537,7 +732,14 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
                         snr_db=float(task["snr_db"]),
                     )
                 elif baseline == "peb":
-                    row = _peb_result_row(data, config, task, baseline)
+                    row = _peb_result_row(
+                        data,
+                        config,
+                        task,
+                        baseline,
+                        peb_reference_type="matched_model",
+                        peb_reference_data_hash=reference_data_hash(data),
+                    )
                 elif baseline == "oracle_calibrated_peb":
                     if reference_data is None:
                         raise RuntimeError("oracle calibration data is unavailable")
@@ -546,7 +748,12 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
                         config,
                         task,
                         baseline,
-                        "reference only; not a CRB for mismatched estimators",
+                        peb_reference_type="oracle_calibrated",
+                        peb_reference_data_hash=reference_data_hash(reference_data),
+                        reference_warning=(
+                            "Oracle-calibrated PEB reference only; not a CRB "
+                            "for mismatched estimators."
+                        ),
                     )
                 elif baseline == "trueK_peb_reference":
                     if reference_data is None:
@@ -558,7 +765,12 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
                         true_config,
                         task,
                         baseline,
-                        "reference only; not a bound under model-order mismatch",
+                        peb_reference_type="trueK_matched_reference",
+                        peb_reference_data_hash=reference_data_hash(reference_data),
+                        reference_warning=(
+                            "True-K PEB reference only; not a bound under "
+                            "model-order mismatch."
+                        ),
                     )
                 else:
                     raise ValueError(f"unknown baseline {baseline!r}")

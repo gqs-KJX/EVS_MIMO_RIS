@@ -96,3 +96,42 @@ The benchmark figure contains:
 All non-proposed baselines use the same generated noisy data for each
 seed/SNR/K and are restricted to discrete dictionaries, CP factorization,
 linear LS over selected atoms, and neutral geometry LS post-processing.
+
+## Robustness and system-scaling figures
+
+Generate Figures 8--10 with:
+
+```bash
+python -m src.experiments.run_robustness_and_scaling_figures \
+  --figures fig8,fig9,fig10a,fig10b,fig10c \
+  --n-trials 50 \
+  --snr-db 0 \
+  --true-k 3 \
+  --calibration-std-grid "0,1,2,5,10,20" \
+  --assumed-k-grid "2,3,4,5" \
+  --T-grid "64,128,256,512" \
+  --ris-side-grid "16,24,32,48,64" \
+  --baselines "proposed,ff_omp,ris_momp,nf_mmpsr,peb" \
+  --out-dir results/robustness_and_scaling \
+  --jobs 10 \
+  --process-workers 4 \
+  --blas-threads auto \
+  --force-rerun
+```
+
+Every algorithm in a trial uses the same physical noisy observation. Figure 8
+perturbs only the generated RIS--BS response while estimators retain nominal
+calibration. Ordinary matched-model PEB is not a valid bound for this
+mismatched experiment and is omitted. The optional
+`--include-calibration-oracle-peb` curve is labeled
+`Oracle-calibrated PEB (reference)` and is a reference only.
+
+Figure 9 always generates data with the true path count and changes only the
+estimator model order. Ordinary PEB is not treated as a bound under path-count
+mismatch. The optional `--include-trueK-peb-reference` curve is labeled
+`True-K PEB (reference only)`.
+
+Figures 10(a)--10(c) are matched-model scaling studies and include the ordinary
+matched-model, data-only PEB by default. All PEB calculations eliminate the
+linear Jones nuisance and explicitly Schur-eliminate clock before computing
+the position PEB; estimator regularization is not included.

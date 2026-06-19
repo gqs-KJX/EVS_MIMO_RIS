@@ -4,7 +4,11 @@ from src.baselines import als_cpd, common, far_field_omp, near_field_mmpsr, ris_
 from src.config import default_config
 from src.main_single_proposed import _make_data
 from src.experiments import run_benchmark_comparison as bench
-from src.experiments.run_paper_ablation_figures import _peb_from_efim, peb_cache_key
+from src.experiments.run_paper_ablation_figures import (
+    _peb_from_efim,
+    peb_cache_key,
+    position_peb_from_global_efim,
+)
 
 
 def _tiny_config():
@@ -206,6 +210,42 @@ def test_peb_diagnostics_and_regularization_independence():
     assert base["nuisance_model"] == "jones_linear"
     assert base["clock_eliminated"] is True
     assert np.allclose(base["peb_position_m"], other["peb_position_m"], equal_nan=True)
+
+
+def test_position_peb_explicitly_schur_eliminates_clock():
+    efim = np.array(
+        [
+            [5.0, 0.2, 0.0, 1.5],
+            [0.2, 4.0, 0.1, -0.7],
+            [0.0, 0.1, 3.0, 0.4],
+            [1.5, -0.7, 0.4, 2.0],
+        ]
+    )
+    peb = position_peb_from_global_efim(
+        efim,
+        ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
+    )
+    j_pp = efim[:3, :3]
+    j_pc = efim[:3, 3:4]
+    j_cc = efim[3:4, 3:4]
+    expected = np.sqrt(
+        np.trace(np.linalg.pinv(j_pp - j_pc @ np.linalg.pinv(j_cc) @ j_pc.T))
+    )
+    naive = np.sqrt(np.trace(np.linalg.pinv(j_pp)))
+    assert np.isclose(peb, expected)
+    assert not np.isclose(peb, naive)
+
+
+def test_benchmark_peb_row_records_clock_and_reference_metadata():
+    config = _tiny_config()
+    data = _make_data(config)
+    row = bench._peb_row(data, config, trial_id=0)
+    assert row["clock_eliminated"] is True
+    assert row["peb_reference_type"] == "matched_model"
+    assert row["peb_reference_data_hash"] == common.data_hash(data)
+    assert row["peb_position_m"] == row["peb_position_m"] or np.isnan(
+        row["peb_position_m"]
+    )
 
 
 def test_peb_cache_key_changes_with_receiver_mode_or_k():

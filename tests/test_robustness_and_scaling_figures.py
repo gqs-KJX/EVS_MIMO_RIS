@@ -117,6 +117,49 @@ def test_k_mismatch_changes_estimator_order_not_true_data_order():
     assert np.array_equal(estimator_data["Y_noisy"], true_data["Y_noisy"])
 
 
+def test_k_mismatch_matched_scene_is_exact_physical_scene():
+    config = _tiny_config(k_paths=3)
+    estimator_data, physical_data = figures.make_k_mismatch_data(
+        config, assumed_k=3
+    )
+    assert estimator_data["scene"] is physical_data["scene"]
+    assert estimator_data["k_mismatch_scene_mode"] == "matched_physical_scene"
+    assert estimator_data["true_scene_hash"] == estimator_data["estimator_scene_hash"]
+    assert estimator_data["first_trueK_preserved"] is True
+
+
+def test_k_mismatch_slice_preserves_physical_prefix():
+    config = _tiny_config(k_paths=3)
+    estimator_data, physical_data = figures.make_k_mismatch_data(
+        config, assumed_k=2
+    )
+    assert estimator_data["k_mismatch_scene_mode"] == "slice_physical_scene"
+    for key in figures._PATH_ARRAY_KEYS:
+        if key in physical_data["scene"]:
+            assert np.array_equal(
+                estimator_data["scene"][key],
+                physical_data["scene"][key][:2],
+            )
+    assert estimator_data["first_trueK_preserved"] is True
+
+
+def test_k_mismatch_extension_preserves_all_true_paths():
+    config = _tiny_config(k_paths=3)
+    estimator_data, physical_data = figures.make_k_mismatch_data(
+        config, assumed_k=5
+    )
+    assert estimator_data["k_mismatch_scene_mode"] == "extended_physical_scene"
+    assert estimator_data["scene"]["K"] == 5
+    for key in figures._PATH_ARRAY_KEYS:
+        if key in physical_data["scene"]:
+            assert np.array_equal(
+                estimator_data["scene"][key][:3],
+                physical_data["scene"][key],
+            )
+    assert estimator_data["first_trueK_preserved"] is True
+    assert np.array_equal(estimator_data["Y_noisy"], physical_data["Y_noisy"])
+
+
 def test_figure8_peb_policy_is_explicit():
     requested = figures.parse_baselines(figures.DEFAULT_BASELINES)
     without = figures.baselines_for_figure("fig8", requested)
@@ -165,3 +208,45 @@ def test_calibration_data_keeps_nominal_estimator_scene(monkeypatch):
     assert np.array_equal(config["ris_centers"], original["ris_centers"])
     assert not np.allclose(data["scene"]["a_RB"], oracle["scene"]["a_RB"])
     assert np.array_equal(data["Y_noisy"], oracle["Y_noisy"])
+
+
+def test_reference_peb_rows_record_reference_model(monkeypatch):
+    config = _tiny_config()
+    data = _make_data(config)
+    monkeypatch.setattr(
+        figures,
+        "_peb_from_efim",
+        lambda *args: {
+            "peb_position_m": 0.25,
+            "peb_is_data_only": True,
+            "peb_uses_regularization": False,
+            "nuisance_model": "jones_linear",
+            "clock_eliminated": True,
+            "efim_condition_number": 2.0,
+            "efim_parameter_order": [
+                "p_x_m",
+                "p_y_m",
+                "p_z_m",
+                "c_delta_t_m",
+            ],
+            "peb_reference_type": "matched_model",
+            "warning": "",
+        },
+    )
+    task = {"trial_id": 0, "seed": 1, "snr_db": 0.0}
+    row = figures._peb_result_row(
+        data,
+        config,
+        task,
+        "oracle_calibrated_peb",
+        peb_reference_type="oracle_calibrated",
+        peb_reference_data_hash=figures.reference_data_hash(data),
+        reference_warning=(
+            "Oracle-calibrated PEB reference only; not a CRB for mismatched estimators."
+        ),
+    )
+    assert row["peb_reference_type"] == "oracle_calibrated"
+    assert row["peb_reference_data_hash"] == figures.reference_data_hash(data)
+    assert row["warning"] == (
+        "Oracle-calibrated PEB reference only; not a CRB for mismatched estimators."
+    )

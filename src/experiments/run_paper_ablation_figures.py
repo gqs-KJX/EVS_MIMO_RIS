@@ -649,6 +649,22 @@ def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> di
         "peb_dual_m": _restore_cached_float(payload.get("peb_dual_m")),
         "peb_evs_m": _restore_cached_float(payload.get("peb_evs_m")),
         "warning": payload.get("warning", ""),
+        "peb_is_data_only": bool(payload.get("peb_is_data_only", True)),
+        "peb_uses_regularization": bool(
+            payload.get("peb_uses_regularization", False)
+        ),
+        "nuisance_model": str(payload.get("nuisance_model", "jones_linear")),
+        "clock_eliminated": bool(payload.get("clock_eliminated", True)),
+        "efim_condition_number": _restore_cached_float(
+            payload.get("efim_condition_number")
+        ),
+        "efim_parameter_order": payload.get(
+            "efim_parameter_order",
+            ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
+        ),
+        "peb_reference_type": str(
+            payload.get("peb_reference_type", "matched_model")
+        ),
     }
 
 
@@ -667,6 +683,17 @@ def _write_persistent_peb_cache(
         "peb_dual_m": _json_safe_float(value.get("peb_dual_m")),
         "peb_evs_m": _json_safe_float(value.get("peb_evs_m")),
         "warning": str(value.get("warning", "")),
+        "peb_is_data_only": bool(value.get("peb_is_data_only", True)),
+        "peb_uses_regularization": bool(value.get("peb_uses_regularization", False)),
+        "nuisance_model": str(value.get("nuisance_model", "jones_linear")),
+        "clock_eliminated": bool(value.get("clock_eliminated", True)),
+        "efim_condition_number": _json_safe_float(
+            value.get("efim_condition_number")
+        ),
+        "efim_parameter_order": value.get("efim_parameter_order", []),
+        "peb_reference_type": str(
+            value.get("peb_reference_type", "matched_model")
+        ),
     }
     with sqlite3.connect(db_path, timeout=30.0) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -675,6 +702,116 @@ def _write_persistent_peb_cache(
             (_peb_cache_key_string(config), json.dumps(payload, sort_keys=True)),
         )
         conn.commit()
+
+
+def position_peb_from_global_efim(
+    efim: np.ndarray,
+    parameter_order: Iterable[str],
+    already_clock_eliminated: bool = False,
+    *,
+    condition_threshold: float = 1.0e12,
+    return_diagnostics: bool = False,
+) -> float | tuple[float, dict[str, Any]]:
+    """Return position PEB after explicit clock Schur elimination.
+
+    A 4x4 global EFIM must describe position followed by clock (either seconds
+    or range-equivalent c*Delta_t). A 3x3 EFIM is accepted only when the caller
+    explicitly states that clock has already been eliminated.
+    """
+    matrix = np.asarray(efim, dtype=float)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("global EFIM must be a square matrix")
+    order = [str(item) for item in parameter_order]
+    if len(order) != matrix.shape[0]:
+        raise ValueError("parameter_order length must match EFIM dimension")
+    matrix = (matrix + matrix.T) * 0.5
+    warning = ""
+    clock_singular = False
+
+    if matrix.shape == (3, 3):
+        if not already_clock_eliminated:
+            raise ValueError(
+                "3x3 EFIM requires already_clock_eliminated=True"
+            )
+        position_efim = matrix
+    elif matrix.shape == (4, 4):
+        if already_clock_eliminated:
+            raise ValueError(
+                "4x4 EFIM cannot be marked already clock-eliminated"
+            )
+        normalized = [
+            item.lower().replace(" ", "").replace("-", "_") for item in order
+        ]
+        if not all(
+            token in normalized[index]
+            for index, token in enumerate(("p_x", "p_y", "p_z"))
+        ):
+            raise ValueError(
+                "4x4 EFIM parameter_order must start with p_x, p_y, p_z"
+            )
+        clock_name = normalized[3]
+        if not any(
+            token in clock_name
+            for token in ("clock", "delta_t", "deltat", "c_delta_t", "cdeltat")
+        ):
+            raise ValueError(
+                "fourth EFIM parameter must be clock or cDelta_t"
+            )
+        j_pp = matrix[:3, :3]
+        j_pc = matrix[:3, 3:4]
+        j_cc = matrix[3:4, 3:4]
+        if np.linalg.matrix_rank(j_cc) < 1:
+            warning = "data_only_efim_clock_schur_singular"
+            clock_singular = True
+        position_efim = j_pp - j_pc @ np.linalg.pinv(j_cc) @ j_pc.T
+    else:
+        raise ValueError(
+            "global EFIM must be 4x4, or 3x3 when clock is already eliminated"
+        )
+
+    position_efim = (position_efim + position_efim.T) * 0.5
+    singular_values = np.linalg.svd(position_efim, compute_uv=False)
+    tolerance = (
+        max(position_efim.shape)
+        * np.finfo(float).eps
+        * singular_values[0]
+        if singular_values.size
+        else float("inf")
+    )
+    rank = int(np.sum(singular_values > tolerance))
+    condition = (
+        float(singular_values[0] / singular_values[-1])
+        if singular_values.size and singular_values[-1] > 0.0
+        else float("inf")
+    )
+    if (
+        clock_singular
+        or rank < 3
+        or not np.isfinite(condition)
+        or condition > float(condition_threshold)
+    ):
+        peb = float("nan")
+        warning = warning or "data_only_efim_position_singular_or_ill_conditioned"
+    else:
+        covariance = np.linalg.pinv(position_efim)
+        trace_value = float(np.trace(covariance).real)
+        peb = (
+            float(np.sqrt(max(trace_value, 0.0)))
+            if np.isfinite(trace_value)
+            else float("nan")
+        )
+        if not np.isfinite(peb):
+            warning = warning or "data_only_efim_peb_nonfinite"
+    diagnostics = {
+        "clock_eliminated": True,
+        "efim_condition_number": condition,
+        "warning": warning,
+        "position_efim": position_efim,
+        "efim_parameter_order": order,
+    }
+    if return_diagnostics:
+        return peb, diagnostics
+    return peb
 
 
 def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
@@ -693,37 +830,28 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
             sigma2=data.get("noise_variance"),
         )
         efim = np.asarray(diag["data_only_scaled_efim"], dtype=float)
-        efim = (efim + efim.T) * 0.5
-        j_pp = efim[:3, :3]
-        j_pc = efim[:3, 3:4]
-        j_cc = float(efim[3, 3])
-        if np.isfinite(j_cc) and abs(j_cc) > float(config.get("eps", 1.0e-10)):
-            pos_efim = j_pp - (j_pc @ j_pc.T) / j_cc
-        else:
-            pos_efim = j_pp
-            warning = "data_only_efim_clock_schur_singular"
-        pos_efim = (pos_efim + pos_efim.T) * 0.5
-        eigvals = np.linalg.eigvalsh(pos_efim)
-        positive = eigvals[eigvals > 0.0]
-        condition = (
-            float(eigvals[-1] / positive[0])
-            if eigvals.size and positive.size
-            else float("inf")
+        parameter_order = diag.get(
+            "data_only_scaled_efim_parameter_order",
+            ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
         )
         cond_threshold = float(
             config.get("global_vp", {}).get("efim_cond_threshold", config.get("efim_cond_threshold", 1.0e12))
         )
-        if positive.size < 3 or not np.isfinite(condition) or condition > cond_threshold:
-            peb = float("nan")
-            warning = warning or "data_only_efim_position_singular_or_ill_conditioned"
-        else:
-            cov = np.linalg.inv(pos_efim)
-            peb = float(np.sqrt(max(np.trace(cov), 0.0)))
-        if not np.isfinite(peb):
-            warning = warning or "data_only_efim_peb_nonfinite"
+        peb, peb_diag = position_peb_from_global_efim(
+            efim,
+            parameter_order,
+            already_clock_eliminated=bool(
+                diag.get("data_only_scaled_efim_clock_eliminated", False)
+            ),
+            condition_threshold=cond_threshold,
+            return_diagnostics=True,
+        )
+        warning = str(peb_diag["warning"])
+        condition = float(peb_diag["efim_condition_number"])
     except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
         peb = float("nan")
         warning = f"data_only_efim_peb_failed: {type(exc).__name__}: {exc}"
+        parameter_order = ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"]
     mode = str(config.get("receiver_mode", "full_6d"))
     return {
         "peb_position_m": peb,
@@ -736,6 +864,8 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         "nuisance_model": "jones_linear",
         "clock_eliminated": True,
         "efim_condition_number": condition,
+        "efim_parameter_order": list(parameter_order),
+        "peb_reference_type": "matched_model",
     }
 
 
