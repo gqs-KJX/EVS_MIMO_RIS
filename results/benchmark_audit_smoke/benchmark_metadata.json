@@ -1,0 +1,25 @@
+{
+  "n_trials": 1,
+  "snr_grid": [
+    -20.0
+  ],
+  "paper_k": 3,
+  "baselines": [
+    "als_cpd",
+    "ff_omp",
+    "ris_momp",
+    "nf_mmpsr",
+    "proposed",
+    "peb"
+  ],
+  "grid_profile": "coarse",
+  "seed": 20260526,
+  "git_commit": "7a7a79cc2042888d26fa064c1d3426b707a6137f",
+  "strict_ris_geometry": true,
+  "timestamp_utc": "2026-06-17T17:17:32.099878+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_benchmark_comparison.py --n-trials 1 --snr-grid -20 --paper-k 3 --out-dir results/benchmark_audit_smoke --baselines als_cpd,ff_omp,ris_momp,nf_mmpsr,proposed,peb --grid-profile coarse --jobs 2 --force-rerun --strict-ris-geometry",
+  "jobs": 2,
+  "blas_threads": 1,
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

@@ -110,9 +110,9 @@ def test_cli_default_jobs_is_ten():
     assert figures.parse_args([]).jobs == 10
 
 
-def test_jobs_and_max_workers_conflict_is_rejected():
+def test_process_workers_and_max_workers_conflict_is_rejected():
     with pytest.raises(ValueError):
-        figures.parse_args(["--jobs", "10", "--max-workers", "30"])
+        figures.parse_args(["--process-workers", "10", "--max-workers", "30"])
 
 
 def test_grouped_fig1_task_returns_vp_family_rows(monkeypatch):

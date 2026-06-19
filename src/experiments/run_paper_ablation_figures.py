@@ -46,6 +46,14 @@ if __package__ in (None, ""):
     )
     from src.metrics import position_rmse, relative_nmse
     from src.projections_delay import tau_from_pole
+    from src.experiments.resource_control import (
+        apply_thread_limits,
+        assert_row_is_light,
+        memory_snapshot_mb,
+        resolve_hybrid_resources,
+        thread_limit_context,
+        trim_memory,
+    )
     from src.utils import scipy_is_available
 else:
     from ..channel_model import channel_components
@@ -66,12 +74,20 @@ else:
     )
     from ..metrics import position_rmse, relative_nmse
     from ..projections_delay import tau_from_pole
+    from .resource_control import (
+        apply_thread_limits,
+        assert_row_is_light,
+        memory_snapshot_mb,
+        resolve_hybrid_resources,
+        thread_limit_context,
+        trim_memory,
+    )
     from ..utils import scipy_is_available
 
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
 DEFAULT_PAPER_K = 3
-DEFAULT_BLAS_THREADS = 1
+DEFAULT_BLAS_THREADS = "auto"
 LARGE_ARRAY_ELEMENT_THRESHOLD = 1_000_000
 WORKER_ROW_ARRAY_JSON_THRESHOLD = 16
 RECEIVER_NOISE_CONVENTION = (
@@ -172,8 +188,9 @@ FIELDNAMES = [
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 _WORKER_BASE_CONFIG: dict[str, Any] | None = None
 _WORKER_OUT_DIR: pathlib.Path | None = None
-_WORKER_BLAS_THREADS: int = DEFAULT_BLAS_THREADS
+_WORKER_BLAS_THREADS = 1
 _WORKER_RESPECT_EXISTING_BLAS_ENV = False
+_WORKER_TRIM_MEMORY = True
 
 
 def _is_fig1_fig2(figure: str) -> bool:
@@ -203,17 +220,10 @@ def _apply_blas_thread_env(
     *,
     respect_existing_blas_env: bool = False,
 ) -> None:
-    value = str(int(blas_threads))
-    for name in (
-        "OMP_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-    ):
-        if respect_existing_blas_env:
-            os.environ.setdefault(name, value)
-        else:
-            os.environ[name] = value
+    apply_thread_limits(
+        int(blas_threads),
+        respect_existing=bool(respect_existing_blas_env),
+    )
 
 
 def parse_figures(value: str) -> list[str]:
@@ -469,14 +479,7 @@ def _empty_row() -> dict[str, Any]:
 
 
 def _rss_mb() -> float:
-    try:
-        import psutil  # type: ignore[import-not-found]
-    except ImportError:
-        return float("nan")
-    try:
-        return float(psutil.Process(os.getpid()).memory_info().rss / (1024.0**2))
-    except Exception:  # noqa: BLE001 - memory profiling is best-effort only.
-        return float("nan")
+    return memory_snapshot_mb()
 
 
 def compact_experiment_result(
@@ -674,10 +677,11 @@ def _write_persistent_peb_cache(
         conn.commit()
 
 
-def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
+def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
     scene = data["scene"]
     init = _truth_init_estimate(scene, data["true_components"])
     warning = ""
+    condition = float("inf")
     try:
         diag = data_only_efim_diagnostic(
             data["Y_true"],
@@ -689,11 +693,34 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
             sigma2=data.get("noise_variance"),
         )
         efim = np.asarray(diag["data_only_scaled_efim"], dtype=float)
-        pos_efim = efim[:3, :3]
-        cov = np.linalg.pinv((pos_efim + pos_efim.T) * 0.5)
-        peb = float(np.sqrt(max(np.trace(cov), 0.0)))
+        efim = (efim + efim.T) * 0.5
+        j_pp = efim[:3, :3]
+        j_pc = efim[:3, 3:4]
+        j_cc = float(efim[3, 3])
+        if np.isfinite(j_cc) and abs(j_cc) > float(config.get("eps", 1.0e-10)):
+            pos_efim = j_pp - (j_pc @ j_pc.T) / j_cc
+        else:
+            pos_efim = j_pp
+            warning = "data_only_efim_clock_schur_singular"
+        pos_efim = (pos_efim + pos_efim.T) * 0.5
+        eigvals = np.linalg.eigvalsh(pos_efim)
+        positive = eigvals[eigvals > 0.0]
+        condition = (
+            float(eigvals[-1] / positive[0])
+            if eigvals.size and positive.size
+            else float("inf")
+        )
+        cond_threshold = float(
+            config.get("global_vp", {}).get("efim_cond_threshold", config.get("efim_cond_threshold", 1.0e12))
+        )
+        if positive.size < 3 or not np.isfinite(condition) or condition > cond_threshold:
+            peb = float("nan")
+            warning = warning or "data_only_efim_position_singular_or_ill_conditioned"
+        else:
+            cov = np.linalg.inv(pos_efim)
+            peb = float(np.sqrt(max(np.trace(cov), 0.0)))
         if not np.isfinite(peb):
-            warning = "data_only_efim_peb_nonfinite"
+            warning = warning or "data_only_efim_peb_nonfinite"
     except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
         peb = float("nan")
         warning = f"data_only_efim_peb_failed: {type(exc).__name__}: {exc}"
@@ -704,6 +731,11 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, float]:
         "peb_dual_m": peb if mode == "dual_pol" else float("nan"),
         "peb_evs_m": peb if mode == "full_6d" else float("nan"),
         "warning": warning,
+        "peb_is_data_only": True,
+        "peb_uses_regularization": False,
+        "nuisance_model": "jones_linear",
+        "clock_eliminated": True,
+        "efim_condition_number": condition,
     }
 
 
@@ -1034,8 +1066,9 @@ def run_one_trial(
     allow_stage2: bool = True,
     store_large_arrays: bool = False,
     profile_memory: bool = False,
-    blas_threads: int = DEFAULT_BLAS_THREADS,
+    blas_threads: int = 1,
     respect_existing_blas_env: bool = False,
+    trim_memory_enabled: bool = True,
     out_dir: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], str]:
     _apply_blas_thread_env(
@@ -1065,7 +1098,7 @@ def run_one_trial(
     )
     try:
         stream = contextlib.nullcontext() if verbose else contextlib.redirect_stdout(log_buffer)
-        with stream:
+        with stream, thread_limit_context(blas_threads):
             if runner == "stage1_only":
                 result = _stage1_only_result(config)
             elif runner == "oracle_init_vp":
@@ -1083,7 +1116,10 @@ def run_one_trial(
         row["K"] = config.get("K", "")
         row["receiver_mode"] = config.get("receiver_mode", "full_6d")
         log_buffer.write(f"\nERROR {type(exc).__name__}: {exc}\n")
-    gc.collect()
+    if trim_memory_enabled:
+        trim_memory()
+    else:
+        gc.collect()
     rss_after = _rss_mb() if profile_memory else float("nan")
     row["rss_mb_before"] = rss_before
     row["rss_mb_after"] = rss_after
@@ -1345,13 +1381,18 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "command_line": " ".join(sys.argv),
         "n_trials": int(args.n_trials),
         "jobs": int(args.jobs),
-        "max_workers": int(args.jobs),
+        "process_workers": int(args.process_workers),
+        "max_workers": int(args.process_workers),
         "maxtasksperchild": int(args.maxtasksperchild),
         "task_grouping": str(args.task_grouping),
         "streaming_csv": bool(args.streaming_csv),
         "csv_flush_every": int(args.csv_flush_every),
         "store_large_arrays": bool(args.store_large_arrays),
         "blas_threads": int(args.blas_threads),
+        "estimated_cpu_slots": int(args.resource_plan["estimated_cpu_slots"]),
+        "memory_budget_gb": args.memory_budget_gb,
+        "memory_per_worker_gb": args.memory_per_worker_gb,
+        "trim_memory": bool(args.trim_memory),
         "respect_existing_blas_env": bool(args.respect_existing_blas_env),
         "profile_memory": bool(args.profile_memory),
         "snr_grid": snr_grid,
@@ -1541,6 +1582,7 @@ def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             profile_memory=task["profile_memory"],
             blas_threads=task["blas_threads"],
             respect_existing_blas_env=bool(task.get("respect_existing_blas_env", False)),
+            trim_memory_enabled=bool(task.get("trim_memory", True)),
             out_dir=pathlib.Path(task["out_dir"]) if task.get("out_dir") else None,
         )
     except Exception as exc:  # noqa: BLE001 - preserve failed-trial logging.
@@ -1562,6 +1604,7 @@ def _trial_tasks(
     profile_memory: bool,
     blas_threads: int,
     respect_existing_blas_env: bool,
+    trim_memory_enabled: bool,
     out_dir: pathlib.Path,
 ) -> list[dict[str, Any]]:
     tasks = []
@@ -1588,6 +1631,7 @@ def _trial_tasks(
                         "profile_memory": bool(profile_memory),
                         "blas_threads": int(blas_threads),
                         "respect_existing_blas_env": bool(respect_existing_blas_env),
+                        "trim_memory": bool(trim_memory_enabled),
                         "out_dir": str(out_dir),
                     }
                 )
@@ -1607,6 +1651,7 @@ def _grouped_tasks(
     profile_memory: bool,
     blas_threads: int,
     respect_existing_blas_env: bool,
+    trim_memory_enabled: bool,
     out_dir: pathlib.Path,
 ) -> list[dict[str, Any]]:
     tasks = []
@@ -1630,6 +1675,7 @@ def _grouped_tasks(
                     "profile_memory": bool(profile_memory),
                     "blas_threads": int(blas_threads),
                     "respect_existing_blas_env": bool(respect_existing_blas_env),
+                    "trim_memory": bool(trim_memory_enabled),
                     "out_dir": str(out_dir),
                 }
             )
@@ -1646,6 +1692,11 @@ def _tasks_for_figure(
     args: argparse.Namespace,
     grouped_group: str | None = None,
 ) -> list[dict[str, Any]]:
+    task_blas_threads = (
+        int(args.resource_plan["blas_threads"])
+        if hasattr(args, "resource_plan")
+        else (1 if str(args.blas_threads).lower() == "auto" else int(args.blas_threads))
+    )
     if args.task_grouping == "grouped" and grouped_group is not None:
         return _grouped_tasks(
             figure=figure,
@@ -1657,8 +1708,9 @@ def _tasks_for_figure(
             paper_k=int(args.paper_k),
             store_large_arrays=bool(args.store_large_arrays),
             profile_memory=bool(args.profile_memory),
-            blas_threads=int(args.blas_threads),
+            blas_threads=task_blas_threads,
             respect_existing_blas_env=bool(args.respect_existing_blas_env),
+            trim_memory_enabled=bool(args.trim_memory),
             out_dir=pathlib.Path(args.out_dir),
         )
     tasks = _trial_tasks(
@@ -1672,8 +1724,9 @@ def _tasks_for_figure(
         paper_k=int(args.paper_k),
         store_large_arrays=bool(args.store_large_arrays),
         profile_memory=bool(args.profile_memory),
-        blas_threads=int(args.blas_threads),
+        blas_threads=task_blas_threads,
         respect_existing_blas_env=bool(args.respect_existing_blas_env),
+        trim_memory_enabled=bool(args.trim_memory),
         out_dir=pathlib.Path(args.out_dir),
     )
     if args.task_grouping == "grouped" and grouped_group is None and figure == "fig3":
@@ -1689,13 +1742,15 @@ def _init_worker(
     out_dir: str,
     blas_threads: int,
     respect_existing_blas_env: bool = False,
+    trim_memory_enabled: bool = True,
 ) -> None:
     global _WORKER_BASE_CONFIG, _WORKER_OUT_DIR, _WORKER_BLAS_THREADS
-    global _WORKER_RESPECT_EXISTING_BLAS_ENV
+    global _WORKER_RESPECT_EXISTING_BLAS_ENV, _WORKER_TRIM_MEMORY
     _WORKER_BASE_CONFIG = base_config
     _WORKER_OUT_DIR = pathlib.Path(out_dir)
     _WORKER_BLAS_THREADS = int(blas_threads)
     _WORKER_RESPECT_EXISTING_BLAS_ENV = bool(respect_existing_blas_env)
+    _WORKER_TRIM_MEMORY = bool(trim_memory_enabled)
     _apply_blas_thread_env(
         _WORKER_BLAS_THREADS,
         respect_existing_blas_env=_WORKER_RESPECT_EXISTING_BLAS_ENV,
@@ -1744,21 +1799,7 @@ def _worker_row_value(value: Any, *, row_index: int, key: str) -> Any:
 
 
 def _ensure_worker_result_rows_safe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    safe_rows: list[dict[str, Any]] = []
-    for row_index, row in enumerate(rows):
-        safe_row = {
-            key: _worker_row_value(value, row_index=row_index, key=str(key))
-            for key, value in row.items()
-        }
-        ndarray_fields = [
-            key for key, value in safe_row.items() if isinstance(value, np.ndarray)
-        ]
-        if ndarray_fields:
-            raise AssertionError(
-                f"worker row {row_index} still contains ndarray fields: {ndarray_fields}"
-            )
-        safe_rows.append(safe_row)
-    return safe_rows
+    return [assert_row_is_light(row) for row in rows]
 
 
 def _peb_metrics_result_for_config(
@@ -1809,7 +1850,8 @@ def _row_for_result_or_failure(
     start = time.perf_counter()
     rss_before = _rss_mb() if profile_memory else float("nan")
     try:
-        result = result_factory()
+        with thread_limit_context(_WORKER_BLAS_THREADS):
+            result = result_factory()
         row = _result_to_row(
             result,
             figure=figure,
@@ -1840,10 +1882,14 @@ def _row_for_result_or_failure(
             receiver_mode=receiver_mode,
             exc=exc,
         )
+        if _WORKER_TRIM_MEMORY:
+            trim_memory()
         return (
             _ensure_worker_result_rows_safe([row])[0],
             f"\nERROR {variant} {type(exc).__name__}: {exc}\n",
         )
+    if _WORKER_TRIM_MEMORY:
+        trim_memory()
     return _ensure_worker_result_rows_safe([row])[0], ""
 
 
@@ -1866,6 +1912,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     outlier_threshold_m = float(task["outlier_threshold_m"])
     store_large_arrays = bool(task["store_large_arrays"])
     profile_memory = bool(task["profile_memory"])
+    trim_memory_enabled = bool(task.get("trim_memory", _WORKER_TRIM_MEMORY))
     rows: list[dict[str, Any]] = []
     logs: list[str] = []
     data = None
@@ -2062,29 +2109,39 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             raise ValueError(f"unsupported grouped task group {group!r}")
     finally:
         del data, stage1
-        gc.collect()
+        if trim_memory_enabled:
+            trim_memory()
+        else:
+            gc.collect()
     return _ensure_worker_result_rows_safe(rows), "".join(logs)
 
 
 def _iter_task_results(
     tasks: list[dict[str, Any]],
     *,
-    jobs: int,
+    process_workers: int,
     maxtasksperchild: int,
     base_config: dict,
     out_dir: pathlib.Path,
     blas_threads: int,
     respect_existing_blas_env: bool,
+    trim_memory_enabled: bool,
 ) -> Iterable[tuple[list[dict[str, Any]], str]]:
-    if jobs == 1:
-        _init_worker(base_config, str(out_dir), blas_threads, respect_existing_blas_env)
+    if process_workers == 1:
+        _init_worker(
+            base_config,
+            str(out_dir),
+            blas_threads,
+            respect_existing_blas_env,
+            trim_memory_enabled,
+        )
         for task in tasks:
             if task.get("task_kind") == "grouped":
                 yield _run_grouped_task(task)
             else:
                 yield _run_trial_task(task)
         return
-    processes = min(int(jobs), max(len(tasks), 1))
+    processes = int(process_workers)
     worker = _run_grouped_task if tasks and tasks[0].get("task_kind") == "grouped" else _run_trial_task
     with mp.Pool(
         processes=processes,
@@ -2095,6 +2152,7 @@ def _iter_task_results(
             str(out_dir),
             int(blas_threads),
             bool(respect_existing_blas_env),
+            bool(trim_memory_enabled),
         ),
     ) as pool:
         for result in pool.imap_unordered(worker, tasks, chunksize=1):
@@ -2107,7 +2165,15 @@ def _write_trial_results(
     log_path: pathlib.Path,
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
-    jobs = min(int(args.jobs), max(len(tasks), 1))
+    resource_plan = getattr(args, "resource_plan", None) or resolve_hybrid_resources(
+        jobs=int(args.jobs),
+        process_workers=getattr(args, "process_workers", None),
+        blas_threads=args.blas_threads,
+        n_tasks=max(len(tasks), 1),
+        memory_budget_gb=getattr(args, "memory_budget_gb", None),
+        memory_per_worker_gb=getattr(args, "memory_per_worker_gb", None),
+    )
+    process_workers = int(resource_plan["process_workers"])
     return_trial_rows = bool(getattr(args, "return_trial_rows", True))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     base_config = default_config()
@@ -2123,7 +2189,9 @@ def _write_trial_results(
     )
     buffered_rows: list[dict[str, Any]] = []
     with log_path.open("w") as log_handle, writer_context as csv_writer:
-        log_handle.write(f"parallel_jobs={jobs}\n")
+        log_handle.write(f"jobs={int(resource_plan['jobs'])}\n")
+        log_handle.write(f"process_workers={process_workers}\n")
+        log_handle.write(f"blas_threads={int(resource_plan['blas_threads'])}\n")
         log_handle.write(f"task_grouping={args.task_grouping}\n")
         log_handle.write(f"streaming_csv={bool(args.streaming_csv)}\n")
         log_handle.write(f"store_large_arrays={bool(args.store_large_arrays)}\n")
@@ -2131,12 +2199,13 @@ def _write_trial_results(
             log_handle.write(f"WARNING: {tasks[0]['task_grouping_warning']}\n")
         for row_batch, log_text in _iter_task_results(
             tasks,
-            jobs=jobs,
+            process_workers=process_workers,
             maxtasksperchild=int(args.maxtasksperchild),
             base_config=base_config,
             out_dir=out_dir,
-            blas_threads=int(args.blas_threads),
+            blas_threads=int(resource_plan["blas_threads"]),
             respect_existing_blas_env=bool(args.respect_existing_blas_env),
+            trim_memory_enabled=bool(args.trim_memory),
         ):
             for row in row_batch:
                 if args.streaming_csv:
@@ -2507,12 +2576,16 @@ def _validation_rows_for_grouping(
     rows: list[dict[str, Any]] = []
     for row_batch, log_text in _iter_task_results(
         tasks,
-        jobs=min(int(validation_args.jobs), max(len(tasks), 1)),
+        process_workers=min(
+            int(validation_args.process_workers),
+            max(len(tasks), 1),
+        ),
         maxtasksperchild=int(validation_args.maxtasksperchild),
         base_config=default_config(),
         out_dir=validation_out_dir,
         blas_threads=int(validation_args.blas_threads),
         respect_existing_blas_env=bool(validation_args.respect_existing_blas_env),
+        trim_memory_enabled=bool(validation_args.trim_memory),
     ):
         rows.extend(row_batch)
         if log_text:
@@ -2609,11 +2682,6 @@ def validate_grouped_equivalence(args: argparse.Namespace, snr_grid: list[float]
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv_list = sys.argv[1:] if argv is None else list(argv)
-    jobs_provided = any(item == "--jobs" or item.startswith("--jobs=") for item in argv_list)
-    max_workers_provided = any(
-        item == "--max-workers" or item.startswith("--max-workers=")
-        for item in argv_list
-    )
     parser = argparse.ArgumentParser(description="Generate paper ablation figures.")
     parser.add_argument("--figures", default="all")
     parser.add_argument("--n-trials", type=int, default=50)
@@ -2626,6 +2694,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--reuse-existing", action="store_true")
     parser.add_argument("--jobs", type=int, default=10)
+    parser.add_argument("--process-workers", type=int, default=None)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument("--maxtasksperchild", type=int, default=1)
     parser.add_argument(
@@ -2643,23 +2712,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--blas-threads", type=int, default=DEFAULT_BLAS_THREADS)
+    parser.add_argument("--blas-threads", default=DEFAULT_BLAS_THREADS)
+    parser.add_argument("--memory-budget-gb", type=float, default=None)
+    parser.add_argument("--memory-per-worker-gb", type=float, default=None)
     parser.add_argument("--respect-existing-blas-env", action="store_true")
+    parser.add_argument(
+        "--trim-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--csv-flush-every", type=int, default=10)
     parser.add_argument("--validate-grouped-equivalence", action="store_true")
     parser.add_argument("--profile-memory", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv_list)
-    if args.max_workers is None:
-        args.max_workers = args.jobs
-    elif jobs_provided and max_workers_provided and args.max_workers != args.jobs:
-        raise ValueError("--jobs and --max-workers were both provided with different values")
-    elif not jobs_provided:
-        args.jobs = args.max_workers
-    elif args.max_workers != args.jobs:
-        raise ValueError("--jobs and --max-workers were both provided with different values")
-    args.max_workers = args.jobs
+    if args.max_workers is not None:
+        if (
+            args.process_workers is not None
+            and int(args.max_workers) != int(args.process_workers)
+        ):
+            raise ValueError(
+                "--max-workers and --process-workers specify different process counts"
+            )
+        args.process_workers = int(args.max_workers)
+    args.max_workers = args.process_workers
+    if str(args.blas_threads).lower() != "auto":
+        args.blas_threads = int(args.blas_threads)
     args.k_grid_values = parse_k_grid(args.k_grid)
     return args
 
@@ -2672,16 +2751,46 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--jobs must be positive")
     if args.maxtasksperchild <= 0:
         raise ValueError("--maxtasksperchild must be positive")
-    if args.blas_threads <= 0:
-        raise ValueError("--blas-threads must be positive")
+    if args.process_workers is not None and args.process_workers <= 0:
+        raise ValueError("--process-workers must be positive")
+    if args.blas_threads != "auto" and int(args.blas_threads) <= 0:
+        raise ValueError("--blas-threads must be positive or 'auto'")
     if args.paper_k <= 0:
         raise ValueError("--paper-k must be positive")
+    figures = parse_figures(args.figures)
+    snr_grid = parse_snr_grid(args.snr_grid)
+    n_tasks = max(
+        1,
+        int(args.n_trials)
+        * max(
+            len(snr_grid),
+            len(args.k_grid_values) if "fig6" in figures else 0,
+        ),
+    )
+    args.resource_plan = resolve_hybrid_resources(
+        jobs=args.jobs,
+        process_workers=args.process_workers,
+        blas_threads=args.blas_threads,
+        n_tasks=n_tasks,
+        memory_budget_gb=args.memory_budget_gb,
+        memory_per_worker_gb=args.memory_per_worker_gb,
+    )
+    args.process_workers = int(args.resource_plan["process_workers"])
+    args.max_workers = args.process_workers
+    args.blas_threads = int(args.resource_plan["blas_threads"])
     _apply_blas_thread_env(
         args.blas_threads,
         respect_existing_blas_env=bool(args.respect_existing_blas_env),
     )
-    figures = parse_figures(args.figures)
-    snr_grid = parse_snr_grid(args.snr_grid)
+    print(
+        "Resource plan: "
+        f"jobs={args.jobs} "
+        f"process_workers={args.process_workers} "
+        f"blas_threads={args.blas_threads} "
+        f"estimated_cpu_slots={args.resource_plan['estimated_cpu_slots']} "
+        f"memory_budget_gb={args.memory_budget_gb} "
+        f"memory_per_worker_gb={args.memory_per_worker_gb}"
+    )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.validate_grouped_equivalence:
         validate_grouped_equivalence(args, snr_grid)

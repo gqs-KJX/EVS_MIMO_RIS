@@ -351,6 +351,20 @@ def default_config() -> dict:
             "use_analytic_jacobian": True,
             "matrix_free_beta": False,
         },
+        "baselines": {
+            "ff_omp": {
+                "batch_size": 256,
+                "max_batch_memory_mb": 256.0,
+            },
+            "ris_momp": {
+                "batch_size": 256,
+                "max_batch_memory_mb": 256.0,
+            },
+            "nf_mmpsr": {
+                "batch_size": 64,
+                "max_batch_memory_mb": 256.0,
+            },
+        },
         "eps": 1.0e-10,
     }
     return apply_stage1_init_preset(config, config["stage1_init_mode"])

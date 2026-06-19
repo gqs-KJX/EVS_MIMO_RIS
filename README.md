@@ -34,8 +34,15 @@ Generate the revised paper ablation CSVs, logs, metadata, summaries, and PDF
 figures with:
 
 ```bash
-python -m src.experiments.run_paper_ablation_figures --figures all --n-trials 50 --paper-k 3 --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" --out-dir results/ablation_paper --force-rerun --jobs 10 --task-grouping grouped --blas-threads 1
-python -m src.experiments.run_paper_ablation_figures --figures fig1,fig2 --n-trials 50 --paper-k 3 --jobs 30 --task-grouping grouped --blas-threads 1
+python -m src.experiments.run_paper_ablation_figures \
+  --figures all \
+  --n-trials 50 \
+  --paper-k 3 \
+  --jobs 10 \
+  --process-workers 4 \
+  --blas-threads auto \
+  --out-dir results/ablation_paper_k3 \
+  --force-rerun
 ```
 
 The paper figure runner targets the revised pipeline: Stage-I initialization,
@@ -47,7 +54,45 @@ PEB curves are plotted from the data-only EFIM/CRB calculation. The older
 structured-refinement module ablations.
 
 The paper runner defaults to `--jobs 10`, `--task-grouping grouped`, and
-`--blas-threads 1`. Grouped execution reuses data generation and Stage-I
+`--blas-threads auto`. Grouped execution reuses data generation and Stage-I
 initialization within each Monte Carlo trial before evaluating the requested
 VP/JNPP variants; it does not change the estimator or physical channel model.
-Use `--jobs 30` on machines with enough memory and cores.
+
+`--jobs` is the total CPU-slot budget. `--process-workers` controls the number
+of memory-heavy worker processes, and `--blas-threads` controls native compute
+threads per worker. For a higher-CPU run when memory permits, use
+`--jobs 30 --process-workers 6 --blas-threads 5`. Avoid many processes with
+`--blas-threads 1` when memory is already near capacity.
+
+## Benchmark comparison figures
+
+Run the standalone benchmark comparison entry point with:
+
+```bash
+python -m src.experiments.run_benchmark_comparison \
+  --n-trials 50 \
+  --paper-k 3 \
+  --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" \
+  --out-dir results/benchmark_comparison \
+  --jobs 10 \
+  --process-workers 4 \
+  --blas-threads auto \
+  --force-rerun
+```
+
+The benchmark figure contains:
+
+- `ALS-CPD`: a standalone complex CP tensor baseline. It does not initialize,
+  call, or feed the proposed VP.
+- `FF-OMP`: a far-field angular-delay sparse baseline adapted to the current
+  raw EVS-RIS-OFDM observation.
+- `RIS-MOMP`: a RIS-aided multidimensional OMP-style sparse baseline with
+  independent direction and delay grids.
+- `NF-MMPSR`: a near-field spherical-domain grid sparse baseline.
+- `Proposed`: the only curve using the current RG-JNPP-Adaptive-Jones-VP
+  pipeline.
+- `PEB`: the data-only EFIM/CRB reference curve.
+
+All non-proposed baselines use the same generated noisy data for each
+seed/SNR/K and are restricted to discrete dictionaries, CP factorization,
+linear LS over selected atoms, and neutral geometry LS post-processing.

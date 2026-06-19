@@ -10,11 +10,13 @@ from src.experiments import run_paper_ablation_figures as figures
 def test_cli_memory_safe_defaults():
     args = figures.parse_args([])
     assert args.jobs == 10
-    assert args.max_workers == 10
+    assert args.process_workers is None
+    assert args.max_workers is None
     assert args.maxtasksperchild == 1
     assert args.streaming_csv is True
     assert args.store_large_arrays is False
-    assert args.blas_threads == 1
+    assert args.blas_threads == "auto"
+    assert args.trim_memory is True
 
 
 def test_streaming_csv_writer_writes_rows_immediately(tmp_path):

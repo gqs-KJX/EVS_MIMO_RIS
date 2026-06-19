@@ -1847,11 +1847,15 @@ def run_from_existing_stage1(
     return result
 
 
-def run_single_proposed_diagnostic(config: dict, allow_stage2: bool = True) -> dict:
+def run_single_proposed_diagnostic(
+    config: dict,
+    allow_stage2: bool = True,
+    data_override: dict | None = None,
+) -> dict:
     """Run one reliability-gated proposed diagnostic realization."""
     total_start = time.perf_counter()
     config = _apply_main_single_defaults(copy.deepcopy(config))
-    data = _make_data(config)
+    data = _make_data(config) if data_override is None else data_override
     stage1 = run_stage1_only(data, config)
     return run_from_existing_stage1(
         data,
