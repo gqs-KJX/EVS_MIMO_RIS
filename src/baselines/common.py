@@ -380,7 +380,11 @@ def geometric_support_to_position_ls(scene: dict, supports: list[dict[str, Any]]
                 panel = int(support.get("panel", 0))
                 dist = np.linalg.norm(p_hat - scene["ris_centers"][panel])
                 dt_values.append(float(support["tau"]) - (dist + scene["d_RB"][panel]) / scene["c0"])
-            delta_t = float(np.median(dt_values)) if dt_values else float(config.get("delta_t_true", 0.0))
+            delta_t = (
+                float(np.median(dt_values))
+                if dt_values
+                else float(np.mean(clock_grid_from_config(config, 3)))
+            )
         else:
             delta_t = float(np.mean(clock_grid_from_config(config, 3)))
         return p_hat, delta_t, {"geometry_solver": "direct_position_candidate"}

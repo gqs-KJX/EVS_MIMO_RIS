@@ -193,7 +193,7 @@ def default_config() -> dict:
         "reliability_ris_good": 0.3,
         "reliability_ris_bad": 0.7,
         "final_refinement_method": "global_exact_spherical_vp",
-        "K": 1,
+        "K": 3,
         "M_A": 16,
         "ris_shape": (64, 64),
         "N": 63,

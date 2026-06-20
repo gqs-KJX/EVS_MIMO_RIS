@@ -39,6 +39,7 @@ if __package__ in (None, ""):
         thread_limit_context,
         trim_memory,
     )
+    from src.experiments.progress_logger import ProgressLogger
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
@@ -57,6 +58,7 @@ else:
         thread_limit_context,
         trim_memory,
     )
+    from .progress_logger import ProgressLogger
 
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
@@ -723,6 +725,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grid-profile", choices=("coarse", "medium", "fine"), default="medium")
     parser.add_argument("--seed", type=int, default=20260526)
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
+    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
+    parser.add_argument("--quiet-progress", action="store_true")
     args = parser.parse_args(argv)
     if str(args.blas_threads).lower() != "auto":
         args.blas_threads = int(args.blas_threads)
@@ -743,12 +747,29 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--blas-threads must be positive or 'auto'")
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = (
+        pathlib.Path(args.progress_log)
+        if args.progress_log is not None
+        else out_dir / "progress.jsonl"
+    )
     trial_csv = out_dir / TRIAL_CSV
     summary_csv = out_dir / SUMMARY_CSV
     metadata_path = out_dir / "benchmark_metadata.json"
     baselines = parse_baselines(args.baselines)
     snr_grid = parse_snr_grid(args.snr_grid)
     tasks = _tasks(args, snr_grid, baselines)
+    progress = ProgressLogger(
+        progress_path, len(tasks), "run_benchmark_comparison"
+    )
+    if not args.quiet_progress:
+        print(f"Progress log: {progress_path}")
+        print("Monitor with:")
+        print(f"    tail -f {progress_path}")
+        print(
+            "    python -m src.experiments.monitor_progress "
+            f"--progress-log {progress_path}"
+        )
+    progress.log("start", "running", message="benchmark experiment started")
     args.resource_plan = resolve_hybrid_resources(
         jobs=args.jobs,
         process_workers=args.process_workers,
@@ -812,6 +833,28 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 for row_batch in row_batches:
                     writer.writerows(row_batch)
+                    representative = row_batch[0] if row_batch else {}
+                    failed_rows = [
+                        row
+                        for row in row_batch
+                        if str(row.get("failed")).lower() == "true"
+                    ]
+                    progress.log(
+                        "task_failed" if failed_rows else "task_done",
+                        "failed" if failed_rows else "completed",
+                        figure="fig7",
+                        baseline_or_variant=",".join(
+                            str(row.get("baseline", "")) for row in row_batch
+                        ),
+                        snr_db=representative.get("snr_db", ""),
+                        trial_id=representative.get("trial_id", ""),
+                        seed=representative.get("seed", ""),
+                        K=representative.get("K", ""),
+                        message="benchmark trial batch completed",
+                        error="; ".join(
+                            str(row.get("error", "")) for row in failed_rows
+                        ),
+                    )
                     for row in row_batch:
                         if str(row.get("failed")).lower() == "true":
                             continue
@@ -845,6 +888,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args.no_plots:
         _plot(summary, out_dir, "rmse")
         _plot(summary, out_dir, "nmse")
+    progress.log("finished", "completed", message="benchmark experiment finished")
+    progress.close()
     print(f"Wrote benchmark comparison outputs to {out_dir}")
 
 

@@ -1,5 +1,8 @@
 import argparse
 
+import numpy as np
+
+from src.config import default_config
 from src.experiments import run_paper_ablation_figures as figures
 
 
@@ -36,6 +39,92 @@ def test_fig3_variant_specs_include_receiver_modes():
     assert "scalar_receiver" in specs
     assert "dual_pol_receiver" in specs
     assert "full_6d_evs" in specs
+
+
+def _tiny_nested_receiver_config():
+    config = default_config()
+    config.update(
+        {
+            "seed": 321,
+            "K": 1,
+            "M_A": 1,
+            "ris_shape": (2, 2),
+            "N": 5,
+            "P": 3,
+            "T": 4,
+            "SNR_dB": 0.0,
+            "receiver_mode": "full_6d",
+            "ris_centers": np.array([[4.2, -2.2, 1.05]]),
+            "print_progress": False,
+        }
+    )
+    return config
+
+
+def test_nested_receiver_modes_share_reference_noise_and_base_hash():
+    config = _tiny_nested_receiver_config()
+    base = figures._make_data(config)
+    nested = [
+        figures.make_nested_receiver_mode_data(base, mode, config)
+        for mode in ("scalar", "dual_pol", "full_6d")
+    ]
+    assert {data["noise_variance"] for data in nested} == {
+        base["noise_variance"]
+    }
+    assert {data["reference_sigma2"] for data in nested} == {
+        base["noise_variance"]
+    }
+    assert len({data["nested_base_y_noisy_hash"] for data in nested}) == 1
+    assert all(
+        data["nested_receiver_noise_convention"]
+        == figures.NESTED_RECEIVER_NOISE_CONVENTION
+        for data in nested
+    )
+    scalar_mask = nested[0]["scene"]["evs_observation_mask"]
+    dual_mask = nested[1]["scene"]["evs_observation_mask"]
+    full_mask = nested[2]["scene"]["evs_observation_mask"]
+    assert np.all(scalar_mask <= dual_mask)
+    assert np.all(dual_mask <= full_mask)
+    assert np.array_equal(
+        nested[0]["Y_noisy"][scalar_mask],
+        base["Y_noisy"][scalar_mask],
+    )
+    assert np.array_equal(
+        nested[1]["Y_noisy"][dual_mask],
+        base["Y_noisy"][dual_mask],
+    )
+
+
+def test_nested_receiver_peb_rows_share_reference_sigma2(monkeypatch):
+    config = _tiny_nested_receiver_config()
+    base = figures._make_data(config)
+    monkeypatch.setattr(
+        figures,
+        "_peb_from_efim",
+        lambda data, cfg: {
+            "peb_position_m": 1.0,
+            "peb_scalar_m": 1.0 if cfg["receiver_mode"] == "scalar" else np.nan,
+            "peb_dual_m": 1.0 if cfg["receiver_mode"] == "dual_pol" else np.nan,
+            "peb_evs_m": 1.0 if cfg["receiver_mode"] == "full_6d" else np.nan,
+            "warning": "",
+        },
+    )
+    figures._PEB_CACHE.clear()
+    rows = []
+    for mode in ("scalar", "dual_pol", "full_6d"):
+        mode_config = {**config, "receiver_mode": mode}
+        data = figures.make_nested_receiver_mode_data(base, mode, mode_config)
+        result = figures._peb_metrics_result_for_config(
+            mode_config, None, data
+        )
+        rows.append(figures.extract_metrics(result, 0.1))
+    assert {row["reference_sigma2"] for row in rows} == {
+        base["noise_variance"]
+    }
+    assert {row["nested_base_y_noisy_hash"] for row in rows} == {
+        nested_hash := figures._hash_array(base["Y_noisy"])
+    }
+    assert nested_hash
 
 
 def test_fig5_variant_specs_include_gate_variants():
@@ -85,6 +174,32 @@ def test_fig6_uses_k_grid_and_ignores_paper_k():
     )
     assert config["K"] == 4
     assert config["ris_centers"].shape[0] >= 4
+
+
+def test_task_rows_expose_requested_and_effective_k(tmp_path):
+    args = figures.parse_args(["--out-dir", str(tmp_path)])
+    variants = {"fixed_pol_vp": figures._variant_specs("fig1")["fixed_pol_vp"]}
+    fig1_tasks = figures._tasks_for_figure(
+        figure=figures.FIG1_FIG2_SHARED_FIGURE,
+        grouped_group=None,
+        x_name="snr_db",
+        x_values=[0.0],
+        variants=variants,
+        trial_seeds=[123],
+        args=args,
+    )
+    assert fig1_tasks[0]["effective_K"] == fig1_tasks[0]["paper_k"] == 3
+
+    fig6_tasks = figures._tasks_for_figure(
+        figure="fig6",
+        grouped_group=None,
+        x_name="K",
+        x_values=[4.0],
+        variants={"fixed_pol_vp": figures._variant_specs("fig6")["fixed_pol_vp"]},
+        trial_seeds=[123],
+        args=args,
+    )
+    assert fig6_tasks[0]["effective_K"] == int(fig6_tasks[0]["x_value"]) == 4
 
 
 def test_peb_variants_map_to_peb_position():
@@ -147,6 +262,26 @@ def test_summary_uses_plot_metric_name_for_peb_and_outlier():
     assert fig5[0]["plot_y_mean"] == 1.0
 
 
+def test_summary_carries_unique_k_metadata():
+    rows = [
+        {
+            "figure": "fig1",
+            "variant": "fixed_pol_vp",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "position_rmse_m": "1.0",
+            "K": "3",
+            "paper_k": "3",
+            "effective_K": "3",
+        }
+    ]
+    summary = figures.summarize_rows(rows, "fig1")
+    assert summary[0]["K"] == 3
+    assert summary[0]["paper_k"] == 3
+    assert summary[0]["effective_K"] == 3
+
+
 def test_cache_reuse_refuses_ten_trial_csv_when_requesting_fifty():
     args = argparse.Namespace(
         n_trials=50,
@@ -165,10 +300,50 @@ def test_cache_reuse_refuses_ten_trial_csv_when_requesting_fifty():
                     "x_name": "snr_db",
                     "x_value": "-30.0",
                     "K": "3",
+                    "paper_k": "3",
+                    "effective_K": "3",
                     "failed": "False",
                 }
             )
     assert not figures._csv_matches_request(rows, "fig1", args, [-30.0])
+
+
+def test_stale_csv_without_k_columns_is_rejected(tmp_path):
+    args = figures.parse_args(
+        [
+            "--figures",
+            "fig1",
+            "--n-trials",
+            "1",
+            "--snr-grid",
+            "0",
+            "--out-dir",
+            str(tmp_path),
+            "--reuse-existing",
+        ]
+    )
+    trial_csv = tmp_path / "stale.csv"
+    figures._write_csv(
+        trial_csv,
+        [
+            {
+                "figure": "fig1",
+                "variant": "fixed_pol_vp",
+                "x_name": "snr_db",
+                "x_value": 0,
+            }
+        ],
+        ["figure", "variant", "x_name", "x_value"],
+    )
+    can_reuse, _ = figures._can_reuse_csv(
+        trial_csv,
+        "fig1",
+        args,
+        [0.0],
+        ["fig1"],
+        existing_metadata={},
+    )
+    assert not can_reuse
 
 
 def test_csv_fieldnames_include_required_diagnostics():
@@ -176,6 +351,9 @@ def test_csv_fieldnames_include_required_diagnostics():
     assert "lambda_jones_per_path" in figures.FIELDNAMES
     assert "data_only_scaled_efim_condition_number" in figures.FIELDNAMES
     assert "peb_position_m" in figures.FIELDNAMES
+    assert {"K", "paper_k", "effective_K", "num_ris_paths", "receiver_mode", "config_seed"} <= set(
+        figures.FIELDNAMES
+    )
 
 
 def test_jobs_cli_default_and_override():

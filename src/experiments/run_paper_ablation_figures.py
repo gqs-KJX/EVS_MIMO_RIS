@@ -28,7 +28,7 @@ import numpy as np
 if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
-    from src.channel_model import channel_components
+    from src.channel_model import channel_components, evs_component_selection
     from src.config import default_config
     from src.diagnostics import estimate_position_from_ris_eta
     from src.estimators import (
@@ -46,6 +46,7 @@ if __package__ in (None, ""):
     )
     from src.metrics import position_rmse, relative_nmse
     from src.projections_delay import tau_from_pole
+    from src.tensor_utils import hankelize_frequency
     from src.experiments.resource_control import (
         apply_thread_limits,
         assert_row_is_light,
@@ -54,9 +55,10 @@ if __package__ in (None, ""):
         thread_limit_context,
         trim_memory,
     )
+    from src.experiments.progress_logger import ProgressLogger
     from src.utils import scipy_is_available
 else:
-    from ..channel_model import channel_components
+    from ..channel_model import channel_components, evs_component_selection
     from ..config import default_config
     from ..diagnostics import estimate_position_from_ris_eta
     from ..estimators import (
@@ -74,6 +76,7 @@ else:
     )
     from ..metrics import position_rmse, relative_nmse
     from ..projections_delay import tau_from_pole
+    from ..tensor_utils import hankelize_frequency
     from .resource_control import (
         apply_thread_limits,
         assert_row_is_light,
@@ -82,6 +85,7 @@ else:
         thread_limit_context,
         trim_memory,
     )
+    from .progress_logger import ProgressLogger
     from ..utils import scipy_is_available
 
 
@@ -98,6 +102,7 @@ RECEIVER_MODE_CONVENTION = (
     "receiver_mode selects the EVS component observation mask before noise "
     "generation and estimator evaluation."
 )
+NESTED_RECEIVER_NOISE_CONVENTION = "fixed_full6d_reference_sigma2"
 FIGURE6_K_GRID = [1, 2, 3, 4]
 FIGURE_ORDER = ["fig1", "fig2", "fig3", "fig4", "fig5", "fig6"]
 FIG1_FIG2_SHARED_FIGURE = "fig1_fig2"
@@ -141,11 +146,20 @@ FIELDNAMES = [
     "x_name",
     "x_value",
     "K",
+    "paper_k",
+    "effective_K",
+    "num_ris_paths",
     "receiver_mode",
+    "config_seed",
+    "nested_receiver_noise_convention",
+    "reference_receiver_mode",
+    "reference_sigma2",
+    "nested_base_y_noisy_hash",
     "failed",
     "error",
     "runtime_s",
     "position_rmse_m",
+    "position_error_m",
     "y_nmse",
     "range_rmse_m",
     "tau_rmse_s",
@@ -153,8 +167,19 @@ FIELDNAMES = [
     "outlier_flag",
     "selected_branch",
     "final_refinement_method",
+    "final_runner_name",
+    "used_main_single_proposed_path",
+    "variant_config_hash",
     "global_vp_mode",
+    "jones_mode",
+    "adaptive_enabled",
+    "adaptive_policy_name",
     "selected_vp_family_branch",
+    "lambda_path_min",
+    "lambda_path_max",
+    "lambda_path_mean",
+    "lambda_clipped_fraction",
+    "used_stage1_regularizer",
     "linear_nuisance_dim",
     "nonlinear_dim",
     "fixed_pol_score",
@@ -183,6 +208,12 @@ FIELDNAMES = [
     "rss_mb_after",
     "rss_mb_delta",
     "warning",
+    "debug_main_position_error_m",
+    "debug_main_y_nmse",
+    "debug_main_raw_objective",
+    "debug_main_global_vp_mode",
+    "debug_main_adaptive_enabled",
+    "debug_config_diff_summary",
 ]
 
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -191,6 +222,16 @@ _WORKER_OUT_DIR: pathlib.Path | None = None
 _WORKER_BLAS_THREADS = 1
 _WORKER_RESPECT_EXISTING_BLAS_ENV = False
 _WORKER_TRIM_MEMORY = True
+_PEB_CACHE_DISABLED_PATHS: set[str] = set()
+
+PEB_CACHE_TIMEOUT_S = 60.0
+PEB_CACHE_BUSY_TIMEOUT_MS = 60_000
+PEB_CACHE_LOCK_RETRIES = 5
+PEB_CACHE_RETRY_BASE_S = 0.05
+
+
+class GroupedResultReuseError(RuntimeError):
+    """Raised when grouped variants accidentally share one final result object."""
 
 
 def _is_fig1_fig2(figure: str) -> bool:
@@ -288,6 +329,47 @@ def make_base_config(seed: int, snr_db: float, overrides: dict | None = None) ->
     return config
 
 
+def make_nested_receiver_mode_data(
+    base_full6d_data: dict,
+    receiver_mode: str,
+    config: dict,
+) -> dict:
+    """Mask one shared full-6D realization without regenerating its noise."""
+    mode = str(receiver_mode)
+    if str(base_full6d_data["scene"].get("receiver_mode")) != "full_6d":
+        raise ValueError("nested receiver data requires a full_6d base realization")
+    scene = copy.deepcopy(base_full6d_data["scene"])
+    component_mask = evs_component_selection(mode)
+    observation_mask = np.tile(component_mask, int(scene["M_A"])).astype(bool)
+    tensor_mask = observation_mask[:, None, None]
+    scene["receiver_mode"] = mode
+    scene["evs_component_mask"] = component_mask
+    scene["evs_observation_mask"] = observation_mask
+
+    data = copy.deepcopy(base_full6d_data)
+    data["scene"] = scene
+    data["Y_true"] = np.asarray(base_full6d_data["Y_true"]) * tensor_mask
+    data["Y_noisy"] = np.asarray(base_full6d_data["Y_noisy"]) * tensor_mask
+    data["Z_true"] = hankelize_frequency(data["Y_true"], scene["P"])
+    data["Z_noisy"] = hankelize_frequency(data["Y_noisy"], scene["P"])
+    true_components = copy.deepcopy(base_full6d_data["true_components"])
+    if "a_EVS" in true_components:
+        true_components["a_EVS"] = (
+            np.asarray(true_components["a_EVS"]) * observation_mask[None, :]
+        )
+    data["true_components"] = true_components
+    data["noise_variance"] = float(base_full6d_data["noise_variance"])
+    data["nested_receiver_noise_convention"] = NESTED_RECEIVER_NOISE_CONVENTION
+    data["reference_receiver_mode"] = "full_6d"
+    data["receiver_mode"] = mode
+    data["reference_sigma2"] = float(base_full6d_data["noise_variance"])
+    data["nested_base_y_noisy_hash"] = _hash_array(
+        base_full6d_data["Y_noisy"]
+    )
+    data["config_receiver_mode"] = str(config.get("receiver_mode", mode))
+    return data
+
+
 def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {
@@ -315,7 +397,8 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             "adaptive_jones_vp_proposed": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
-                "_allow_stage2": False,
+                "_runner": "main_single_proposed",
+                "_allow_stage2": True,
             },
         }
     if figure == "fig3":
@@ -453,10 +536,15 @@ def _empty_row() -> dict[str, Any]:
     numeric_fields = [
         "runtime_s",
         "position_rmse_m",
+        "position_error_m",
         "y_nmse",
         "range_rmse_m",
         "tau_rmse_s",
         "raw_objective_final",
+        "lambda_path_min",
+        "lambda_path_max",
+        "lambda_path_mean",
+        "lambda_clipped_fraction",
         "gof_stat",
         "data_only_scaled_efim_lambda_min",
         "data_only_scaled_efim_condition_number",
@@ -476,6 +564,58 @@ def _empty_row() -> dict[str, Any]:
     for field in numeric_fields:
         row[field] = float("nan")
     return row
+
+
+def _num_ris_paths(config: dict[str, Any]) -> int | str:
+    ris_centers = np.asarray(config.get("ris_centers", []))
+    if ris_centers.ndim == 2:
+        return int(ris_centers.shape[0])
+    return ""
+
+
+def _assert_effective_k(
+    *,
+    figure: str,
+    effective_k: int,
+    paper_k: int,
+    x_value: float,
+) -> None:
+    expected_k = int(x_value) if figure == "fig6" else int(paper_k)
+    if int(effective_k) != expected_k:
+        expectation = "x_value" if figure == "fig6" else "paper_k"
+        raise AssertionError(
+            f"{figure}: effective_K={effective_k} must equal "
+            f"{expectation}={expected_k}"
+        )
+
+
+def _set_row_k_metadata(
+    row: dict[str, Any],
+    *,
+    figure: str,
+    effective_k: int,
+    paper_k: int,
+    x_value: float,
+    receiver_mode: str,
+    config_seed: int,
+    num_ris_paths: int | str,
+) -> None:
+    _assert_effective_k(
+        figure=figure,
+        effective_k=int(effective_k),
+        paper_k=int(paper_k),
+        x_value=float(x_value),
+    )
+    row.update(
+        {
+            "K": int(effective_k),
+            "paper_k": int(paper_k),
+            "effective_K": int(effective_k),
+            "num_ris_paths": num_ris_paths,
+            "receiver_mode": str(receiver_mode),
+            "config_seed": int(config_seed),
+        }
+    )
 
 
 def _rss_mb() -> float:
@@ -584,10 +724,80 @@ def _hash_config_for_peb(config: dict) -> str:
         "eps": config.get("eps", None),
         "delta_f": config.get("delta_f", None),
         "wavelength": config.get("wavelength", None),
+        "nested_receiver_noise_convention": config.get(
+            "nested_receiver_noise_convention", None
+        ),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
     ).hexdigest()[:16]
+
+
+def _variant_config_hash(config: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            config,
+            sort_keys=True,
+            default=lambda value: np.asarray(value).tolist()
+            if isinstance(value, np.ndarray)
+            else str(value),
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()[:16]
+
+
+def _annotate_variant_result(
+    result: dict,
+    config: dict,
+    *,
+    final_runner_name: str,
+    used_main_single_proposed_path: bool,
+) -> dict:
+    final = result.get("final", {})
+    global_vp = dict(config.get("global_vp", {}))
+    mode = str(final.get("global_vp_mode", final.get("vp_mode", global_vp.get("mode", ""))))
+    selected_family = str(final.get("selected_vp_family_branch", ""))
+    lambdas = np.asarray(final.get("lambda_jones_per_path", []), dtype=float).reshape(-1)
+    finite_lambdas = lambdas[np.isfinite(lambdas)]
+    lambda_min_bound = float(global_vp.get("jones_lambda_min", 1.0e-4))
+    lambda_max_bound = float(global_vp.get("jones_lambda_max", 1.0e8))
+    clipped_fraction = (
+        float(
+            np.mean(
+                np.isclose(finite_lambdas, lambda_min_bound)
+                | np.isclose(finite_lambdas, lambda_max_bound)
+            )
+        )
+        if finite_lambdas.size
+        else float("nan")
+    )
+    result["variant_diagnostics"] = {
+        "variant_config_hash": _variant_config_hash(config),
+        "final_runner_name": str(final_runner_name),
+        "used_main_single_proposed_path": bool(used_main_single_proposed_path),
+        "jones_mode": selected_family or mode,
+        "adaptive_enabled": mode == "adaptive_jones",
+        "adaptive_policy_name": (
+            "fixed_anchor_then_adaptive_jones_score_selection"
+            if mode == "adaptive_jones"
+            else ""
+        ),
+        "lambda_path_min": float(np.min(finite_lambdas))
+        if finite_lambdas.size
+        else float("nan"),
+        "lambda_path_max": float(np.max(finite_lambdas))
+        if finite_lambdas.size
+        else float("nan"),
+        "lambda_path_mean": float(np.mean(finite_lambdas))
+        if finite_lambdas.size
+        else float("nan"),
+        "lambda_clipped_fraction": clipped_fraction,
+        "used_stage1_regularizer": bool(
+            float(config.get("stage1_factor_reg", 0.0)) > 0.0
+            or float(config.get("stage1_factor_reg_rel", 0.0)) > 0.0
+        ),
+    }
+    return result
 
 
 def _json_safe_float(value: Any) -> float | None:
@@ -608,19 +818,86 @@ def _peb_cache_path(out_dir: pathlib.Path | None) -> pathlib.Path | None:
     return pathlib.Path(out_dir) / ".cache" / "peb_cache.sqlite"
 
 
+def _peb_cache_path_key(db_path: pathlib.Path) -> str:
+    return str(pathlib.Path(db_path).resolve())
+
+
+def _peb_cache_is_enabled(db_path: pathlib.Path) -> bool:
+    return _peb_cache_path_key(db_path) not in _PEB_CACHE_DISABLED_PATHS
+
+
+def _disable_peb_cache(db_path: pathlib.Path, reason: BaseException | str) -> None:
+    path_key = _peb_cache_path_key(db_path)
+    if path_key in _PEB_CACHE_DISABLED_PATHS:
+        return
+    _PEB_CACHE_DISABLED_PATHS.add(path_key)
+    print(
+        f"WARNING: disabling persistent PEB cache at {db_path}: {reason}",
+        file=sys.stderr,
+    )
+
+
+def _configure_peb_cache_connection(conn: sqlite3.Connection) -> None:
+    conn.execute(f"PRAGMA busy_timeout={PEB_CACHE_BUSY_TIMEOUT_MS}")
+
+
+def _is_sqlite_locked_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
 def _init_peb_cache(db_path: pathlib.Path) -> None:
+    """Initialize the cache schema and WAL mode from the parent process."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path, timeout=30.0) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS peb_cache (
-                cache_key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(PEB_CACHE_LOCK_RETRIES):
+        try:
+            with sqlite3.connect(db_path, timeout=PEB_CACHE_TIMEOUT_S) as conn:
+                _configure_peb_cache_connection(conn)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS peb_cache (
+                        cache_key TEXT PRIMARY KEY,
+                        value_json TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.commit()
+            _PEB_CACHE_DISABLED_PATHS.discard(_peb_cache_path_key(db_path))
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_locked_error(exc):
+                raise
+            last_error = exc
+            if attempt + 1 < PEB_CACHE_LOCK_RETRIES:
+                time.sleep(PEB_CACHE_RETRY_BASE_S * (2**attempt))
+    raise RuntimeError(
+        f"PEB cache initialization remained locked after "
+        f"{PEB_CACHE_LOCK_RETRIES} attempts: {db_path}"
+    ) from last_error
+
+
+def _prepare_peb_cache(out_dir: pathlib.Path | None) -> bool:
+    """Initialize persistent cache once in the parent, or disable it safely."""
+    db_path = _peb_cache_path(out_dir)
+    if db_path is None:
+        return False
+    try:
+        _init_peb_cache(db_path)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        _disable_peb_cache(db_path, exc)
+        return False
+    return True
+
+
+def _open_peb_cache(db_path: pathlib.Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=PEB_CACHE_TIMEOUT_S)
+    try:
+        _configure_peb_cache_connection(conn)
+    except Exception:
+        conn.close()
+        raise
+    return conn
 
 
 def _peb_cache_key_string(config: dict) -> str:
@@ -629,11 +906,15 @@ def _peb_cache_key_string(config: dict) -> str:
 
 def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> dict[str, Any] | None:
     db_path = _peb_cache_path(out_dir)
-    if db_path is None or not db_path.exists():
+    if (
+        db_path is None
+        or not db_path.exists()
+        or not _peb_cache_is_enabled(db_path)
+    ):
         return None
     cache_key = _peb_cache_key_string(config)
     try:
-        with sqlite3.connect(db_path, timeout=30.0) as conn:
+        with _open_peb_cache(db_path) as conn:
             row = conn.execute(
                 "SELECT value_json FROM peb_cache WHERE cache_key = ?",
                 (cache_key,),
@@ -674,9 +955,10 @@ def _write_persistent_peb_cache(
     value: dict[str, Any],
 ) -> None:
     db_path = _peb_cache_path(out_dir)
-    if db_path is None:
+    if db_path is None or not _peb_cache_is_enabled(db_path):
         return
-    _init_peb_cache(db_path)
+    if not db_path.exists() and not _prepare_peb_cache(out_dir):
+        return
     payload = {
         "peb_position_m": _json_safe_float(value.get("peb_position_m")),
         "peb_scalar_m": _json_safe_float(value.get("peb_scalar_m")),
@@ -695,13 +977,34 @@ def _write_persistent_peb_cache(
             value.get("peb_reference_type", "matched_model")
         ),
     }
-    with sqlite3.connect(db_path, timeout=30.0) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "INSERT OR REPLACE INTO peb_cache(cache_key, value_json) VALUES (?, ?)",
-            (_peb_cache_key_string(config), json.dumps(payload, sort_keys=True)),
-        )
-        conn.commit()
+    cache_key = _peb_cache_key_string(config)
+    value_json = json.dumps(payload, sort_keys=True)
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(PEB_CACHE_LOCK_RETRIES):
+        try:
+            with _open_peb_cache(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO peb_cache(cache_key, value_json) VALUES (?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE SET value_json=excluded.value_json
+                    """,
+                    (cache_key, value_json),
+                )
+                conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_locked_error(exc):
+                _disable_peb_cache(db_path, exc)
+                return
+            last_error = exc
+            if attempt + 1 < PEB_CACHE_LOCK_RETRIES:
+                time.sleep(PEB_CACHE_RETRY_BASE_S * (2**attempt))
+    _disable_peb_cache(
+        db_path,
+        RuntimeError(
+            f"cache write remained locked after {PEB_CACHE_LOCK_RETRIES} attempts"
+        ),
+    )
 
 
 def position_peb_from_global_efim(
@@ -875,6 +1178,7 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
     true_components = result.get("true_components", {})
     timing = result.get("timing", {})
     reliability = result.get("reliability", final.get("reliability", {}))
+    variant_diagnostics = result.get("variant_diagnostics", {})
 
     y_nmse = float("nan")
     if final.get("Y_hat") is not None and result.get("Y_true") is not None:
@@ -888,6 +1192,14 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
     metrics = {
         "K": scene.get("K", ""),
         "receiver_mode": scene.get("receiver_mode", ""),
+        "nested_receiver_noise_convention": result.get(
+            "nested_receiver_noise_convention", ""
+        ),
+        "reference_receiver_mode": result.get("reference_receiver_mode", ""),
+        "reference_sigma2": _finite_float(result.get("reference_sigma2")),
+        "nested_base_y_noisy_hash": result.get(
+            "nested_base_y_noisy_hash", ""
+        ),
         "warning": result.get("warning", ""),
         "position_rmse_m": pos_rmse,
         "y_nmse": y_nmse,
@@ -897,10 +1209,31 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             get_nested(result, ["final.raw_objective_final", "final.raw_objective"], np.nan)
         ),
         "outlier_flag": bool(np.isfinite(pos_rmse) and pos_rmse > outlier_threshold_m),
+        "position_error_m": pos_rmse,
         "selected_branch": get_nested(result, ["selected_branch", "final.selected_branch"], ""),
         "final_refinement_method": get_nested(result, ["final.final_refinement_method"], ""),
+        "final_runner_name": variant_diagnostics.get("final_runner_name", ""),
+        "used_main_single_proposed_path": variant_diagnostics.get(
+            "used_main_single_proposed_path", False
+        ),
+        "variant_config_hash": variant_diagnostics.get("variant_config_hash", ""),
         "global_vp_mode": get_nested(result, ["final.global_vp_mode", "final.vp_mode"], ""),
+        "jones_mode": variant_diagnostics.get(
+            "jones_mode",
+            get_nested(result, ["final.selected_vp_family_branch", "final.global_vp_mode"], ""),
+        ),
+        "adaptive_enabled": variant_diagnostics.get("adaptive_enabled", False),
+        "adaptive_policy_name": variant_diagnostics.get("adaptive_policy_name", ""),
         "selected_vp_family_branch": get_nested(result, ["final.selected_vp_family_branch"], ""),
+        "lambda_path_min": _finite_float(variant_diagnostics.get("lambda_path_min")),
+        "lambda_path_max": _finite_float(variant_diagnostics.get("lambda_path_max")),
+        "lambda_path_mean": _finite_float(variant_diagnostics.get("lambda_path_mean")),
+        "lambda_clipped_fraction": _finite_float(
+            variant_diagnostics.get("lambda_clipped_fraction")
+        ),
+        "used_stage1_regularizer": variant_diagnostics.get(
+            "used_stage1_regularizer", False
+        ),
         "linear_nuisance_dim": get_nested(result, ["final.linear_nuisance_dim"], ""),
         "nonlinear_dim": get_nested(result, ["final.nonlinear_dim"], ""),
         "fixed_pol_score": _finite_float(get_nested(result, ["final.fixed_pol_score"], np.nan)),
@@ -1146,13 +1479,61 @@ def run_final_vp_from_shared_stage1(
     variant_spec: dict[str, Any],
     allow_stage2: bool,
 ) -> dict:
-    _ = variant_spec
-    return run_from_existing_stage1(
+    runner_name = str(variant_spec.get("_runner", "proposed_post_stage1"))
+    result = run_from_existing_stage1(
         data,
         {"estimate": copy.deepcopy(stage1["estimate"]), "timing": dict(stage1["timing"])},
         config,
         allow_stage2=allow_stage2,
     )
+    return _annotate_variant_result(
+        result,
+        config,
+        final_runner_name=runner_name,
+        used_main_single_proposed_path=runner_name == "main_single_proposed",
+    )
+
+
+def run_fig1_adaptive_from_shared(
+    data: dict,
+    stage1: dict,
+    config: dict,
+) -> dict:
+    """Run the Fig.1 Proposed path using the same post-Stage-I logic as main_single."""
+    spec = _variant_specs(FIG1_FIG2_SHARED_FIGURE)[
+        "adaptive_jones_vp_proposed"
+    ]
+    proposed_config = apply_nested_update(copy.deepcopy(config), spec)
+    return run_final_vp_from_shared_stage1(
+        copy.deepcopy(data),
+        copy.deepcopy(stage1),
+        proposed_config,
+        spec,
+        allow_stage2=True,
+    )
+
+
+def _config_diff_summary(left: dict, right: dict) -> str:
+    keys = sorted(set(left) | set(right))
+    differences = []
+    for key in keys:
+        left_value = json.dumps(left.get(key), sort_keys=True, default=str)
+        right_value = json.dumps(right.get(key), sort_keys=True, default=str)
+        if left_value != right_value:
+            differences.append(key)
+    return ",".join(differences)
+
+
+def _main_single_debug_metrics(result: dict) -> dict[str, Any]:
+    metrics = extract_metrics(result, outlier_threshold_m=float("inf"))
+    mode = str(metrics.get("global_vp_mode", ""))
+    return {
+        "position_error_m": _finite_float(metrics.get("position_error_m")),
+        "y_nmse": _finite_float(metrics.get("y_nmse")),
+        "raw_objective": _finite_float(metrics.get("raw_objective_final")),
+        "global_vp_mode": mode,
+        "adaptive_enabled": mode == "adaptive_jones",
+    }
 
 
 def _peb_result(config: dict, out_dir: pathlib.Path | None = None) -> dict:
@@ -1190,6 +1571,7 @@ def run_one_trial(
     trial_id: int,
     x_name: str,
     x_value: float,
+    paper_k: int,
     outlier_threshold_m: float,
     verbose: bool = False,
     runner: str = "proposed",
@@ -1226,6 +1608,16 @@ def run_one_trial(
             "error": "",
         }
     )
+    _set_row_k_metadata(
+        row,
+        figure=figure_name,
+        effective_k=int(config["K"]),
+        paper_k=int(paper_k),
+        x_value=float(x_value),
+        receiver_mode=str(config.get("receiver_mode", "full_6d")),
+        config_seed=int(config["seed"]),
+        num_ris_paths=_num_ris_paths(config),
+    )
     try:
         stream = contextlib.nullcontext() if verbose else contextlib.redirect_stdout(log_buffer)
         with stream, thread_limit_context(blas_threads):
@@ -1237,14 +1629,18 @@ def run_one_trial(
                 result = _peb_result(config, out_dir)
             else:
                 result = run_single_proposed_diagnostic(config, allow_stage2=allow_stage2)
+        result = _annotate_variant_result(
+            result,
+            config,
+            final_runner_name=runner,
+            used_main_single_proposed_path=runner == "main_single_proposed",
+        )
         row.update(extract_metrics(result, outlier_threshold_m))
         compact_experiment_result(result, keep_large_arrays=store_large_arrays)
         del result
     except Exception as exc:  # noqa: BLE001 - failed trials must be logged as rows.
         row["failed"] = True
         row["error"] = f"{type(exc).__name__}: {exc}"
-        row["K"] = config.get("K", "")
-        row["receiver_mode"] = config.get("receiver_mode", "full_6d")
         log_buffer.write(f"\nERROR {type(exc).__name__}: {exc}\n")
     if trim_memory_enabled:
         trim_memory()
@@ -1427,6 +1823,14 @@ def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, An
             "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
             "n": len(group),
         }
+        for metadata_field in ("K", "paper_k", "effective_K"):
+            unique_values = {
+                int(value)
+                for row in group
+                if np.isfinite(value := _to_float(row.get(metadata_field)))
+            }
+            if len(unique_values) == 1:
+                row_summary[metadata_field] = unique_values.pop()
         for raw_metric in RAW_SUMMARY_METRICS:
             raw_stats = _summary_stats(_finite_metric_values(group, raw_metric))
             for name, value in raw_stats.items():
@@ -1460,12 +1864,25 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     fig, ax = plt.subplots(figsize=(6.4, 4.2))
     markers = ["o", "s", "^", "D", "v", "P"]
     variants = list(dict.fromkeys(row["variant"] for row in summary_rows))
+    proposed_variant = "adaptive_jones_vp_proposed"
+    if proposed_variant in variants:
+        variants = [
+            variant for variant in variants if variant != proposed_variant
+        ] + [proposed_variant]
     for idx, variant in enumerate(variants):
         rows = [row for row in summary_rows if row["variant"] == variant]
         xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
         ys = np.asarray([_to_float(row["plot_y_mean"]) for row in rows], dtype=float)
         order = np.argsort(xs)
-        ax.plot(xs[order], ys[order], marker=markers[idx % len(markers)], linewidth=1.5, label=variant)
+        is_proposed = variant == proposed_variant
+        ax.plot(
+            xs[order],
+            ys[order],
+            marker=markers[idx % len(markers)],
+            linewidth=2.5 if is_proposed else 1.5,
+            label="Proposed" if is_proposed else variant,
+            zorder=10 if is_proposed else 2,
+        )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     if figure == "fig5":
@@ -1479,8 +1896,84 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     plt.close(fig)
 
 
+def _write_duplicate_curves_report(
+    figure: str,
+    summary_rows: list[dict[str, Any]],
+    trial_rows: list[dict[str, Any]],
+    out_dir: pathlib.Path,
+) -> dict[str, Any]:
+    proposed_variant = "adaptive_jones_vp_proposed"
+    proposed = sorted(
+        [row for row in summary_rows if row.get("variant") == proposed_variant],
+        key=lambda row: _to_float(row.get("x_value")),
+    )
+    duplicates = []
+    for variant in sorted(
+        {
+            str(row.get("variant"))
+            for row in summary_rows
+            if row.get("variant") != proposed_variant
+        }
+    ):
+        candidate = sorted(
+            [row for row in summary_rows if row.get("variant") == variant],
+            key=lambda row: _to_float(row.get("x_value")),
+        )
+        if len(candidate) != len(proposed) or not candidate:
+            continue
+        proposed_points = [
+            (_to_float(row.get("x_value")), _to_float(row.get("plot_y_mean")))
+            for row in proposed
+        ]
+        candidate_points = [
+            (_to_float(row.get("x_value")), _to_float(row.get("plot_y_mean")))
+            for row in candidate
+        ]
+        if proposed_points == candidate_points:
+            duplicates.append(variant)
+    proposed_trials = [
+        row for row in trial_rows if row.get("variant") == proposed_variant
+    ]
+    report = {
+        "figure": figure,
+        "proposed_variant": proposed_variant,
+        "exact_duplicate_variants": duplicates,
+        "overlap_explanation": (
+            "Adaptive policy selected the fixed-pol anchor for every reported point."
+            if duplicates
+            and all(
+                str(row.get("selected_vp_family_branch")) == "fixed_pol_anchor"
+                for row in proposed_trials
+            )
+            else "No exact duplicate curve detected."
+            if not duplicates
+            else "Exact overlap detected; inspect per-trial dispatch diagnostics."
+        ),
+        "lambda_diagnostics": [
+            {
+                "trial_id": row.get("trial_id"),
+                "seed": row.get("seed"),
+                "snr_db": row.get("snr_db"),
+                "lambda_path_min": row.get("lambda_path_min"),
+                "lambda_path_max": row.get("lambda_path_max"),
+                "lambda_path_mean": row.get("lambda_path_mean"),
+                "lambda_clipped_fraction": row.get("lambda_clipped_fraction"),
+                "selected_vp_family_branch": row.get(
+                    "selected_vp_family_branch"
+                ),
+                "variant_config_hash": row.get("variant_config_hash"),
+            }
+            for row in proposed_trials
+        ],
+    }
+    (out_dir / "duplicate_curves_report.json").write_text(
+        json.dumps(report, indent=2, default=str) + "\n"
+    )
+    return report
+
+
 def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
-    return {
+    signature = {
         "n_trials": int(args.n_trials),
         "snr_grid": [float(value) for value in snr_grid],
         "paper_k": int(args.paper_k),
@@ -1491,7 +1984,16 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "git_commit": _git_commit_hash(),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
+        "debug_compare_main_single_proposed": bool(
+            getattr(args, "debug_compare_main_single_proposed", False)
+        ),
+        "fig1_proposed_dispatch_version": 2,
     }
+    if any(figure in {"fig3", "fig4"} for figure in figures):
+        signature["nested_receiver_noise_convention"] = (
+            NESTED_RECEIVER_NOISE_CONVENTION
+        )
+    return signature
 
 
 def _git_commit_hash() -> str:
@@ -1504,7 +2006,7 @@ def _git_commit_hash() -> str:
 def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
     commit = _git_commit_hash()
     timestamp = datetime.now(timezone.utc).isoformat()
-    return {
+    metadata = {
         "git_commit": commit,
         "timestamp": timestamp,
         "timestamp_utc": timestamp,
@@ -1547,6 +2049,13 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "numpy": np.__version__,
         "scipy_available": bool(scipy_is_available()),
     }
+    if any(figure in {"fig3", "fig4"} for figure in figures):
+        metadata["nested_receiver_noise_convention"] = (
+            NESTED_RECEIVER_NOISE_CONVENTION
+        )
+        metadata["nested_receiver_reference_mode"] = "full_6d"
+        metadata["snr_interpretation_fig3_fig4"] = "full_6d_reference_snr"
+    return metadata
 
 
 def _read_metadata(path: pathlib.Path) -> dict[str, Any] | None:
@@ -1592,6 +2101,8 @@ def _csv_matches_request(
 ) -> bool:
     if not rows:
         return False
+    if not _rows_have_k_cache_columns(rows):
+        return False
     canonical_figure = FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure
     x_name, x_values = _figure_x_grid(canonical_figure, snr_grid, args.k_grid_values)
     expected_variants = set(_expected_variant_names(figure))
@@ -1609,9 +2120,21 @@ def _csv_matches_request(
         if variant not in expected_variants or x_value not in expected_x_values:
             return False
         row_k_value = _to_float(row.get("K"))
+        effective_k_value = _to_float(row.get("effective_K"))
+        paper_k_value = _to_float(row.get("paper_k"))
         row_k = int(row_k_value) if np.isfinite(row_k_value) else None
+        effective_k = (
+            int(effective_k_value) if np.isfinite(effective_k_value) else None
+        )
+        row_paper_k = (
+            int(paper_k_value) if np.isfinite(paper_k_value) else None
+        )
         expected_k = int(x_value) if canonical_figure == "fig6" else int(args.paper_k)
-        if row_k != expected_k:
+        if (
+            row_k != expected_k
+            or effective_k != expected_k
+            or row_paper_k != int(args.paper_k)
+        ):
             return False
         if row.get("x_name") != x_name:
             return False
@@ -1626,6 +2149,11 @@ def _csv_matches_request(
     )
 
 
+def _rows_have_k_cache_columns(rows: list[dict[str, Any]]) -> bool:
+    required = {"K", "paper_k", "effective_K"}
+    return bool(rows) and required.issubset(rows[0])
+
+
 def _can_reuse_csv(
     trial_csv: pathlib.Path,
     figure: str,
@@ -1637,6 +2165,12 @@ def _can_reuse_csv(
     if not trial_csv.exists() or args.force_rerun:
         return False, []
     rows = _read_csv(trial_csv)
+    if not _rows_have_k_cache_columns(rows):
+        print(
+            f"{trial_csv}: stale cache missing K/paper_k/effective_K columns; "
+            "recomputing trials"
+        )
+        return False, rows
     if args.reuse_existing:
         return True, rows
     metadata_ok = _metadata_matches_request(existing_metadata, args, snr_grid, figures)
@@ -1683,6 +2217,21 @@ def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[li
             "error": f"{type(exc).__name__}: {exc}",
         }
     )
+    effective_k = (
+        int(task["x_value"])
+        if task["figure"] == "fig6"
+        else int(task["paper_k"])
+    )
+    _set_row_k_metadata(
+        row,
+        figure=str(task["figure"]),
+        effective_k=effective_k,
+        paper_k=int(task["paper_k"]),
+        x_value=float(task["x_value"]),
+        receiver_mode=str(task.get("receiver_mode", "full_6d")),
+        config_seed=int(task["trial_seed"]),
+        num_ris_paths=task.get("num_ris_paths", ""),
+    )
     return _ensure_worker_result_rows_safe([row]), f"\nERROR {type(exc).__name__}: {exc}\n"
 
 
@@ -1704,6 +2253,7 @@ def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             trial_id=task["trial_id"],
             x_name=task["x_name"],
             x_value=task["x_value"],
+            paper_k=task["paper_k"],
             outlier_threshold_m=task["outlier_threshold_m"],
             verbose=task["verbose"],
             runner=task["runner"],
@@ -1740,6 +2290,7 @@ def _trial_tasks(
     tasks = []
     for x_value in x_values:
         snr_db = float(x_value) if x_name == "snr_db" else 0.0
+        effective_k = int(x_value) if figure == "fig6" else int(paper_k)
         for variant, updates in variants.items():
             for trial_id, trial_seed in enumerate(trial_seeds):
                 tasks.append(
@@ -1752,7 +2303,14 @@ def _trial_tasks(
                         "snr_db": snr_db,
                         "x_name": x_name,
                         "x_value": float(x_value),
+                        "K": effective_k,
                         "paper_k": int(paper_k),
+                        "effective_K": effective_k,
+                        "num_ris_paths": "",
+                        "receiver_mode": str(
+                            updates.get("receiver_mode", "full_6d")
+                        ),
+                        "config_seed": int(trial_seed),
                         "outlier_threshold_m": float(outlier_threshold_m),
                         "verbose": bool(verbose),
                         "runner": str(updates.get("_runner", "proposed")),
@@ -1783,6 +2341,7 @@ def _grouped_tasks(
     respect_existing_blas_env: bool,
     trim_memory_enabled: bool,
     out_dir: pathlib.Path,
+    debug_compare_main_single_proposed: bool = False,
 ) -> list[dict[str, Any]]:
     tasks = []
     for x_value in x_values:
@@ -1800,6 +2359,9 @@ def _grouped_tasks(
                     "x_name": x_name,
                     "x_value": float(x_value),
                     "K": int(k_paths),
+                    "paper_k": int(paper_k),
+                    "effective_K": int(k_paths),
+                    "config_seed": int(trial_seed),
                     "outlier_threshold_m": float(outlier_threshold_m),
                     "store_large_arrays": bool(store_large_arrays),
                     "profile_memory": bool(profile_memory),
@@ -1807,6 +2369,9 @@ def _grouped_tasks(
                     "respect_existing_blas_env": bool(respect_existing_blas_env),
                     "trim_memory": bool(trim_memory_enabled),
                     "out_dir": str(out_dir),
+                    "debug_compare_main_single_proposed": bool(
+                        debug_compare_main_single_proposed
+                    ),
                 }
             )
     return tasks
@@ -1842,6 +2407,9 @@ def _tasks_for_figure(
             respect_existing_blas_env=bool(args.respect_existing_blas_env),
             trim_memory_enabled=bool(args.trim_memory),
             out_dir=pathlib.Path(args.out_dir),
+            debug_compare_main_single_proposed=bool(
+                getattr(args, "debug_compare_main_single_proposed", False)
+            ),
         )
     tasks = _trial_tasks(
         figure=figure,
@@ -1859,11 +2427,6 @@ def _tasks_for_figure(
         trim_memory_enabled=bool(args.trim_memory),
         out_dir=pathlib.Path(args.out_dir),
     )
-    if args.task_grouping == "grouped" and grouped_group is None and figure == "fig3":
-        for task in tasks:
-            task["task_grouping_warning"] = (
-                "Fig.3 receiver modes change observation masks/noise; using variant tasks."
-            )
     return tasks
 
 
@@ -1873,6 +2436,7 @@ def _init_worker(
     blas_threads: int,
     respect_existing_blas_env: bool = False,
     trim_memory_enabled: bool = True,
+    peb_cache_enabled: bool = True,
 ) -> None:
     global _WORKER_BASE_CONFIG, _WORKER_OUT_DIR, _WORKER_BLAS_THREADS
     global _WORKER_RESPECT_EXISTING_BLAS_ENV, _WORKER_TRIM_MEMORY
@@ -1887,7 +2451,11 @@ def _init_worker(
     )
     cache_path = _peb_cache_path(_WORKER_OUT_DIR)
     if cache_path is not None:
-        _init_peb_cache(cache_path)
+        path_key = _peb_cache_path_key(cache_path)
+        if peb_cache_enabled:
+            _PEB_CACHE_DISABLED_PATHS.discard(path_key)
+        else:
+            _PEB_CACHE_DISABLED_PATHS.add(path_key)
 
 
 def _base_worker_config() -> dict:
@@ -1955,6 +2523,24 @@ def _peb_metrics_result_for_config(
             "K": int(config.get("K", "")),
             "receiver_mode": str(config.get("receiver_mode", config.get("evs_selection", "full_6d"))),
         },
+        "nested_receiver_noise_convention": (
+            data.get("nested_receiver_noise_convention", "")
+            if data is not None
+            else ""
+        ),
+        "reference_receiver_mode": (
+            data.get("reference_receiver_mode", "") if data is not None else ""
+        ),
+        "reference_sigma2": (
+            data.get("reference_sigma2", float("nan"))
+            if data is not None
+            else float("nan")
+        ),
+        "nested_base_y_noisy_hash": (
+            data.get("nested_base_y_noisy_hash", "")
+            if data is not None
+            else ""
+        ),
         **copy.deepcopy(cached),
         "final": {},
         "timing": {},
@@ -1972,16 +2558,31 @@ def _row_for_result_or_failure(
     x_name: str,
     x_value: float,
     k_paths: int,
+    paper_k: int,
+    num_ris_paths: int | str,
     receiver_mode: str,
     outlier_threshold_m: float,
     store_large_arrays: bool,
     profile_memory: bool,
+    result_identity_guard: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     start = time.perf_counter()
     rss_before = _rss_mb() if profile_memory else float("nan")
     try:
         with thread_limit_context(_WORKER_BLAS_THREADS):
             result = result_factory()
+        if result_identity_guard is not None:
+            token = result.get("_grouped_result_identity_token")
+            if token is None:
+                token = f"{variant}:{time.perf_counter_ns()}:{id(result)}"
+                result["_grouped_result_identity_token"] = token
+            prior_variant = result_identity_guard["tokens"].get(token)
+            if prior_variant is not None:
+                raise GroupedResultReuseError(
+                    "grouped execution reused one final result object for "
+                    f"{prior_variant!r} and {variant!r}"
+                )
+            result_identity_guard["tokens"][token] = variant
         row = _result_to_row(
             result,
             figure=figure,
@@ -1998,7 +2599,25 @@ def _row_for_result_or_failure(
             profile_memory=profile_memory,
             compact_result=False,
         )
+        result_effective_k = _to_float(row.get("K"))
+        effective_k = (
+            int(result_effective_k)
+            if np.isfinite(result_effective_k)
+            else int(k_paths)
+        )
+        _set_row_k_metadata(
+            row,
+            figure=figure,
+            effective_k=effective_k,
+            paper_k=int(paper_k),
+            x_value=float(x_value),
+            receiver_mode=str(row.get("receiver_mode") or receiver_mode),
+            config_seed=int(trial_seed),
+            num_ris_paths=num_ris_paths,
+        )
         del result
+    except GroupedResultReuseError:
+        raise
     except Exception as exc:  # noqa: BLE001 - failed variants must be logged as rows.
         row = _failure_row_from_payload(
             figure=figure,
@@ -2011,6 +2630,16 @@ def _row_for_result_or_failure(
             k_paths=k_paths,
             receiver_mode=receiver_mode,
             exc=exc,
+        )
+        _set_row_k_metadata(
+            row,
+            figure=figure,
+            effective_k=int(k_paths),
+            paper_k=int(paper_k),
+            x_value=float(x_value),
+            receiver_mode=receiver_mode,
+            config_seed=int(trial_seed),
+            num_ris_paths=num_ris_paths,
         )
         if _WORKER_TRIM_MEMORY:
             trim_memory()
@@ -2038,6 +2667,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     x_name = str(task["x_name"])
     x_value = float(task["x_value"])
     k_paths = int(task["K"])
+    paper_k = int(task["paper_k"])
     out_dir = pathlib.Path(task["out_dir"]) if task.get("out_dir") else _WORKER_OUT_DIR
     outlier_threshold_m = float(task["outlier_threshold_m"])
     store_large_arrays = bool(task["store_large_arrays"])
@@ -2057,12 +2687,97 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
         receiver_mode = str(
             base_config.get("receiver_mode", base_config.get("evs_selection", "full_6d"))
         )
+        num_ris_paths = _num_ris_paths(base_config)
         if group in {"fig1_fig2", "fig5", "fig6"}:
             data = _make_data(base_config)
             if group != "fig4":
                 stage1 = run_stage1_only(data, base_config)
-        if group == "fig1_fig2":
+        elif group == "nested_receiver":
+            base_config["receiver_mode"] = "full_6d"
+            base_config["nested_receiver_noise_convention"] = (
+                NESTED_RECEIVER_NOISE_CONVENTION
+            )
+            data = _make_data(base_config)
+        if group == "nested_receiver":
+            variants = _variant_specs(figure)
+            for variant, updates in variants.items():
+                config = apply_nested_update(copy.deepcopy(base_config), updates)
+                mode = str(config.get("receiver_mode", "full_6d"))
+                nested_data = make_nested_receiver_mode_data(data, mode, config)
+                if figure == "fig3":
+                    factory = (
+                        lambda nested_data=nested_data, config=config: (
+                            run_single_proposed_diagnostic(
+                                config,
+                                allow_stage2=bool(
+                                    updates.get("_allow_stage2", True)
+                                ),
+                                data_override=nested_data,
+                            )
+                        )
+                    )
+                else:
+                    factory = (
+                        lambda nested_data=nested_data, config=config: (
+                            _peb_metrics_result_for_config(
+                                config, out_dir, nested_data
+                            )
+                        )
+                    )
+                row, log = _row_for_result_or_failure(
+                    result_factory=factory,
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
+                    receiver_mode=mode,
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+            if figure == "fig3":
+                variant = "full_6d_evs_peb"
+                updates = _extra_peb_specs("fig3")[variant]
+                config = apply_nested_update(copy.deepcopy(base_config), updates)
+                nested_data = make_nested_receiver_mode_data(
+                    data, "full_6d", config
+                )
+                row, log = _row_for_result_or_failure(
+                    result_factory=lambda nested_data=nested_data, config=config: (
+                        _peb_metrics_result_for_config(
+                            config, out_dir, nested_data
+                        )
+                    ),
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=snr_db,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
+                    receiver_mode="full_6d",
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
+        elif group == "fig1_fig2":
             variants = _variant_specs(FIG1_FIG2_SHARED_FIGURE)
+            result_identity_guard: dict[str, Any] = {"tokens": {}}
             validation_variants = {
                 str(name) for name in task.get("validation_variants", [])
             }
@@ -2079,7 +2794,14 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 if runner == "stage1_only":
                     factory = (
                         lambda data=data, stage1=stage1, config=config: (
-                            _stage1_only_result_from_shared(data, stage1, config)
+                            _annotate_variant_result(
+                                _stage1_only_result_from_shared(
+                                    data, copy.deepcopy(stage1), config
+                                ),
+                                config,
+                                final_runner_name="stage1_only",
+                                used_main_single_proposed_path=False,
+                            )
                         )
                     )
                 else:
@@ -2102,11 +2824,56 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
                     receiver_mode=receiver_mode,
                     outlier_threshold_m=outlier_threshold_m,
                     store_large_arrays=store_large_arrays,
                     profile_memory=profile_memory,
+                    result_identity_guard=result_identity_guard,
                 )
+                if (
+                    variant == "adaptive_jones_vp_proposed"
+                    and bool(task.get("debug_compare_main_single_proposed", False))
+                    and not bool(row.get("failed"))
+                ):
+                    main_result = run_single_proposed_diagnostic(
+                        copy.deepcopy(config),
+                        data_override=copy.deepcopy(data),
+                    )
+                    main_metrics = _main_single_debug_metrics(main_result)
+                    row.update(
+                        {
+                            "debug_main_position_error_m": main_metrics[
+                                "position_error_m"
+                            ],
+                            "debug_main_y_nmse": main_metrics["y_nmse"],
+                            "debug_main_raw_objective": main_metrics[
+                                "raw_objective"
+                            ],
+                            "debug_main_global_vp_mode": main_metrics[
+                                "global_vp_mode"
+                            ],
+                            "debug_main_adaptive_enabled": main_metrics[
+                                "adaptive_enabled"
+                            ],
+                            "debug_config_diff_summary": _config_diff_summary(
+                                config, main_result.get("stage1_config", {})
+                            ),
+                        }
+                    )
+                    position_diff = abs(
+                        _to_float(row.get("position_error_m"))
+                        - _to_float(main_metrics["position_error_m"])
+                    )
+                    if np.isfinite(position_diff) and position_diff > 1.0e-6:
+                        logs.append(
+                            "\nWARNING FIG1_MAIN_SINGLE_MISMATCH "
+                            f"trial_id={trial_id} snr_db={snr_db} "
+                            f"position_diff_m={position_diff:.6e}\n"
+                        )
+                    compact_experiment_result(main_result, keep_large_arrays=False)
+                    del main_result
                 rows.append(row)
                 if log:
                     logs.append(log)
@@ -2117,7 +2884,12 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 )
                 row, log = _row_for_result_or_failure(
                     result_factory=lambda config=peb_config, data=data: (
-                        _peb_metrics_result_for_config(config, out_dir, data)
+                        _annotate_variant_result(
+                            _peb_metrics_result_for_config(config, out_dir, data),
+                            config,
+                            final_runner_name="peb_only",
+                            used_main_single_proposed_path=False,
+                        )
                     ),
                     figure=figure,
                     variant="PEB",
@@ -2127,10 +2899,13 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
                     receiver_mode="full_6d",
                     outlier_threshold_m=outlier_threshold_m,
                     store_large_arrays=store_large_arrays,
                     profile_memory=profile_memory,
+                    result_identity_guard=result_identity_guard,
                 )
                 rows.append(row)
                 if log:
@@ -2156,6 +2931,8 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
                     receiver_mode=receiver_mode,
                     outlier_threshold_m=outlier_threshold_m,
                     store_large_arrays=store_large_arrays,
@@ -2181,6 +2958,8 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
                     receiver_mode=receiver_mode,
                     outlier_threshold_m=outlier_threshold_m,
                     store_large_arrays=store_large_arrays,
@@ -2200,6 +2979,8 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 x_name=x_name,
                 x_value=x_value,
                 k_paths=k_paths,
+                paper_k=paper_k,
+                num_ris_paths=num_ris_paths,
                 receiver_mode=receiver_mode,
                 outlier_threshold_m=outlier_threshold_m,
                 store_large_arrays=store_large_arrays,
@@ -2208,33 +2989,6 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
             rows.append(row)
             if log:
                 logs.append(log)
-        elif group == "fig4":
-            for variant, updates in _variant_specs("fig4").items():
-                config = _config_from_base(
-                    figure=figure,
-                    seed=trial_seed,
-                    snr_db=snr_db,
-                    k_paths=k_paths,
-                    updates=updates,
-                )
-                row, log = _row_for_result_or_failure(
-                    result_factory=lambda config=config: _peb_result(config, out_dir),
-                    figure=figure,
-                    variant=variant,
-                    trial_id=trial_id,
-                    trial_seed=trial_seed,
-                    snr_db=snr_db,
-                    x_name=x_name,
-                    x_value=x_value,
-                    k_paths=k_paths,
-                    receiver_mode=str(config.get("receiver_mode", "full_6d")),
-                    outlier_threshold_m=outlier_threshold_m,
-                    store_large_arrays=store_large_arrays,
-                    profile_memory=profile_memory,
-                )
-                rows.append(row)
-                if log:
-                    logs.append(log)
         else:
             raise ValueError(f"unsupported grouped task group {group!r}")
     finally:
@@ -2257,6 +3011,7 @@ def _iter_task_results(
     respect_existing_blas_env: bool,
     trim_memory_enabled: bool,
 ) -> Iterable[tuple[list[dict[str, Any]], str]]:
+    peb_cache_enabled = _prepare_peb_cache(out_dir)
     if process_workers == 1:
         _init_worker(
             base_config,
@@ -2264,6 +3019,7 @@ def _iter_task_results(
             blas_threads,
             respect_existing_blas_env,
             trim_memory_enabled,
+            peb_cache_enabled,
         )
         for task in tasks:
             if task.get("task_kind") == "grouped":
@@ -2283,6 +3039,7 @@ def _iter_task_results(
             int(blas_threads),
             bool(respect_existing_blas_env),
             bool(trim_memory_enabled),
+            bool(peb_cache_enabled),
         ),
     ) as pool:
         for result in pool.imap_unordered(worker, tasks, chunksize=1):
@@ -2337,6 +3094,30 @@ def _write_trial_results(
             respect_existing_blas_env=bool(args.respect_existing_blas_env),
             trim_memory_enabled=bool(args.trim_memory),
         ):
+            progress_logger = getattr(args, "progress_logger", None)
+            representative = row_batch[0] if row_batch else {}
+            failed_rows = [
+                row
+                for row in row_batch
+                if str(row.get("failed")).lower() == "true"
+            ]
+            if progress_logger is not None:
+                progress_logger.log(
+                    "task_failed" if failed_rows else "task_done",
+                    "failed" if failed_rows else "completed",
+                    figure=representative.get("figure", ""),
+                    baseline_or_variant=",".join(
+                        str(row.get("variant", "")) for row in row_batch
+                    ),
+                    snr_db=representative.get("snr_db", ""),
+                    trial_id=representative.get("trial_id", ""),
+                    seed=representative.get("seed", ""),
+                    K=representative.get("K", ""),
+                    message="paper ablation trial batch completed",
+                    error="; ".join(
+                        str(row.get("error", "")) for row in failed_rows
+                    ),
+                )
             for row in row_batch:
                 if args.streaming_csv:
                     csv_writer.writerow(row)
@@ -2416,6 +3197,70 @@ def _write_fig1_fig2_derived_outputs(out_dir: pathlib.Path, rows: list[dict[str,
         fig2_summary,
         list(fig2_summary[0].keys()) if fig2_summary else [],
     )
+    _write_duplicate_curves_report("fig1", fig1_summary, rows, out_dir)
+
+
+FIG1_MAIN_SINGLE_CONSISTENCY_FIELDS = [
+    "trial_id",
+    "seed",
+    "snr_db",
+    "fig1_position_error_m",
+    "main_single_position_error_m",
+    "abs_position_diff_m",
+    "fig1_y_nmse",
+    "main_single_y_nmse",
+    "fig1_raw_objective",
+    "main_single_raw_objective",
+    "fig1_global_vp_mode",
+    "main_single_global_vp_mode",
+    "fig1_adaptive_enabled",
+    "main_single_adaptive_enabled",
+    "config_diff_summary",
+]
+
+
+def _write_fig1_main_single_consistency(
+    out_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+) -> None:
+    consistency_rows = []
+    for row in rows:
+        if row.get("variant") != "adaptive_jones_vp_proposed":
+            continue
+        main_position = _to_float(row.get("debug_main_position_error_m"))
+        fig_position = _to_float(row.get("position_error_m"))
+        if not np.isfinite(main_position):
+            continue
+        consistency_rows.append(
+            {
+                "trial_id": row.get("trial_id"),
+                "seed": row.get("seed"),
+                "snr_db": row.get("snr_db"),
+                "fig1_position_error_m": fig_position,
+                "main_single_position_error_m": main_position,
+                "abs_position_diff_m": abs(fig_position - main_position),
+                "fig1_y_nmse": row.get("y_nmse"),
+                "main_single_y_nmse": row.get("debug_main_y_nmse"),
+                "fig1_raw_objective": row.get("raw_objective_final"),
+                "main_single_raw_objective": row.get(
+                    "debug_main_raw_objective"
+                ),
+                "fig1_global_vp_mode": row.get("global_vp_mode"),
+                "main_single_global_vp_mode": row.get(
+                    "debug_main_global_vp_mode"
+                ),
+                "fig1_adaptive_enabled": row.get("adaptive_enabled"),
+                "main_single_adaptive_enabled": row.get(
+                    "debug_main_adaptive_enabled"
+                ),
+                "config_diff_summary": row.get("debug_config_diff_summary"),
+            }
+        )
+    _write_csv(
+        out_dir / "fig1_main_single_consistency.csv",
+        consistency_rows,
+        FIG1_MAIN_SINGLE_CONSISTENCY_FIELDS,
+    )
 
 
 def _write_fig1_fig2_derived_outputs_from_csv(
@@ -2472,6 +3317,8 @@ def _run_fig1_fig2_shared_trials(
         list(shared_summary[0].keys()) if shared_summary else [],
     )
     _write_fig1_fig2_derived_outputs(out_dir, rows)
+    if bool(getattr(args, "debug_compare_main_single_proposed", False)):
+        _write_fig1_main_single_consistency(out_dir, rows)
     return rows
 
 
@@ -2526,6 +3373,10 @@ def _ensure_fig1_fig2_shared_outputs(
         list(shared_summary[0].keys()) if shared_summary else [],
     )
     _write_fig1_fig2_derived_outputs_from_csv(out_dir, shared_trial_csv)
+    if bool(getattr(args, "debug_compare_main_single_proposed", False)):
+        _write_fig1_main_single_consistency(
+            out_dir, _read_csv(shared_trial_csv)
+        )
 
 
 def _ensure_figure_outputs(
@@ -2563,12 +3414,11 @@ def _ensure_figure_outputs(
         }
         out_dir.mkdir(parents=True, exist_ok=True)
         grouped_group = {
-            "fig4": "fig4",
+            "fig3": "nested_receiver",
+            "fig4": "nested_receiver",
             "fig5": "fig5",
             "fig6": "fig6",
         }.get(figure)
-        if figure == "fig3":
-            grouped_group = None
         tasks = _tasks_for_figure(
             figure=figure,
             grouped_group=grouped_group,
@@ -2629,12 +3479,11 @@ def _run_figure(
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     grouped_group = {
-        "fig4": "fig4",
+        "fig3": "nested_receiver",
+        "fig4": "nested_receiver",
         "fig5": "fig5",
         "fig6": "fig6",
     }.get(figure)
-    if figure == "fig3":
-        grouped_group = None
     tasks = _tasks_for_figure(
         figure=figure,
         grouped_group=grouped_group,
@@ -2856,6 +3705,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--profile-memory", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
+    parser.add_argument("--quiet-progress", action="store_true")
+    parser.add_argument(
+        "--debug-compare-main-single-proposed",
+        action="store_true",
+        help=(
+            "Re-run main_single proposed on each Fig.1 shared realization and "
+            "write a numerical consistency CSV."
+        ),
+    )
     args = parser.parse_args(argv_list)
     if args.max_workers is not None:
         if (
@@ -2871,6 +3730,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.blas_threads = int(args.blas_threads)
     args.k_grid_values = parse_k_grid(args.k_grid)
     return args
+
+
+def _progress_task_count(
+    args: argparse.Namespace,
+    figures: list[str],
+    snr_grid: list[float],
+) -> int:
+    total = 0
+    counted_shared = False
+    for figure in figures:
+        if _is_fig1_fig2(figure):
+            if counted_shared:
+                continue
+            counted_shared = True
+            figure_key = FIG1_FIG2_SHARED_FIGURE
+            x_count = len(snr_grid)
+        else:
+            figure_key = figure
+            x_count = (
+                len(args.k_grid_values) if figure == "fig6" else len(snr_grid)
+            )
+        multiplier = 1
+        if args.task_grouping == "variant":
+            multiplier = len(
+                {
+                    **_variant_specs(figure_key),
+                    **_extra_peb_specs(figure_key),
+                }
+            )
+        total += int(args.n_trials) * x_count * multiplier
+    return max(total, 1)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -2889,6 +3779,28 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--paper-k must be positive")
     figures = parse_figures(args.figures)
     snr_grid = parse_snr_grid(args.snr_grid)
+    print(f"Running Fig.1-Fig.5 with paper_k = {args.paper_k}")
+    print(f"Running Fig.6 K-grid = {args.k_grid_values}")
+    progress_path = (
+        pathlib.Path(args.progress_log)
+        if args.progress_log is not None
+        else pathlib.Path(args.out_dir) / "progress.jsonl"
+    )
+    progress = ProgressLogger(
+        progress_path,
+        _progress_task_count(args, figures, snr_grid),
+        "run_paper_ablation_figures",
+    )
+    args.progress_logger = progress
+    if not args.quiet_progress:
+        print(f"Progress log: {progress_path}")
+        print("Monitor with:")
+        print(f"    tail -f {progress_path}")
+        print(
+            "    python -m src.experiments.monitor_progress "
+            f"--progress-log {progress_path}"
+        )
+    progress.log("start", "running", message="paper ablation experiment started")
     n_tasks = max(
         1,
         int(args.n_trials)
@@ -2924,6 +3836,12 @@ def main(argv: list[str] | None = None) -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.validate_grouped_equivalence:
         validate_grouped_equivalence(args, snr_grid)
+        progress.log(
+            "finished",
+            "completed",
+            message="grouped equivalence validation finished",
+        )
+        progress.close()
         return
     metadata_path = args.out_dir / "experiment_metadata.json"
     existing_metadata = _read_metadata(metadata_path)
@@ -2958,6 +3876,8 @@ def main(argv: list[str] | None = None) -> None:
         completed_figures.add(figure)
     with metadata_path.open("w") as handle:
         json.dump(_metadata(args, snr_grid, figures), handle, indent=2)
+    progress.log("finished", "completed", message="paper ablation experiment finished")
+    progress.close()
     print(f"Wrote paper ablation outputs to {args.out_dir}")
 
 

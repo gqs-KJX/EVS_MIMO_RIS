@@ -16,13 +16,73 @@ from __future__ import annotations
 
 import argparse
 import copy
+import contextlib
+import csv
+import io
 import itertools
+import json
+import multiprocessing as mp
+import os
 import pathlib
+import platform
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+from typing import Any
 
 import numpy as np
+
+
+REPEAT_TRIAL_FIELDS = [
+    "trial_id",
+    "seed",
+    "snr_db",
+    "K",
+    "failed",
+    "error",
+    "runtime_s",
+    "p_true_x",
+    "p_true_y",
+    "p_true_z",
+    "p_hat_x",
+    "p_hat_y",
+    "p_hat_z",
+    "err_x_m",
+    "err_y_m",
+    "err_z_m",
+    "position_error_m",
+    "delta_t_true_s",
+    "delta_t_hat_s",
+    "delta_t_error_s",
+    "clock_error_ns",
+    "clock_range_error_m",
+    "y_nmse",
+    "raw_objective_final",
+    "residual_norm",
+    "noise_variance",
+    "stage1_position_error_m",
+    "stage2_position_error_m",
+    "final_position_error_m",
+    "selected_branch",
+    "global_vp_mode",
+    "jones_mode",
+    "adaptive_enabled",
+]
+
+REPEAT_NUMERIC_METRICS = [
+    field
+    for field in REPEAT_TRIAL_FIELDS
+    if field
+    not in {
+        "failed",
+        "error",
+        "selected_branch",
+        "global_vp_mode",
+        "jones_mode",
+        "adaptive_enabled",
+    }
+]
 
 if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[1]
@@ -3186,6 +3246,413 @@ def print_run_summary(results: dict, config: dict) -> dict:
     return {"y": y_metrics, "parameters": param_metrics}
 
 
+def _repeat_float(value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return result if np.isfinite(result) else float("nan")
+
+
+def _repeat_position(value: Any) -> np.ndarray:
+    try:
+        position = np.asarray(value, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        return np.full(3, np.nan)
+    if position.size != 3 or not np.all(np.isfinite(position)):
+        return np.full(3, np.nan)
+    return position
+
+
+def _repeat_estimate_position(scene: dict, estimate: Any) -> float:
+    if not isinstance(estimate, dict):
+        return float("nan")
+    try:
+        p_hat = estimate.get("p_u")
+        if p_hat is None:
+            p_hat = estimate_position_from_ris_eta(scene, estimate)
+        return float(np.linalg.norm(_repeat_position(p_hat) - _repeat_position(scene["p_u_true"])))
+    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+        return float("nan")
+
+
+def _empty_repeat_trial_row(
+    trial_id: int,
+    seed: int,
+    config: dict,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {field: float("nan") for field in REPEAT_TRIAL_FIELDS}
+    row.update(
+        {
+            "trial_id": int(trial_id),
+            "seed": int(seed),
+            "snr_db": _repeat_float(config.get("SNR_dB")),
+            "K": int(config.get("K", 0)),
+            "failed": False,
+            "error": "",
+            "selected_branch": "",
+            "global_vp_mode": "",
+            "jones_mode": "",
+            "adaptive_enabled": False,
+        }
+    )
+    return row
+
+
+def _extract_repeat_trial_metrics(
+    result: dict,
+    *,
+    trial_id: int,
+    seed: int,
+    config: dict,
+    runtime_s: float,
+) -> dict[str, Any]:
+    row = _empty_repeat_trial_row(trial_id, seed, config)
+    scene = result.get("scene", {})
+    final = result.get("final", {})
+    p_true = _repeat_position(scene.get("p_u_true"))
+    p_hat = _repeat_position(final.get("p_u"))
+    error = p_hat - p_true
+    delta_t_true = _repeat_float(scene.get("delta_t_true"))
+    delta_t_hat = _repeat_float(final.get("delta_t"))
+    delta_t_error = delta_t_hat - delta_t_true
+    y_true = result.get("Y_true")
+    y_noisy = result.get("Y_noisy")
+    y_hat = final.get("Y_hat")
+    y_nmse = float("nan")
+    residual_norm = float("nan")
+    if y_true is not None and y_hat is not None:
+        y_nmse = float(relative_nmse(np.asarray(y_hat), np.asarray(y_true)))
+    if y_noisy is not None and y_hat is not None:
+        residual_norm = float(np.linalg.norm(np.asarray(y_hat) - np.asarray(y_noisy)))
+    stage_config = result.get("stage1_config", config)
+    global_vp = stage_config.get("global_vp", {}) if isinstance(stage_config, dict) else {}
+    global_vp_mode = str(
+        final.get("global_vp_mode", final.get("vp_mode", global_vp.get("mode", "")))
+    )
+    jones_mode = str(
+        final.get(
+            "jones_mode",
+            final.get("selected_vp_family_branch", global_vp_mode),
+        )
+    )
+    row.update(
+        {
+            "runtime_s": float(runtime_s),
+            "p_true_x": p_true[0],
+            "p_true_y": p_true[1],
+            "p_true_z": p_true[2],
+            "p_hat_x": p_hat[0],
+            "p_hat_y": p_hat[1],
+            "p_hat_z": p_hat[2],
+            "err_x_m": error[0],
+            "err_y_m": error[1],
+            "err_z_m": error[2],
+            "position_error_m": float(np.linalg.norm(error)),
+            "delta_t_true_s": delta_t_true,
+            "delta_t_hat_s": delta_t_hat,
+            "delta_t_error_s": delta_t_error,
+            "clock_error_ns": abs(delta_t_error) * 1.0e9,
+            "clock_range_error_m": _repeat_float(scene.get("c0", config.get("c0")))
+            * abs(delta_t_error),
+            "y_nmse": y_nmse,
+            "raw_objective_final": _repeat_float(
+                final.get("raw_objective_final", final.get("raw_objective"))
+            ),
+            "residual_norm": residual_norm,
+            "noise_variance": _repeat_float(result.get("noise_variance")),
+            "stage1_position_error_m": _repeat_estimate_position(
+                scene, result.get("estimate_initial")
+            ),
+            "stage2_position_error_m": _repeat_estimate_position(
+                scene, result.get("estimate_used")
+            ),
+            "final_position_error_m": float(np.linalg.norm(error)),
+            "selected_branch": str(
+                result.get("selected_branch", final.get("selected_branch", ""))
+            ),
+            "global_vp_mode": global_vp_mode,
+            "jones_mode": jones_mode,
+            "adaptive_enabled": bool(
+                global_vp.get("mode") == "adaptive_jones"
+                or "adaptive" in global_vp_mode.lower()
+                or "adaptive" in jones_mode.lower()
+            ),
+        }
+    )
+    return row
+
+
+def _apply_repeat_overrides(config: dict, overrides: dict | None) -> dict:
+    if not overrides:
+        return config
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(config.get(key), dict):
+            config[key] = _apply_repeat_overrides(copy.deepcopy(config[key]), value)
+        else:
+            config[key] = copy.deepcopy(value)
+    return config
+
+
+def _repeat_worker_init(blas_threads: int) -> None:
+    threads = str(int(blas_threads))
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[name] = threads
+
+
+def _run_repeat_trial(task: dict[str, Any]) -> dict[str, Any]:
+    trial_id = int(task["trial_id"])
+    seed = int(task["seed"])
+    config = default_config()
+    config["seed"] = seed
+    config = _apply_repeat_overrides(config, task.get("config_overrides"))
+    row = _empty_repeat_trial_row(trial_id, seed, config)
+    start = time.perf_counter()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run_single_proposed_diagnostic(config)
+        row = _extract_repeat_trial_metrics(
+            result,
+            trial_id=trial_id,
+            seed=seed,
+            config=config,
+            runtime_s=time.perf_counter() - start,
+        )
+    except Exception as exc:  # noqa: BLE001 - failed trials belong in the output.
+        row["failed"] = True
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        row["runtime_s"] = float(time.perf_counter() - start)
+    return row
+
+
+def _repeat_stat_values(rows: list[dict[str, Any]], metric: str) -> np.ndarray:
+    values = np.asarray([_repeat_float(row.get(metric)) for row in rows], dtype=float)
+    return values[np.isfinite(values)]
+
+
+def summarize_repeated_main_single(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    successful = [row for row in rows if not bool(row.get("failed"))]
+    summary: dict[str, Any] = {
+        "n_runs": len(rows),
+        "n_success": len(successful),
+        "n_failed": len(rows) - len(successful),
+        "success_rate": len(successful) / len(rows) if rows else 0.0,
+    }
+    for metric in REPEAT_NUMERIC_METRICS:
+        values = _repeat_stat_values(successful, metric)
+        stats = (
+            {
+                "mean": float(np.mean(values)),
+                "median": float(np.median(values)),
+                "std": float(np.std(values)),
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+                "p10": float(np.percentile(values, 10.0)),
+                "p90": float(np.percentile(values, 90.0)),
+            }
+            if values.size
+            else {name: float("nan") for name in ("mean", "median", "std", "min", "max", "p10", "p90")}
+        )
+        for name, value in stats.items():
+            summary[f"{metric}_{name}"] = value
+
+    def rmse(metric: str) -> float:
+        values = _repeat_stat_values(successful, metric)
+        return float(np.sqrt(np.mean(values**2))) if values.size else float("nan")
+
+    summary.update(
+        {
+            "position_rmse_m": rmse("position_error_m"),
+            "err_x_rmse_m": rmse("err_x_m"),
+            "err_y_rmse_m": rmse("err_y_m"),
+            "err_z_rmse_m": rmse("err_z_m"),
+            "clock_error_ns_rmse": rmse("clock_error_ns"),
+            "clock_range_error_m_rmse": rmse("clock_range_error_m"),
+            "y_nmse_mean": summary.get("y_nmse_mean", float("nan")),
+            "raw_objective_final_mean": summary.get(
+                "raw_objective_final_mean", float("nan")
+            ),
+        }
+    )
+    return summary
+
+
+def _write_repeat_csv(
+    path: pathlib.Path,
+    rows: list[dict[str, Any]],
+    fieldnames: list[str],
+) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _repeat_log_lines(
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    started_at: str,
+    n_runs: int,
+    jobs: int,
+    base_seed: int,
+) -> list[str]:
+    lines = [
+        f"start_time_utc = {started_at}",
+        f"command_line = {' '.join(sys.argv)}",
+        f"n_runs = {n_runs}",
+        f"jobs = {jobs}",
+        f"seed = {base_seed}",
+    ]
+    for row in sorted(rows, key=lambda item: int(item["trial_id"])):
+        lines.append(
+            "trial "
+            f"trial_id={row['trial_id']} seed={row['seed']} "
+            f"position_error_m={_fmt(row.get('position_error_m'))} "
+            f"clock_error_ns={_fmt(row.get('clock_error_ns'))} "
+            f"y_nmse={_fmt(row.get('y_nmse'))} "
+            f"runtime_s={_fmt(row.get('runtime_s'))} "
+            f"failed={row.get('failed')}"
+        )
+    lines.extend(
+        [
+            "final_summary",
+            f"success_rate = {_fmt(summary.get('success_rate'))}",
+            f"position_rmse_m = {_fmt(summary.get('position_rmse_m'))}",
+            f"err_x_rmse_m = {_fmt(summary.get('err_x_rmse_m'))}",
+            f"err_y_rmse_m = {_fmt(summary.get('err_y_rmse_m'))}",
+            f"err_z_rmse_m = {_fmt(summary.get('err_z_rmse_m'))}",
+            f"clock_error_ns_rmse = {_fmt(summary.get('clock_error_ns_rmse'))}",
+            f"clock_range_error_m_rmse = {_fmt(summary.get('clock_range_error_m_rmse'))}",
+            f"y_nmse_mean = {_fmt(summary.get('y_nmse_mean'))}",
+            f"runtime_s_mean = {_fmt(summary.get('runtime_s_mean'))}",
+            f"runtime_s_std = {_fmt(summary.get('runtime_s_std'))}",
+        ]
+    )
+    return lines
+
+
+def run_repeated_main_single(
+    n_runs: int,
+    jobs: int,
+    base_seed: int,
+    out_dir: pathlib.Path,
+    config_overrides: dict | None = None,
+    blas_threads: int = 1,
+) -> dict:
+    if n_runs <= 0:
+        raise ValueError("n_runs must be positive")
+    if jobs <= 0:
+        raise ValueError("jobs must be positive")
+    if blas_threads <= 0:
+        raise ValueError("blas_threads must be positive")
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    started_at = datetime.now(timezone.utc).isoformat()
+    seed_sequence = np.random.SeedSequence(int(base_seed))
+    seeds = [
+        int(child.generate_state(1, dtype=np.uint32)[0])
+        for child in seed_sequence.spawn(int(n_runs))
+    ]
+    tasks = [
+        {
+            "trial_id": trial_id,
+            "seed": seed,
+            "config_overrides": copy.deepcopy(config_overrides or {}),
+        }
+        for trial_id, seed in enumerate(seeds)
+    ]
+    process_count = min(int(jobs), int(n_runs))
+    rows: list[dict[str, Any]] = []
+    with mp.Pool(
+        processes=process_count,
+        initializer=_repeat_worker_init,
+        initargs=(int(blas_threads),),
+    ) as pool:
+        for row in pool.imap_unordered(_run_repeat_trial, tasks, chunksize=1):
+            rows.append(row)
+            print(
+                "repeat trial completed: "
+                f"trial_id={row['trial_id']} seed={row['seed']} "
+                f"position_error_m={_fmt(row.get('position_error_m'))} "
+                f"clock_error_ns={_fmt(row.get('clock_error_ns'))} "
+                f"y_nmse={_fmt(row.get('y_nmse'))} "
+                f"runtime_s={_fmt(row.get('runtime_s'))}"
+            )
+    rows.sort(key=lambda item: int(item["trial_id"]))
+    summary = summarize_repeated_main_single(rows)
+    trial_path = out_dir / "main_single_repeat_trials.csv"
+    summary_path = out_dir / "main_single_repeat_summary.csv"
+    log_path = out_dir / "main_single_repeat.log"
+    metadata_path = out_dir / "main_single_repeat_metadata.json"
+    _write_repeat_csv(trial_path, rows, REPEAT_TRIAL_FIELDS)
+    _write_repeat_csv(summary_path, [summary], list(summary))
+    log_path.write_text(
+        "\n".join(
+            _repeat_log_lines(
+                rows,
+                summary,
+                started_at=started_at,
+                n_runs=n_runs,
+                jobs=process_count,
+                base_seed=base_seed,
+            )
+        )
+        + "\n"
+    )
+    metadata = {
+        "start_time_utc": started_at,
+        "finish_time_utc": datetime.now(timezone.utc).isoformat(),
+        "command_line": " ".join(sys.argv),
+        "n_runs": int(n_runs),
+        "jobs": process_count,
+        "base_seed": int(base_seed),
+        "trial_seeds": seeds,
+        "blas_threads": int(blas_threads),
+        "config_overrides": config_overrides or {},
+        "git_commit": _git_commit(),
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, default=str) + "\n")
+    return {
+        "rows": rows,
+        "summary": summary,
+        "metadata": metadata,
+        "out_dir": out_dir,
+    }
+
+
+def _print_repeated_summary(result: dict[str, Any]) -> None:
+    summary = result["summary"]
+    print("Repeated proposed diagnostic finished.")
+    print(
+        f"n_runs = {summary['n_runs']}, "
+        f"success = {summary['n_success']}/{summary['n_runs']}"
+    )
+    print(f"Position RMSE = {_fmt(summary.get('position_rmse_m'))} m")
+    print(
+        "x/y/z RMSE = "
+        f"{_fmt(summary.get('err_x_rmse_m'))} / "
+        f"{_fmt(summary.get('err_y_rmse_m'))} / "
+        f"{_fmt(summary.get('err_z_rmse_m'))} m"
+    )
+    print(f"Clock RMSE = {_fmt(summary.get('clock_error_ns_rmse'))} ns")
+    print(
+        "Clock range RMSE = "
+        f"{_fmt(summary.get('clock_range_error_m_rmse'))} m"
+    )
+    print(f"Channel NMSE mean = {_fmt(summary.get('y_nmse_mean'))}")
+    print(f"Results written to: {result['out_dir']}")
+
+
 def run_default_diagnostic(config: dict | None = None) -> None:
     """Run and print the default proposed diagnostic report."""
     if config is None:
@@ -3258,7 +3725,7 @@ def run_mr_sweep() -> None:
         )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """CLI entrypoint for default diagnostics and optional sweeps."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostic-snr-sweep", action="store_true")
@@ -3273,9 +3740,47 @@ def main() -> None:
     )
     parser.add_argument("--full-size-diagnostic", action="store_true")
     parser.add_argument("--full-stage1-search", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--repeat-runs", type=int, default=1)
+    parser.add_argument("--repeat-jobs", type=int, default=1)
+    parser.add_argument(
+        "--repeat-out-dir",
+        type=pathlib.Path,
+        default=pathlib.Path("results/main_single_repeat"),
+    )
+    parser.add_argument("--seed", type=int, default=20260526)
+    parser.add_argument("--snr-db", type=float, default=None)
+    parser.add_argument("--paper-k", type=int, default=None)
+    parser.add_argument("--blas-threads", type=int, default=1)
+    parser.add_argument("--force-rerun", action="store_true")
+    args = parser.parse_args(argv)
 
-    if args.diagnostic_snr_sweep:
+    if args.repeat_runs > 1:
+        if args.repeat_jobs <= 0:
+            raise ValueError("--repeat-jobs must be positive")
+        if args.blas_threads <= 0:
+            raise ValueError("--blas-threads must be positive")
+        if args.paper_k is not None and args.paper_k <= 0:
+            raise ValueError("--paper-k must be positive")
+        trial_path = args.repeat_out_dir / "main_single_repeat_trials.csv"
+        if trial_path.exists() and not args.force_rerun:
+            raise FileExistsError(
+                f"{trial_path} already exists; use --force-rerun to overwrite"
+            )
+        overrides: dict[str, Any] = {}
+        if args.snr_db is not None:
+            overrides["SNR_dB"] = float(args.snr_db)
+        if args.paper_k is not None:
+            overrides["K"] = int(args.paper_k)
+        result = run_repeated_main_single(
+            n_runs=int(args.repeat_runs),
+            jobs=int(args.repeat_jobs),
+            base_seed=int(args.seed),
+            out_dir=args.repeat_out_dir,
+            config_overrides=overrides,
+            blas_threads=int(args.blas_threads),
+        )
+        _print_repeated_summary(result)
+    elif args.diagnostic_snr_sweep:
         run_snr_sweep()
     elif args.diagnostic_mr_sweep:
         run_mr_sweep()

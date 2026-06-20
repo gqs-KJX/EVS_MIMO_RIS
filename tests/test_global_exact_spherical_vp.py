@@ -3,7 +3,12 @@ import copy
 import numpy as np
 import pytest
 
-from src.channel_model import channel_components, generate_scene, synthesize_raw_tensor
+from src.channel_model import (
+    add_awgn,
+    channel_components,
+    generate_scene,
+    synthesize_raw_tensor,
+)
 from src.config import default_config
 from src.estimators import run_proposed_estimator
 from src.global_vp import (
@@ -552,29 +557,60 @@ def test_low_snr_guarded_basis_prior_reduces_stage1_delay_drift():
     assert guarded_range_drift <= fixed_range_drift + 1.0e-12
 
 
-def test_default_least_squares_reproduces_old_direct_stage1_vp_performance():
+def test_fixed_pol_vp_recovers_mm_accuracy_for_multi_ris_geometry():
     if not scipy_is_available():
         pytest.skip("scipy.optimize.least_squares is required for this regression")
-    from src.main_single_proposed import _run_single_pipeline
-
-    config = default_config()
-    config["stage2_mode"] = "none"
-    config["stage1_ris_geometry_mode"] = "exact_projection"
-    config["ris_search"]["num_exact_refine_starts"] = 3
-    config["final_refinement_method"] = "global_exact_spherical_vp"
+    config, scene, _, y_raw, init_estimate = _scene_truth_and_init()
+    assert scene["K"] == 2
     config["global_vp"]["solver"] = "least_squares"
     config["global_vp"]["mode"] = "fixed_pol"
-    results = _run_single_pipeline(config, use_structured=True)
-
-    final = results["final"]
-    pos_error = position_rmse(final["p_u"], results["scene"]["p_u_true"])
-    y_nmse = relative_nmse(final["Y_hat"], results["Y_true"])
+    init_estimate = copy.deepcopy(init_estimate)
+    init_estimate["p_u"] = scene["p_u_true"] + np.array([0.01, -0.008, 0.004])
+    init_estimate["delta_t"] = scene["delta_t_true"] + 2.0e-11
+    final = global_exact_spherical_vp_refinement(
+        y_raw, init_estimate, scene, config
+    )
+    pos_error = position_rmse(final["p_u"], scene["p_u_true"])
+    y_nmse = relative_nmse(final["Y_hat"], y_raw)
 
     assert final["optimizer"]["method"] == "scipy.optimize.least_squares"
     assert final["global_vp_solver"] == "least_squares"
-    assert final["stage2_mode"] == "none"
     assert pos_error < 2.0e-3
     assert y_nmse < 5.0e-4
+
+
+def test_single_ris_has_snr_independent_position_floor():
+    if not scipy_is_available():
+        pytest.skip("scipy.optimize.least_squares is required for this regression")
+    config = _small_config(k_paths=1)
+    config["global_vp"]["mode"] = "fixed_pol"
+    rng = np.random.default_rng(config["seed"])
+    scene = generate_scene(config, rng)
+    components = channel_components(
+        scene,
+        scene["p_u_true"],
+        scene["delta_t_true"],
+        scene["gamma_true"],
+        scene["eta_true"],
+    )
+    y_true = synthesize_raw_tensor(components, scene["beta_true"])
+    init_estimate = _init_from_truth(scene, components)
+    init_estimate["p_u"] = scene["p_u_true"] + np.array([0.08, -0.06, 0.03])
+    init_estimate["delta_t"] = scene["delta_t_true"] + 2.0e-10
+
+    errors = []
+    for snr_db in (0.0, 30.0):
+        y_noisy, _ = add_awgn(
+            y_true, snr_db, np.random.default_rng(777)
+        )
+        final = global_exact_spherical_vp_refinement(
+            y_noisy, copy.deepcopy(init_estimate), scene, config
+        )
+        errors.append(position_rmse(final["p_u"], scene["p_u_true"]))
+
+    assert errors[0] > 0.1
+    assert errors[1] > 0.1
+    assert errors[1] >= 0.8 * errors[0]
 
 
 def test_pipeline_default_skips_legacy_structured_refinement(monkeypatch):

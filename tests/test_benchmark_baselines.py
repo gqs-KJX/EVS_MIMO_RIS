@@ -198,6 +198,23 @@ def test_same_data_hash_validator_detects_mismatch():
         raise AssertionError("expected same-data hash mismatch")
 
 
+def test_position_only_support_does_not_use_true_clock():
+    config = _tiny_config()
+    config["delta_t_true"] = 2.0e-9
+    config["delta_t_bounds"] = np.array([0.0, 10.0e-9])
+    data = _make_data(config)
+    p_candidate = np.array([1.1, 0.3, 0.7])
+    p_hat, delta_t, diagnostics = common.geometric_support_to_position_ls(
+        data["scene"],
+        [{"panel": 0, "position": p_candidate}],
+        config,
+    )
+    assert np.array_equal(p_hat, p_candidate)
+    assert delta_t == np.mean(common.clock_grid_from_config(config, 3))
+    assert delta_t != config["delta_t_true"]
+    assert diagnostics["geometry_solver"] == "direct_position_candidate"
+
+
 def test_peb_diagnostics_and_regularization_independence():
     config = _tiny_config()
     data = _make_data(config)

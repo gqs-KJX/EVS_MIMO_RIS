@@ -38,6 +38,7 @@ if __package__ in (None, ""):
         thread_limit_context,
         trim_memory,
     )
+    from src.experiments.progress_logger import ProgressLogger
     from src.experiments.run_benchmark_comparison import _apply_grid_profile
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -58,6 +59,7 @@ else:
         thread_limit_context,
         trim_memory,
     )
+    from .progress_logger import ProgressLogger
     from .run_benchmark_comparison import _apply_grid_profile
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -1051,6 +1053,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--strict-ris-geometry", action="store_true")
     parser.add_argument("--seed", type=int, default=20260526)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
+    parser.add_argument("--quiet-progress", action="store_true")
     args = parser.parse_args(argv)
     args.figures = parse_figures(args.figures)
     args.calibration_std_grid = parse_float_grid(args.calibration_std_grid)
@@ -1094,6 +1098,25 @@ def main(argv: list[str] | None = None) -> None:
     args.blas_threads = args.resource_plan["blas_threads"]
     apply_thread_limits(args.blas_threads)
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = (
+        pathlib.Path(args.progress_log)
+        if args.progress_log is not None
+        else args.out_dir / "progress.jsonl"
+    )
+    progress = ProgressLogger(
+        progress_path,
+        all_task_count,
+        "run_robustness_and_scaling_figures",
+    )
+    if not args.quiet_progress:
+        print(f"Progress log: {progress_path}")
+        print("Monitor with:")
+        print(f"    tail -f {progress_path}")
+        print(
+            "    python -m src.experiments.monitor_progress "
+            f"--progress-log {progress_path}"
+        )
+    progress.log("start", "running", message="robustness/scaling experiment started")
     print("Command:", " ".join(sys.argv))
     print("Resource plan:", json.dumps(args.resource_plan, sort_keys=True))
 
@@ -1134,6 +1157,29 @@ def main(argv: list[str] | None = None) -> None:
                 try:
                     for batch in batches:
                         writer.writerows(batch)
+                        representative = batch[0] if batch else {}
+                        failed_rows = [
+                            row
+                            for row in batch
+                            if str(row.get("failed")).lower() == "true"
+                        ]
+                        progress.log(
+                            "task_failed" if failed_rows else "task_done",
+                            "failed" if failed_rows else "completed",
+                            figure=representative.get("figure", figure),
+                            baseline_or_variant=",".join(
+                                str(row.get("baseline", "")) for row in batch
+                            ),
+                            snr_db=representative.get("snr_db", ""),
+                            trial_id=representative.get("trial_id", ""),
+                            seed=representative.get("seed", ""),
+                            K=representative.get("assumed_K", ""),
+                            message="robustness/scaling trial batch completed",
+                            error="; ".join(
+                                str(row.get("error", ""))
+                                for row in failed_rows
+                            ),
+                        )
                 finally:
                     if args.process_workers != 1:
                         pool_context.__exit__(None, None, None)
@@ -1145,6 +1191,10 @@ def main(argv: list[str] | None = None) -> None:
             plot_summary(summary, figure, args.out_dir)
         write_summary_markdown(summary, figure, args.out_dir)
         print(f"{figure}: wrote {trial_path.name}, {summary_path.name}")
+    progress.log(
+        "finished", "completed", message="robustness/scaling experiment finished"
+    )
+    progress.close()
 
 
 if __name__ == "__main__":

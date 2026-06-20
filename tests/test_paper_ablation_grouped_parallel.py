@@ -1,4 +1,5 @@
 import math
+import sqlite3
 
 import numpy as np
 import pytest
@@ -98,6 +99,7 @@ def _group_task(group, figure=None):
         "x_name": "snr_db",
         "x_value": -30.0,
         "K": 3,
+        "paper_k": 3,
         "outlier_threshold_m": 0.1,
         "store_large_arrays": False,
         "profile_memory": False,
@@ -126,6 +128,18 @@ def test_grouped_fig1_task_returns_vp_family_rows(monkeypatch):
         "regularized_jones_vp",
         "adaptive_jones_vp_proposed",
     }.issubset(variants)
+    assert {row["effective_K"] for row in rows} == {3}
+    assert {row["paper_k"] for row in rows} == {3}
+
+
+def test_grouped_fig6_rows_use_x_value_as_effective_k(monkeypatch):
+    _install_fast_grouped_fakes(monkeypatch)
+    task = _group_task("fig6")
+    task.update({"x_name": "K", "x_value": 4.0, "K": 4})
+    rows, _ = figures._run_grouped_task(task)
+    assert rows
+    assert {row["effective_K"] for row in rows} == {4}
+    assert {row["paper_k"] for row in rows} == {3}
 
 
 def test_grouped_fig5_task_returns_all_variants(monkeypatch):
@@ -171,6 +185,76 @@ def test_persistent_peb_cache_second_lookup_avoids_recompute(tmp_path, monkeypat
     second = figures._peb_result(config, tmp_path)
     assert first["peb_position_m"] == second["peb_position_m"] == 1.25
     assert calls["compute"] == 1
+
+
+def test_peb_cache_init_is_safe_when_called_twice(tmp_path):
+    db_path = tmp_path / ".cache" / "peb_cache.sqlite"
+    figures._init_peb_cache(db_path)
+    figures._init_peb_cache(db_path)
+    with sqlite3.connect(db_path) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='peb_cache'"
+        ).fetchone()
+    assert journal_mode.lower() == "wal"
+    assert table == ("peb_cache",)
+
+
+def test_worker_init_does_not_force_wal_concurrently(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        figures,
+        "_init_peb_cache",
+        lambda path: (_ for _ in ()).throw(
+            AssertionError("worker must not initialize WAL")
+        ),
+    )
+    figures._init_worker(
+        default_config(),
+        str(tmp_path),
+        1,
+        peb_cache_enabled=True,
+    )
+    assert figures._WORKER_OUT_DIR == tmp_path
+    assert figures._peb_cache_is_enabled(figures._peb_cache_path(tmp_path))
+
+
+def test_locked_peb_cache_falls_back_without_crashing(
+    tmp_path, monkeypatch, capsys
+):
+    db_path = figures._peb_cache_path(tmp_path)
+    figures._PEB_CACHE_DISABLED_PATHS.discard(
+        figures._peb_cache_path_key(db_path)
+    )
+    monkeypatch.setattr(
+        figures,
+        "_init_peb_cache",
+        lambda path: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+    assert not figures._prepare_peb_cache(tmp_path)
+    assert not figures._peb_cache_is_enabled(db_path)
+
+    config = default_config()
+    config["K"] = 1
+    config["receiver_mode"] = "full_6d"
+    config["SNR_dB"] = -30.0
+    figures._PEB_CACHE.clear()
+    monkeypatch.setattr(figures, "_make_data", lambda config: _fake_data(config))
+    monkeypatch.setattr(
+        figures,
+        "_peb_from_efim",
+        lambda data, config: {
+            "peb_position_m": 1.0,
+            "peb_scalar_m": math.nan,
+            "peb_dual_m": math.nan,
+            "peb_evs_m": 1.0,
+            "warning": "",
+        },
+    )
+    result = figures._peb_result(config, tmp_path)
+    assert result["peb_position_m"] == 1.0
+    assert "disabling persistent PEB cache" in capsys.readouterr().err
 
 
 def test_variant_mode_tasks_still_work(tmp_path, monkeypatch):

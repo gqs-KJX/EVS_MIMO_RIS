@@ -1,0 +1,10 @@
+jobs=2
+process_workers=1
+blas_threads=2
+task_grouping=grouped
+streaming_csv=True
+store_large_arrays=False
+figure=fig3 variant=scalar_receiver trial=0 seed=3147786918 x=0.0 failed=False
+figure=fig3 variant=dual_pol_receiver trial=0 seed=3147786918 x=0.0 failed=False
+figure=fig3 variant=full_6d_evs trial=0 seed=3147786918 x=0.0 failed=False
+figure=fig3 variant=full_6d_evs_peb trial=0 seed=3147786918 x=0.0 failed=False

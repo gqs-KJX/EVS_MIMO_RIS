@@ -1,0 +1,30 @@
+jobs=2
+process_workers=1
+blas_threads=2
+task_grouping=grouped
+streaming_csv=True
+store_large_arrays=False
+figure=fig1_fig2 variant=stage1_only trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=fixed_pol_vp trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=free_jones_vp trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=regularized_jones_vp trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=adaptive_jones_vp_proposed trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=PEB trial=0 seed=3147786918 x=-10.0 failed=False
+figure=fig1_fig2 variant=stage1_only trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=fixed_pol_vp trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=free_jones_vp trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=regularized_jones_vp trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=adaptive_jones_vp_proposed trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=PEB trial=1 seed=112311654 x=-10.0 failed=False
+figure=fig1_fig2 variant=stage1_only trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=fixed_pol_vp trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=free_jones_vp trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=regularized_jones_vp trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=adaptive_jones_vp_proposed trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=PEB trial=2 seed=3251202663 x=-10.0 failed=False
+figure=fig1_fig2 variant=stage1_only trial=3 seed=3422926171 x=-10.0 failed=False
+figure=fig1_fig2 variant=fixed_pol_vp trial=3 seed=3422926171 x=-10.0 failed=False
+figure=fig1_fig2 variant=free_jones_vp trial=3 seed=3422926171 x=-10.0 failed=False
+figure=fig1_fig2 variant=regularized_jones_vp trial=3 seed=3422926171 x=-10.0 failed=False
+figure=fig1_fig2 variant=adaptive_jones_vp_proposed trial=3 seed=3422926171 x=-10.0 failed=False
+figure=fig1_fig2 variant=PEB trial=3 seed=3422926171 x=-10.0 failed=False

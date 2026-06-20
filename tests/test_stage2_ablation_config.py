@@ -19,11 +19,11 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["N"] == 63
     assert config["P"] == 32
     assert config["N"] - config["P"] + 1 == 32
-    assert config["K"] == 2
+    assert config["K"] == 3
     assert config["M_A"] == 16
     assert config["ris_shape"] == (64, 64)
     assert config["T"] == 256
-    assert config["SNR_dB"] == -20.0
+    assert config["SNR_dB"] == 0.0
     assert config["trials"] == 1
     assert config["num_structured_iters"] == 1
     assert config["stage2_ris_rescue_max_iters"] == 1

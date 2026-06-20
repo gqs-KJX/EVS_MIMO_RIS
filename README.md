@@ -53,6 +53,13 @@ PEB curves are plotted from the data-only EFIM/CRB calculation. The older
 `run_stage2_ablation.py` entry point remains available only for legacy
 structured-refinement module ablations.
 
+Figures 3 and 4 use a nested-receiver fixed-noise convention for the
+scalar/dual/full EVS comparison. The displayed SNR is referenced to the
+full-6D EVS observation, and all three receiver modes share the same
+per-component noise variance and underlying full-6D noise realization.
+Scalar and dual observations are masks of that common realization. This is
+the convention used for the EFIM information-ordering comparison.
+
 The paper runner defaults to `--jobs 10`, `--task-grouping grouped`, and
 `--blas-threads auto`. Grouped execution reuses data generation and Stage-I
 initialization within each Monte Carlo trial before evaluating the requested
