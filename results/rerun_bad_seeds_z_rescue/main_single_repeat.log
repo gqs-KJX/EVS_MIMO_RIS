@@ -1,0 +1,19 @@
+start_time_utc = 2026-06-20T13:34:10.205611+00:00
+command_line = /home/gqs/EVS-MIMO/NEWfinal/src/main_single_proposed.py --rerun-seeds 3933360494,3685333214,1092560480 --repeat-jobs 1 --repeat-out-dir results/rerun_bad_seeds_z_rescue --seed 20260526 --blas-threads 1 --force-rerun --outlier-threshold-m 0.1
+n_runs = 3
+jobs = 1
+seed = 20260526
+trial trial_id=0 seed=3933360494 position_error_m=1.005525e-04 clock_error_ns=3.188752e-04 y_nmse=5.097165e-06 runtime_s=6.738604e+02 failed=False
+trial trial_id=1 seed=3685333214 position_error_m=3.138330e-05 clock_error_ns=5.417127e-04 y_nmse=2.585637e-06 runtime_s=6.758191e+02 failed=False
+trial trial_id=2 seed=1092560480 position_error_m=3.501708e-04 clock_error_ns=1.480612e-04 y_nmse=6.067342e-06 runtime_s=5.485439e+02 failed=False
+final_summary
+success_rate = 1.000000e+00
+position_rmse_m = 2.111203e-04
+err_x_rmse_m = 1.353910e-04
+err_y_rmse_m = 8.063374e-05
+err_z_rmse_m = 1.404964e-04
+clock_error_ns_rmse = 3.728521e-04
+clock_range_error_m_rmse = 1.117783e-04
+y_nmse_mean = 4.583381e-06
+runtime_s_mean = 6.327411e+02
+runtime_s_std = 5.954181e+01

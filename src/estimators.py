@@ -1739,6 +1739,8 @@ def _initial_global_parameters(scene: dict, estimate: dict, config: dict) -> np.
             )
         )
     p_init = np.mean(np.asarray(positions), axis=0)
+    if "_global_vp_initial_p_u" in estimate:
+        p_init = np.asarray(estimate["_global_vp_initial_p_u"], dtype=float).reshape(3)
     p_init = np.clip(p_init, config["ue_bounds"][:, 0], config["ue_bounds"][:, 1])
 
     dt_values = []
@@ -1747,6 +1749,8 @@ def _initial_global_parameters(scene: dict, estimate: dict, config: dict) -> np.
         range_hat = estimate["ris_eta"][k, 0]
         dt_values.append(tau_hat - (range_hat + scene["d_RB"][k]) / scene["c0"])
     dt_init = float(np.median(dt_values))
+    if "_global_vp_initial_delta_t" in estimate:
+        dt_init = float(estimate["_global_vp_initial_delta_t"])
     dt_init = float(np.clip(dt_init, *config["delta_t_bounds"]))
 
     return np.concatenate(

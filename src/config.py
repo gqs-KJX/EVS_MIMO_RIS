@@ -277,6 +277,9 @@ def default_config() -> dict:
         "jnpp_max_candidates": 1 + k_default,
         "jnpp_num_starts": 4,
         "jnpp_start_perturb_m": 0.25,
+        "jnpp_enable_z_starts": True,
+        "jnpp_z_start_grid_size": 7,
+        "jnpp_z_start_margin_m": 0.02,
         "jnpp_use_coarse_grid": False,
         "jnpp_position_box_m": 1.5,
         "jnpp_check_gradient": False,
@@ -350,6 +353,13 @@ def default_config() -> dict:
             "finite_difference_check": False,
             "use_analytic_jacobian": True,
             "matrix_free_beta": False,
+            "enable_z_rescue_multistart": True,
+            "z_rescue_num_starts": 7,
+            "z_rescue_trigger": "boundary_or_unreliable",
+            "z_rescue_keep_xy": True,
+            "z_rescue_margin_m": 0.02,
+            "boundary_tol_m": 0.02,
+            "boundary_accept_rel_tol": 1.0e-3,
         },
         "baselines": {
             "ff_omp": {

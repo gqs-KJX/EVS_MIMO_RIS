@@ -209,18 +209,41 @@ def _gradient_check(fun, p0: np.ndarray, lower: np.ndarray, upper: np.ndarray) -
 
 def _starts(stage1_estimate: dict, scene: dict, config: dict, lower: np.ndarray, upper: np.ndarray) -> list[np.ndarray]:
     p0 = _stage1_position(stage1_estimate, scene, config)
-    starts = [p0]
+    local_starts = []
     perturb = float(config.get("jnpp_start_perturb_m", 0.25))
     for dim in range(3):
         for sign in (-1.0, 1.0):
             p = p0.copy()
             p[dim] += sign * perturb
-            starts.append(p)
+            local_starts.append(p)
+    z_starts = []
+    if bool(config.get("jnpp_enable_z_starts", True)):
+        grid_size = max(1, int(config.get("jnpp_z_start_grid_size", 7)))
+        margin = float(config.get("jnpp_z_start_margin_m", 0.02))
+        z_low = float(lower[2] + margin)
+        z_high = float(upper[2] - margin)
+        if z_low > z_high:
+            z_low = z_high = float(np.mean([lower[2], upper[2]]))
+        z_grid = np.linspace(z_low, z_high, grid_size)
+        center = float(np.mean([lower[2], upper[2]]))
+        order = np.argsort(np.abs(z_grid - center), kind="stable")
+        for index in order:
+            p = p0.copy()
+            p[2] = float(z_grid[index])
+            z_starts.append(p)
+    starts = [p0]
+    max_starts = max(1, int(config.get("jnpp_num_starts", 4)))
+    if z_starts and max_starts > 1:
+        local_budget = min(len(local_starts), max(1, (max_starts - 1) // 2))
+        starts.extend(local_starts[:local_budget])
+        starts.extend(z_starts)
+        starts.extend(local_starts[local_budget:])
+    else:
+        starts.extend(local_starts)
     if bool(config.get("jnpp_use_coarse_grid", False)):
         grid_n = int(config.get("jnpp_coarse_grid_points_per_dim", 3))
         axes = [np.linspace(lower[d], upper[d], max(2, grid_n)) for d in range(3)]
         starts.extend(np.array([x, y, z], dtype=float) for x in axes[0] for y in axes[1] for z in axes[2])
-    max_starts = max(1, int(config.get("jnpp_num_starts", 4)))
     unique = []
     seen = set()
     for p in starts:
@@ -466,6 +489,13 @@ def robust_jnpp_basin_recovery(stage1_estimate: dict, scene: dict, config: dict)
     p0 = _stage1_position(stage1_estimate, scene, config)
     lower, upper = _position_bounds(p0, config)
     starts = _starts(stage1_estimate, scene, config, lower, upper)
+    p0 = _stage1_position(stage1_estimate, scene, config)
+    z_start_values = [
+        float(start[2])
+        for start in starts
+        if np.allclose(start[:2], p0[:2], atol=1.0e-9)
+        and not np.isclose(start[2], p0[2], atol=1.0e-9)
+    ]
     tau_stage1 = _tau_stage1(stage1_estimate, scene)
     subsets, leave_one_out_effective = _subsets(k_paths, config)
 
@@ -501,6 +531,9 @@ def robust_jnpp_basin_recovery(stage1_estimate: dict, scene: dict, config: dict)
     diagnostics = {
         "stage2_rescue_mode": "robust_jnpp",
         "jnpp_num_starts": int(len(starts)),
+        "jnpp_used_z_starts": bool(z_start_values),
+        "jnpp_num_z_starts": int(len(z_start_values)),
+        "jnpp_start_z_values": z_start_values,
         "jnpp_num_candidates": int(len(evaluated)),
         "jnpp_weight_mode": weight_mode,
         "jnpp_weight_warning": weight_warning,

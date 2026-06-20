@@ -64,10 +64,100 @@ def _global_vp_config(config: dict) -> dict:
         "finite_difference_check": False,
         "use_analytic_jacobian": True,
         "matrix_free_beta": False,
+        "enable_z_rescue_multistart": True,
+        "z_rescue_num_starts": 7,
+        "z_rescue_trigger": "boundary_or_unreliable",
+        "z_rescue_keep_xy": True,
+        "z_rescue_margin_m": 0.02,
+        "boundary_tol_m": 0.02,
+        "boundary_accept_rel_tol": 1.0e-3,
     }
     options = dict(defaults)
     options.update(dict(config.get("global_vp", {})))
     return options
+
+
+def distance_to_box_boundary(
+    p: np.ndarray,
+    bounds: np.ndarray,
+    boundary_tol_m: float = 0.02,
+) -> dict:
+    """Return distances from a position to each face of a 3-D box."""
+    position = np.asarray(p, dtype=float).reshape(3)
+    box = np.asarray(bounds, dtype=float)
+    if box.shape != (3, 2):
+        raise ValueError("position bounds must have shape (3, 2)")
+    per_axis = np.minimum(position - box[:, 0], box[:, 1] - position)
+    labels = ("x", "y", "z")
+    hit_axes = [labels[idx] for idx, value in enumerate(per_axis) if value <= boundary_tol_m]
+    return {
+        "boundary_hit": bool(hit_axes),
+        "boundary_hit_axis": hit_axes[0] if len(hit_axes) == 1 else hit_axes,
+        "distance_to_position_box_boundary_m": float(np.min(per_axis)),
+        "min_distance_per_axis": {
+            label: float(per_axis[idx]) for idx, label in enumerate(labels)
+        },
+        "boundary_tol_m": float(boundary_tol_m),
+    }
+
+
+def z_rescue_starts(
+    current_start: np.ndarray,
+    bounds: np.ndarray,
+    num_starts: int = 7,
+    margin_m: float = 0.02,
+) -> list[np.ndarray]:
+    """Build deterministic starts spanning the interior of the UE z box."""
+    start = np.asarray(current_start, dtype=float).reshape(3)
+    box = np.asarray(bounds, dtype=float)
+    if box.shape != (3, 2):
+        raise ValueError("position bounds must have shape (3, 2)")
+    count = max(1, int(num_starts))
+    z_low = float(box[2, 0] + margin_m)
+    z_high = float(box[2, 1] - margin_m)
+    if z_low > z_high:
+        z_low = z_high = float(np.mean(box[2]))
+    starts = []
+    for z_value in np.linspace(z_low, z_high, count):
+        candidate = np.clip(start.copy(), box[:, 0], box[:, 1])
+        candidate[2] = z_value
+        starts.append(candidate)
+    return starts
+
+
+def select_z_rescue_candidate(
+    candidates: list[dict],
+    bounds: np.ndarray,
+    *,
+    boundary_tol_m: float = 0.02,
+    boundary_accept_rel_tol: float = 1.0e-3,
+) -> tuple[dict, str]:
+    """Select by raw objective, using interior status only as a close-score tie break."""
+    finite = [
+        candidate
+        for candidate in candidates
+        if np.isfinite(float(candidate.get("raw_objective_final", np.nan)))
+    ]
+    if not finite:
+        return candidates[0], "no_finite_candidate_score"
+    best = min(finite, key=lambda candidate: float(candidate["raw_objective_final"]))
+    best_score = float(best["raw_objective_final"])
+    close_limit = best_score * (1.0 + float(boundary_accept_rel_tol)) + 1.0e-15
+    close_interior = [
+        candidate
+        for candidate in finite
+        if float(candidate["raw_objective_final"]) <= close_limit
+        and not distance_to_box_boundary(
+            candidate["p_u"], bounds, boundary_tol_m
+        )["boundary_hit"]
+    ]
+    if close_interior:
+        selected = min(
+            close_interior, key=lambda candidate: float(candidate["raw_objective_final"])
+        )
+        if selected is not best:
+            return selected, "interior_within_boundary_accept_rel_tol"
+    return best, "lowest_raw_objective"
 
 
 def _global_vp_mode(config: dict) -> str:
@@ -272,6 +362,20 @@ def _initial_xi_from_stage1_with_diagnostics(
     selected = min(scored_candidates, key=lambda item: item["score"])
     p_init = np.asarray(selected["p_u"], dtype=float)
     dt_init = float(selected["delta_t_s"])
+    if "_global_vp_initial_p_u" in init_estimate:
+        p_init = np.asarray(
+            init_estimate["_global_vp_initial_p_u"], dtype=float
+        ).reshape(3)
+        selected = {
+            "name": "forced_non_oracle_multistart",
+            "score": float("nan"),
+            "delta_t_s": float(
+                init_estimate.get("_global_vp_initial_delta_t", dt_init)
+            ),
+            "p_u": p_init.copy(),
+        }
+    if "_global_vp_initial_delta_t" in init_estimate:
+        dt_init = float(init_estimate["_global_vp_initial_delta_t"])
     diagnostics = {
         "global_vp_init_method": "robust_stage1_ris_eta_clock_consistency",
         "global_vp_init_candidate_scores": [
@@ -1667,7 +1771,7 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
     return selected
 
 
-def global_exact_spherical_vp_refinement(
+def _global_exact_spherical_vp_refinement_once(
     y_raw: np.ndarray,
     init_estimate: dict,
     scene: dict,
@@ -1700,3 +1804,119 @@ def global_exact_spherical_vp_refinement(
             y_raw, init_estimate, scene, config
         )
     raise ValueError(f"unknown global_vp solver {solver!r}")
+
+
+def global_exact_spherical_vp_refinement(
+    y_raw: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Run global VP and, when suspicious, deterministic z-directed restarts."""
+    options = _global_vp_config(config)
+    normal = _global_exact_spherical_vp_refinement_once(
+        y_raw, init_estimate, scene, config
+    )
+    bounds = np.asarray(config["ue_bounds"], dtype=float)
+    boundary_tol = float(options.get("boundary_tol_m", 0.02))
+    before = distance_to_box_boundary(normal["p_u"], bounds, boundary_tol)
+    normal.update(before)
+    normal.setdefault("z_rescue_triggered", False)
+    normal.setdefault("z_rescue_num_starts", 0)
+    normal.setdefault("z_rescue_best_z", float(normal["p_u"][2]))
+    normal.setdefault(
+        "z_rescue_best_score",
+        float(normal.get("raw_objective_final", normal.get("raw_objective", np.nan))),
+    )
+    normal.setdefault("z_rescue_candidate_scores", [])
+    normal.setdefault("z_rescue_selected_reason", "not_triggered")
+    normal["boundary_hit_before_rescue"] = bool(before["boundary_hit"])
+    normal["boundary_hit_after_rescue"] = bool(before["boundary_hit"])
+
+    if not bool(options.get("enable_z_rescue_multistart", True)):
+        normal["z_rescue_selected_reason"] = "disabled"
+        return normal
+    if bool(config.get("_global_vp_z_rescue_active", False)):
+        return normal
+
+    force_rescue = bool(config.get("_global_vp_force_z_rescue", False))
+    unreliable = not bool(
+        normal.get("global_vp_success", normal.get("optimizer", {}).get("success", False))
+    )
+    suspicious = bool(before["boundary_hit"] or force_rescue or unreliable)
+    if not suspicious:
+        return normal
+
+    current = np.asarray(normal["p_u"], dtype=float)
+    if not bool(options.get("z_rescue_keep_xy", True)):
+        current[:2] = np.mean(bounds[:2], axis=1)
+    starts = z_rescue_starts(
+        current,
+        bounds,
+        int(options.get("z_rescue_num_starts", 7)),
+        float(options.get("z_rescue_margin_m", 0.02)),
+    )
+    candidates = [normal]
+    candidate_scores = [
+        {
+            "z_start": float(current[2]),
+            "z_final": float(current[2]),
+            "raw_objective_final": float(
+                normal.get("raw_objective_final", normal.get("raw_objective", np.nan))
+            ),
+            "boundary_hit": bool(before["boundary_hit"]),
+            "kind": "normal",
+        }
+    ]
+    for start in starts:
+        rescue_init = copy.deepcopy(init_estimate)
+        rescue_init["_global_vp_initial_p_u"] = start.copy()
+        rescue_init["_global_vp_initial_delta_t"] = float(normal["delta_t"])
+        rescue_config = copy.deepcopy(config)
+        rescue_config["_global_vp_z_rescue_active"] = True
+        rescue = _global_exact_spherical_vp_refinement_once(
+            y_raw, rescue_init, scene, rescue_config
+        )
+        score = float(
+            rescue.get("raw_objective_final", rescue.get("raw_objective", np.nan))
+        )
+        rescue["raw_objective_final"] = score
+        rescue_boundary = distance_to_box_boundary(
+            rescue["p_u"], bounds, boundary_tol
+        )
+        rescue.update(rescue_boundary)
+        candidates.append(rescue)
+        candidate_scores.append(
+            {
+                "z_start": float(start[2]),
+                "z_final": float(rescue["p_u"][2]),
+                "raw_objective_final": score,
+                "boundary_hit": bool(rescue_boundary["boundary_hit"]),
+                "kind": "z_rescue",
+            }
+        )
+
+    selected, reason = select_z_rescue_candidate(
+        candidates,
+        bounds,
+        boundary_tol_m=boundary_tol,
+        boundary_accept_rel_tol=float(options.get("boundary_accept_rel_tol", 1.0e-3)),
+    )
+    selected = copy.deepcopy(selected)
+    after = distance_to_box_boundary(selected["p_u"], bounds, boundary_tol)
+    selected.update(after)
+    selected.update(
+        {
+            "z_rescue_triggered": True,
+            "z_rescue_num_starts": int(len(starts)),
+            "z_rescue_best_z": float(selected["p_u"][2]),
+            "z_rescue_best_score": float(
+                selected.get("raw_objective_final", selected.get("raw_objective", np.nan))
+            ),
+            "z_rescue_candidate_scores": candidate_scores,
+            "z_rescue_selected_reason": reason,
+            "boundary_hit_before_rescue": bool(before["boundary_hit"]),
+            "boundary_hit_after_rescue": bool(after["boundary_hit"]),
+        }
+    )
+    return selected

@@ -68,6 +68,18 @@ REPEAT_TRIAL_FIELDS = [
     "global_vp_mode",
     "jones_mode",
     "adaptive_enabled",
+    "boundary_hit",
+    "boundary_hit_axis",
+    "distance_to_position_box_boundary_m",
+    "z_rescue_triggered",
+    "z_rescue_num_starts",
+    "z_rescue_best_z",
+    "z_rescue_selected_reason",
+    "direct_boundary_hit",
+    "rescue_boundary_hit",
+    "branch_score_margin",
+    "boundary_selection_rule_used",
+    "warning",
 ]
 
 REPEAT_NUMERIC_METRICS = [
@@ -81,6 +93,9 @@ REPEAT_NUMERIC_METRICS = [
         "global_vp_mode",
         "jones_mode",
         "adaptive_enabled",
+        "boundary_hit_axis",
+        "z_rescue_selected_reason",
+        "warning",
     }
 ]
 
@@ -124,7 +139,7 @@ if __package__ in (None, ""):
         scaled_residual,
     )
     from src.robust_jnpp import robust_jnpp_basin_recovery
-    from src.global_vp import data_only_efim_diagnostic
+    from src.global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
@@ -165,7 +180,7 @@ else:
         scaled_residual,
     )
     from .robust_jnpp import robust_jnpp_basin_recovery
-    from .global_vp import data_only_efim_diagnostic
+    from .global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from .tensor_utils import hankelize_frequency
     from .utils import scipy_is_available
 
@@ -1682,7 +1697,29 @@ def select_proposed_branch(
     config: dict,
 ) -> tuple[dict, bool]:
     """Select the proposed output using the final raw-domain objective."""
-    if reliability["decision"] == "direct_vp" or rescue_result is None:
+    bounds = np.asarray(config["ue_bounds"], dtype=float)
+    vp_options = dict(config.get("global_vp", {}))
+    boundary_tol = float(vp_options.get("boundary_tol_m", 0.02))
+    boundary_rel_tol = float(vp_options.get("boundary_accept_rel_tol", 1.0e-3))
+    direct_boundary = (
+        distance_to_box_boundary(
+            direct_result["final"]["p_u"], bounds, boundary_tol
+        )
+        if "p_u" in direct_result["final"]
+        else {"boundary_hit": False}
+    )
+    rescue_boundary = (
+        distance_to_box_boundary(
+            rescue_result["final"]["p_u"], bounds, boundary_tol
+        )
+        if rescue_result is not None and "p_u" in rescue_result["final"]
+        else {"boundary_hit": False}
+    )
+    boundary_rule_used = False
+    warning = ""
+    branch_score_margin = float("nan")
+
+    if rescue_result is None:
         selected = dict(direct_result)
         selected_branch = "direct_vp"
         no_gain = False
@@ -1691,6 +1728,7 @@ def select_proposed_branch(
         abs_gain = float(config.get("rescue_accept_min_abs_improvement", 1.0e-8))
         direct_raw = _final_raw_objective(direct_result["final"])
         rescue_raw = _final_raw_objective(rescue_result["final"])
+        branch_score_margin = float(rescue_raw - direct_raw)
         if np.isfinite(direct_raw) and np.isfinite(rescue_raw):
             improvement = direct_raw - rescue_raw
             accept_rescue = (
@@ -1705,6 +1743,19 @@ def select_proposed_branch(
                 improvement >= abs_gain
                 and rescue_nmse < direct_nmse * (1.0 - rel_gain)
             )
+
+        if direct_boundary["boundary_hit"] and not rescue_boundary["boundary_hit"]:
+            boundary_rule_used = True
+            accept_rescue = bool(
+                np.isfinite(direct_raw)
+                and np.isfinite(rescue_raw)
+                and rescue_raw <= direct_raw * (1.0 + boundary_rel_tol) + 1.0e-15
+            )
+            if not accept_rescue:
+                warning = "boundary_solution_retained_due_to_lower_residual"
+
+        if reliability["decision"] == "direct_vp" and not boundary_rule_used:
+            accept_rescue = False
 
         # Stage-II is accepted only if it improves the final raw-domain objective.
         # This keeps the diagnostic consistent with the final estimator objective.
@@ -1722,6 +1773,11 @@ def select_proposed_branch(
     selected["selected_branch"] = selected_branch
     selected["reliability"] = reliability
     selected["ris_stage2_no_gain"] = bool(no_gain)
+    selected["direct_boundary_hit"] = bool(direct_boundary["boundary_hit"])
+    selected["rescue_boundary_hit"] = bool(rescue_boundary["boundary_hit"])
+    selected["branch_score_margin"] = branch_score_margin
+    selected["boundary_selection_rule_used"] = bool(boundary_rule_used)
+    selected["warning"] = warning
     if rescue_result is not None:
         rescue_diag = rescue_result.get("structured_diag", {})
         if "mhr_accepted" in rescue_diag:
@@ -1735,6 +1791,15 @@ def select_proposed_branch(
     selected["final"] = dict(selected["final"])
     selected["final"]["selected_branch"] = selected_branch
     selected["final"]["reliability"] = reliability
+    selected["final"].update(
+        {
+            "direct_boundary_hit": bool(direct_boundary["boundary_hit"]),
+            "rescue_boundary_hit": bool(rescue_boundary["boundary_hit"]),
+            "branch_score_margin": branch_score_margin,
+            "boundary_selection_rule_used": bool(boundary_rule_used),
+            "warning": warning,
+        }
+    )
     return selected, bool(no_gain)
 
 
@@ -1783,6 +1848,24 @@ def run_from_existing_stage1(
     direct_vp_quality = evaluate_direct_vp_quality(
         direct_result, stage1, data["scene"], config
     )
+    vp_options = dict(config.get("global_vp", {}))
+    trigger_mode = str(
+        vp_options.get("z_rescue_trigger", "boundary_or_unreliable")
+    ).lower()
+    if (
+        bool(vp_options.get("enable_z_rescue_multistart", True))
+        and "unreliable" in trigger_mode
+        and not bool(direct_result["final"].get("z_rescue_triggered", False))
+        and not bool(direct_vp_quality.get("good", False))
+    ):
+        rescue_config = copy.deepcopy(config)
+        rescue_config["_global_vp_force_z_rescue"] = True
+        direct_result = run_direct_vp_branch(
+            data, stage1_estimate, rescue_config, base_timing, reliability
+        )
+        direct_vp_quality = evaluate_direct_vp_quality(
+            direct_result, stage1, data["scene"], config
+        )
     reliability = dict(reliability)
     reliability["legacy_stage1_decision"] = reliability.get("decision", "unknown")
     reliability["decision"] = str(direct_vp_quality.get("reliability_decision", "direct_vp"))
@@ -3294,6 +3377,15 @@ def _empty_repeat_trial_row(
             "global_vp_mode": "",
             "jones_mode": "",
             "adaptive_enabled": False,
+            "boundary_hit": False,
+            "boundary_hit_axis": "",
+            "z_rescue_triggered": False,
+            "z_rescue_num_starts": 0,
+            "z_rescue_selected_reason": "",
+            "direct_boundary_hit": False,
+            "rescue_boundary_hit": False,
+            "boundary_selection_rule_used": False,
+            "warning": "",
         }
     )
     return row
@@ -3336,6 +3428,14 @@ def _extract_repeat_trial_metrics(
             final.get("selected_vp_family_branch", global_vp_mode),
         )
     )
+    boundary = distance_to_box_boundary(
+        p_hat,
+        np.asarray(config.get("ue_bounds"), dtype=float),
+        float(global_vp.get("boundary_tol_m", 0.02)),
+    )
+    boundary_axis = boundary["boundary_hit_axis"]
+    if isinstance(boundary_axis, list):
+        boundary_axis = ",".join(boundary_axis)
     row.update(
         {
             "runtime_s": float(runtime_s),
@@ -3378,6 +3478,38 @@ def _extract_repeat_trial_metrics(
                 or "adaptive" in global_vp_mode.lower()
                 or "adaptive" in jones_mode.lower()
             ),
+            "boundary_hit": bool(final.get("boundary_hit", boundary["boundary_hit"])),
+            "boundary_hit_axis": str(
+                final.get("boundary_hit_axis", boundary_axis)
+            ),
+            "distance_to_position_box_boundary_m": _repeat_float(
+                final.get(
+                    "distance_to_position_box_boundary_m",
+                    boundary["distance_to_position_box_boundary_m"],
+                )
+            ),
+            "z_rescue_triggered": bool(final.get("z_rescue_triggered", False)),
+            "z_rescue_num_starts": int(final.get("z_rescue_num_starts", 0)),
+            "z_rescue_best_z": _repeat_float(final.get("z_rescue_best_z")),
+            "z_rescue_selected_reason": str(
+                final.get("z_rescue_selected_reason", "")
+            ),
+            "direct_boundary_hit": bool(
+                result.get("direct_boundary_hit", final.get("direct_boundary_hit", False))
+            ),
+            "rescue_boundary_hit": bool(
+                result.get("rescue_boundary_hit", final.get("rescue_boundary_hit", False))
+            ),
+            "branch_score_margin": _repeat_float(
+                result.get("branch_score_margin", final.get("branch_score_margin"))
+            ),
+            "boundary_selection_rule_used": bool(
+                result.get(
+                    "boundary_selection_rule_used",
+                    final.get("boundary_selection_rule_used", False),
+                )
+            ),
+            "warning": str(result.get("warning", final.get("warning", ""))),
         }
     )
     return row
@@ -3437,6 +3569,7 @@ def _repeat_stat_values(rows: list[dict[str, Any]], metric: str) -> np.ndarray:
 
 def summarize_repeated_main_single(
     rows: list[dict[str, Any]],
+    outlier_threshold_m: float = 0.1,
 ) -> dict[str, Any]:
     successful = [row for row in rows if not bool(row.get("failed"))]
     summary: dict[str, Any] = {
@@ -3480,6 +3613,19 @@ def summarize_repeated_main_single(
                 "raw_objective_final_mean", float("nan")
             ),
         }
+    )
+    valid_errors = _repeat_stat_values(successful, "position_error_m")
+    inlier_errors = valid_errors[valid_errors <= float(outlier_threshold_m)]
+    summary["outlier_threshold_m"] = float(outlier_threshold_m)
+    summary["outlier_rate"] = (
+        float(np.mean(valid_errors > float(outlier_threshold_m)))
+        if valid_errors.size
+        else float("nan")
+    )
+    summary["success_only_position_rmse_m"] = (
+        float(np.sqrt(np.mean(inlier_errors**2)))
+        if inlier_errors.size
+        else float("nan")
     )
     return summary
 
@@ -3546,7 +3692,12 @@ def run_repeated_main_single(
     out_dir: pathlib.Path,
     config_overrides: dict | None = None,
     blas_threads: int = 1,
+    rerun_seeds: list[int] | None = None,
+    outlier_threshold_m: float = 0.1,
 ) -> dict:
+    if rerun_seeds is not None:
+        rerun_seeds = [int(seed) for seed in rerun_seeds]
+        n_runs = len(rerun_seeds)
     if n_runs <= 0:
         raise ValueError("n_runs must be positive")
     if jobs <= 0:
@@ -3556,11 +3707,14 @@ def run_repeated_main_single(
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now(timezone.utc).isoformat()
-    seed_sequence = np.random.SeedSequence(int(base_seed))
-    seeds = [
-        int(child.generate_state(1, dtype=np.uint32)[0])
-        for child in seed_sequence.spawn(int(n_runs))
-    ]
+    if rerun_seeds is None:
+        seed_sequence = np.random.SeedSequence(int(base_seed))
+        seeds = [
+            int(child.generate_state(1, dtype=np.uint32)[0])
+            for child in seed_sequence.spawn(int(n_runs))
+        ]
+    else:
+        seeds = list(rerun_seeds)
     tasks = [
         {
             "trial_id": trial_id,
@@ -3587,12 +3741,20 @@ def run_repeated_main_single(
                 f"runtime_s={_fmt(row.get('runtime_s'))}"
             )
     rows.sort(key=lambda item: int(item["trial_id"]))
-    summary = summarize_repeated_main_single(rows)
+    summary = summarize_repeated_main_single(rows, outlier_threshold_m)
     trial_path = out_dir / "main_single_repeat_trials.csv"
+    outlier_path = out_dir / "main_single_repeat_outliers.csv"
     summary_path = out_dir / "main_single_repeat_summary.csv"
     log_path = out_dir / "main_single_repeat.log"
     metadata_path = out_dir / "main_single_repeat_metadata.json"
     _write_repeat_csv(trial_path, rows, REPEAT_TRIAL_FIELDS)
+    outlier_rows = [
+        row
+        for row in rows
+        if bool(row.get("boundary_hit"))
+        or _repeat_float(row.get("position_error_m")) > float(outlier_threshold_m)
+    ]
+    _write_repeat_csv(outlier_path, outlier_rows, REPEAT_TRIAL_FIELDS)
     _write_repeat_csv(summary_path, [summary], list(summary))
     log_path.write_text(
         "\n".join(
@@ -3615,6 +3777,8 @@ def run_repeated_main_single(
         "jobs": process_count,
         "base_seed": int(base_seed),
         "trial_seeds": seeds,
+        "rerun_seeds_provided": rerun_seeds is not None,
+        "outlier_threshold_m": float(outlier_threshold_m),
         "blas_threads": int(blas_threads),
         "config_overrides": config_overrides or {},
         "git_commit": _git_commit(),
@@ -3627,6 +3791,7 @@ def run_repeated_main_single(
         "summary": summary,
         "metadata": metadata,
         "out_dir": out_dir,
+        "outlier_rows": outlier_rows,
     }
 
 
@@ -3638,6 +3803,11 @@ def _print_repeated_summary(result: dict[str, Any]) -> None:
         f"success = {summary['n_success']}/{summary['n_runs']}"
     )
     print(f"Position RMSE = {_fmt(summary.get('position_rmse_m'))} m")
+    print(f"Outlier rate = {_fmt(summary.get('outlier_rate'))}")
+    print(
+        "Success-only position RMSE = "
+        f"{_fmt(summary.get('success_only_position_rmse_m'))} m"
+    )
     print(
         "x/y/z RMSE = "
         f"{_fmt(summary.get('err_x_rmse_m'))} / "
@@ -3741,6 +3911,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--full-size-diagnostic", action="store_true")
     parser.add_argument("--full-stage1-search", action="store_true")
     parser.add_argument("--repeat-runs", type=int, default=1)
+    parser.add_argument(
+        "--rerun-seeds",
+        type=str,
+        default=None,
+        help="Comma-separated uint32 seeds; bypasses SeedSequence generation.",
+    )
     parser.add_argument("--repeat-jobs", type=int, default=1)
     parser.add_argument(
         "--repeat-out-dir",
@@ -3752,9 +3928,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--paper-k", type=int, default=None)
     parser.add_argument("--blas-threads", type=int, default=1)
     parser.add_argument("--force-rerun", action="store_true")
+    parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
     args = parser.parse_args(argv)
 
-    if args.repeat_runs > 1:
+    rerun_seeds = None
+    if args.rerun_seeds is not None:
+        rerun_seeds = [
+            int(token.strip())
+            for token in args.rerun_seeds.split(",")
+            if token.strip()
+        ]
+        if not rerun_seeds:
+            raise ValueError("--rerun-seeds must contain at least one seed")
+        if any(seed < 0 or seed > np.iinfo(np.uint32).max for seed in rerun_seeds):
+            raise ValueError("--rerun-seeds values must be uint32 integers")
+
+    if args.repeat_runs > 1 or rerun_seeds is not None:
         if args.repeat_jobs <= 0:
             raise ValueError("--repeat-jobs must be positive")
         if args.blas_threads <= 0:
@@ -3772,12 +3961,14 @@ def main(argv: list[str] | None = None) -> None:
         if args.paper_k is not None:
             overrides["K"] = int(args.paper_k)
         result = run_repeated_main_single(
-            n_runs=int(args.repeat_runs),
+            n_runs=len(rerun_seeds) if rerun_seeds is not None else int(args.repeat_runs),
             jobs=int(args.repeat_jobs),
             base_seed=int(args.seed),
             out_dir=args.repeat_out_dir,
             config_overrides=overrides,
             blas_threads=int(args.blas_threads),
+            rerun_seeds=rerun_seeds,
+            outlier_threshold_m=float(args.outlier_threshold_m),
         )
         _print_repeated_summary(result)
     elif args.diagnostic_snr_sweep:
