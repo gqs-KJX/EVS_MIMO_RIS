@@ -1,3 +1,37 @@
+# Python cache
 __pycache__/
-*.pyc
-*.pdf
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Experiment outputs
+results/
+outputs/
+logs/
+runs/
+tmp/
+
+# Large generated data
+*.npy
+*.npz
+*.mat
+*.fig
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+
+# Logs
+*.log
+
+# OS/editor
+.DS_Store
+.vscode/
