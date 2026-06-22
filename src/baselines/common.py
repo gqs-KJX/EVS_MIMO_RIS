@@ -169,6 +169,17 @@ def make_baseline_row(
         "batch_size": diagnostics.get("batch_size", ""),
         "max_batch_memory_mb": diagnostics.get("max_batch_memory_mb", ""),
         "num_batches": diagnostics.get("num_batches", ""),
+        "baseline_backend": diagnostics.get("backend", "cpu"),
+        "gpu_used": diagnostics.get("gpu_used", False),
+        "gpu_device": diagnostics.get("gpu_device", ""),
+        "gpu_num_batches": diagnostics.get("gpu_num_batches", 0),
+        "gpu_batch_size": diagnostics.get("gpu_batch_size", ""),
+        "cache_enabled": diagnostics.get("cache_enabled", False),
+        "cache_hits": diagnostics.get("cache_hits", 0),
+        "cache_misses": diagnostics.get("cache_misses", 0),
+        "cache_estimated_bytes": diagnostics.get("cache_estimated_bytes", 0),
+        "scoring_time_s": diagnostics.get("scoring_time_s", ""),
+        "backend_warning": diagnostics.get("backend_warning", ""),
         "warning": row_warning,
     }
 

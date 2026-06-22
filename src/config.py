@@ -362,6 +362,16 @@ def default_config() -> dict:
             "boundary_accept_rel_tol": 1.0e-3,
         },
         "baselines": {
+            "backend_config": {
+                "backend": "cpu",
+                "gpu_device": 0,
+                "gpu_batch_size": None,
+                "cpu_batch_size": None,
+                "cache_enabled": True,
+                "cache_memory_budget_gb": None,
+                "gpu_memory_fraction": None,
+                "dtype": "complex128",
+            },
             "ff_omp": {
                 "batch_size": 256,
                 "max_batch_memory_mb": 256.0,

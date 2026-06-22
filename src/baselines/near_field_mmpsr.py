@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from .backend import BackendConfig, choose_batch_size, get_backend
+from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
 from .common import (
     BaselineResult,
     clock_grid_from_config,
@@ -77,10 +79,30 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
     scene = data["scene"]
     y_vec = vectorize_raw_observation(data["Y_noisy"])
     cfg = dict(config.get("baselines", {}).get("nf_mmpsr", {}))
+    backend_cfg = BackendConfig.from_value(
+        config.get("baselines", {}).get("backend_config")
+    )
+    backend = get_backend(backend_cfg)
+    BASELINE_CACHE.configure(
+        enabled=backend_cfg.cache_enabled,
+        memory_budget_gb=backend_cfg.cache_memory_budget_gb,
+    )
+    cache_before = BASELINE_CACHE.snapshot()
     grid_shape = tuple(int(v) for v in cfg.get("grid_shape", (11, 11, 5)))
     clock_grid_size = int(cfg.get("clock_grid_size", 11))
-    positions = position_grid_from_config(config, grid_shape)
-    clocks = clock_grid_from_config(config, clock_grid_size)
+    cache_key = baseline_cache_key(
+        "nf_mmpsr",
+        scene,
+        config,
+        grid_sizes=(grid_shape, clock_grid_size),
+    )
+    positions, clocks = BASELINE_CACHE.get_or_create(
+        cache_key,
+        lambda: (
+            position_grid_from_config(config, grid_shape),
+            clock_grid_from_config(config, clock_grid_size),
+        ),
+    )
     candidates = [
         (int(pos_idx), int(clock_idx), position, float(delta_t))
         for pos_idx, position in enumerate(positions)
@@ -89,23 +111,42 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
     max_batch_memory_mb = float(cfg.get("max_batch_memory_mb", 256.0))
     requested_batch_size = int(cfg.get("batch_size", 64))
     columns_per_candidate = max(1, 2 * int(scene["K"]))
-    bytes_per_candidate = max(
-        int(y_vec.size * columns_per_candidate * np.dtype(complex).itemsize),
-        1,
+    memory_budget_bytes = max_batch_memory_mb * 1024.0**2
+    if backend.name == "cupy" and backend_cfg.gpu_memory_fraction is not None:
+        memory_budget_bytes = min(
+            memory_budget_bytes,
+            float(backend.memory_info()["free_bytes"]) * backend_cfg.gpu_memory_fraction,
+        )
+    memory_batch_size = choose_batch_size(
+        len(candidates),
+        y_vec.size * columns_per_candidate,
+        memory_budget_bytes,
+        np.complex128,
     )
-    memory_batch_size = max(
-        1,
-        int(max_batch_memory_mb * 1024.0**2 // bytes_per_candidate),
+    requested_batch_size = (
+        backend_cfg.gpu_batch_size
+        if backend.name == "cupy" and backend_cfg.gpu_batch_size is not None
+        else backend_cfg.cpu_batch_size
+        if backend.name == "cpu" and backend_cfg.cpu_batch_size is not None
+        else requested_batch_size
     )
-    batch_size = max(1, min(requested_batch_size, memory_batch_size))
+    batch_size = max(1, min(int(requested_batch_size), memory_batch_size))
     num_batches = 0
     best_score = -np.inf
+    best_selection_score = -np.inf
     best_index = (-1, -1)
     best_position = positions[0]
     best_delta_t = float(clocks[0])
     best_coeffs = np.zeros(0, dtype=complex)
     best_y_hat = np.zeros_like(y_vec)
     best_supports: list[dict[str, Any]] = []
+    scoring_start = time.perf_counter()
+    y_device = (
+        backend.asarray(y_vec, dtype=backend.xp.complex128)
+        if backend.name == "cupy"
+        else None
+    )
+    y_energy = float(np.linalg.norm(y_vec) ** 2 + 1.0e-12)
     for batch_start in range(0, len(candidates), batch_size):
         batch_candidates = candidates[batch_start : batch_start + batch_size]
         batch_designs = []
@@ -122,9 +163,45 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
                 )
             )
         num_batches += 1
-        for pos_idx, clock_idx, position, delta_t, supports, Psi in batch_designs:
-            score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
-            if score > best_score:
+        if backend.name == "cupy":
+            designs_device = backend.asarray(
+                np.stack([entry[-1] for entry in batch_designs], axis=0),
+                dtype=backend.xp.complex128,
+            )
+            gram = backend.xp.matmul(
+                designs_device.conj().transpose(0, 2, 1), designs_device
+            )
+            rhs = backend.xp.matmul(
+                designs_device.conj().transpose(0, 2, 1),
+                backend.xp.broadcast_to(y_device, (len(batch_designs), y_vec.size))[
+                    :, :, None
+                ],
+            )[:, :, 0]
+            eye = backend.xp.eye(columns_per_candidate, dtype=backend.xp.complex128)
+            try:
+                coeffs_device = backend.solve(
+                    gram + 1.0e-10 * eye[None, :, :], rhs
+                )
+            except Exception:
+                coeffs_device = backend.xp.matmul(
+                    backend.xp.linalg.pinv(gram + 1.0e-10 * eye[None, :, :]),
+                    rhs[:, :, None],
+                )[:, :, 0]
+            fitted_device = backend.xp.matmul(
+                designs_device, coeffs_device[:, :, None]
+            )[:, :, 0]
+            scores_device = (
+                backend.xp.sum(backend.xp.abs(fitted_device) ** 2, axis=1)
+                / y_energy
+            )
+            local_best = int(backend.to_host(backend.argmax(scores_device)))
+            local_score = float(backend.to_host(scores_device[local_best]))
+            if local_score > best_selection_score:
+                pos_idx, clock_idx, position, delta_t, supports, Psi = batch_designs[
+                    local_best
+                ]
+                score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
+                best_selection_score = local_score
                 best_score = float(score)
                 best_index = (int(pos_idx), int(clock_idx))
                 best_position = np.asarray(position, dtype=float)
@@ -132,8 +209,23 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
                 best_coeffs = coeffs
                 best_y_hat = y_hat
                 best_supports = supports
+            del designs_device, gram, rhs, coeffs_device, fitted_device, scores_device
+        else:
+            for pos_idx, clock_idx, position, delta_t, supports, Psi in batch_designs:
+                score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
+                if score > best_score:
+                    best_selection_score = float(score)
+                    best_score = float(score)
+                    best_index = (int(pos_idx), int(clock_idx))
+                    best_position = np.asarray(position, dtype=float)
+                    best_delta_t = float(delta_t)
+                    best_coeffs = coeffs
+                    best_y_hat = y_hat
+                    best_supports = supports
         del batch_designs, batch_candidates
-        trim_memory()
+        if bool(config.get("baselines", {}).get("trim_memory", True)):
+            trim_memory()
+    backend.synchronize()
     residual = y_vec - best_y_hat
     diagnostics = {
         "dictionary_mode": "near_field_spherical_grid_mmpsr",
@@ -147,7 +239,15 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
         "batch_size": batch_size,
         "max_batch_memory_mb": max_batch_memory_mb,
         "num_batches": num_batches,
+        "backend": backend.name,
+        "gpu_used": backend.name == "cupy",
+        "gpu_num_batches": num_batches if backend.name == "cupy" else 0,
+        "gpu_batch_size": batch_size if backend.name == "cupy" else "",
+        "gpu_device": backend.device if backend.name == "cupy" else "",
+        "scoring_time_s": time.perf_counter() - scoring_start,
+        "backend_warning": backend.warning,
     }
+    diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     return BaselineResult(
         name="nf_mmpsr",
         p_u=best_position,

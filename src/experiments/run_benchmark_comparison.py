@@ -99,6 +99,17 @@ FIELDNAMES = [
     "batch_size",
     "max_batch_memory_mb",
     "num_batches",
+    "baseline_backend",
+    "gpu_used",
+    "gpu_device",
+    "gpu_num_batches",
+    "gpu_batch_size",
+    "cache_enabled",
+    "cache_hits",
+    "cache_misses",
+    "cache_estimated_bytes",
+    "scoring_time_s",
+    "backend_warning",
     "rss_mb_before",
     "rss_mb_after",
     "warning",
@@ -350,6 +361,10 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
         paper_k=int(task["paper_k"]),
         grid_profile=str(task["grid_profile"]),
         strict_ris_geometry=bool(task.get("strict_ris_geometry", False)),
+    )
+    config["baselines"]["backend_config"] = dict(task.get("backend_config", {}))
+    config["baselines"]["trim_memory"] = bool(
+        task.get("trim_memory", _WORKER_TRIM_MEMORY)
     )
     data = _make_data(config)
     rows: list[dict[str, Any]] = []
@@ -635,6 +650,13 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "seed": int(args.seed),
         "git_commit": _git_commit(),
         "strict_ris_geometry": bool(args.strict_ris_geometry),
+        "baseline_backend": str(args.baseline_backend),
+        "gpu_device": args.gpu_device,
+        "gpu_batch_size": args.gpu_batch_size,
+        "cpu_batch_size": args.cpu_batch_size,
+        "cache_baseline_grids": bool(args.cache_baseline_grids),
+        "cache_memory_budget_gb": args.cache_memory_budget_gb,
+        "gpu_memory_fraction": args.gpu_memory_fraction,
     }
 
 
@@ -655,6 +677,13 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], baselines: list[s
         "profile_memory": bool(args.profile_memory),
         "python": platform.python_version(),
         "numpy": np.__version__,
+        "baseline_backend": str(args.baseline_backend),
+        "gpu_device": args.gpu_device,
+        "gpu_batch_size": args.gpu_batch_size,
+        "cpu_batch_size": args.cpu_batch_size,
+        "cache_baseline_grids": bool(args.cache_baseline_grids),
+        "cache_memory_budget_gb": args.cache_memory_budget_gb,
+        "gpu_memory_fraction": args.gpu_memory_fraction,
     }
 
 
@@ -694,6 +723,16 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
                     "trim_memory": bool(args.trim_memory),
                     "profile_memory": bool(args.profile_memory),
                     "strict_ris_geometry": bool(args.strict_ris_geometry),
+                    "backend_config": {
+                        "backend": str(args.baseline_backend),
+                        "gpu_device": args.gpu_device,
+                        "gpu_batch_size": args.gpu_batch_size,
+                        "cpu_batch_size": args.cpu_batch_size,
+                        "cache_enabled": bool(args.cache_baseline_grids),
+                        "cache_memory_budget_gb": args.cache_memory_budget_gb,
+                        "gpu_memory_fraction": args.gpu_memory_fraction,
+                        "dtype": "complex128",
+                    },
                 }
             )
     return tasks
@@ -717,6 +756,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=True,
     )
     parser.add_argument("--profile-memory", action="store_true")
+    parser.add_argument(
+        "--baseline-backend",
+        choices=("cpu", "cupy", "auto"),
+        default="cpu",
+    )
+    parser.add_argument("--gpu-device", type=int, default=0)
+    parser.add_argument("--gpu-batch-size", type=int, default=None)
+    parser.add_argument("--cpu-batch-size", type=int, default=None)
+    parser.add_argument(
+        "--cache-baseline-grids",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--cache-memory-budget-gb", type=float, default=None)
+    parser.add_argument("--gpu-memory-fraction", type=float, default=None)
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--reuse-incompatible-cache", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
@@ -745,6 +799,16 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--paper-k must be positive")
     if args.blas_threads != "auto" and int(args.blas_threads) <= 0:
         raise ValueError("--blas-threads must be positive or 'auto'")
+    if args.gpu_batch_size is not None and args.gpu_batch_size <= 0:
+        raise ValueError("--gpu-batch-size must be positive")
+    if args.cpu_batch_size is not None and args.cpu_batch_size <= 0:
+        raise ValueError("--cpu-batch-size must be positive")
+    if args.cache_memory_budget_gb is not None and args.cache_memory_budget_gb <= 0:
+        raise ValueError("--cache-memory-budget-gb must be positive")
+    if args.gpu_memory_fraction is not None and not 0 < args.gpu_memory_fraction <= 1:
+        raise ValueError("--gpu-memory-fraction must be in (0, 1]")
+    if args.baseline_backend in {"cupy", "auto"} and args.process_workers is None:
+        args.process_workers = 1
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     progress_path = (
@@ -780,6 +844,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args.process_workers = int(args.resource_plan["process_workers"])
     args.blas_threads = int(args.resource_plan["blas_threads"])
+    if args.baseline_backend in {"cupy", "auto"} and args.process_workers > 2:
+        print(
+            "Multiple worker processes may contend for one GPU; prefer "
+            "--process-workers 1 or 2."
+        )
     for task in tasks:
         task["blas_threads"] = args.blas_threads
     apply_thread_limits(
