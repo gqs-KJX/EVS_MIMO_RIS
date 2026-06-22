@@ -12,11 +12,14 @@ separate ablation baselines.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import time
 
 import numpy as np
 
 from .geometry import elev_az_from_unit_vector, polarization_vector, unit_vector_from_elev_az
+from .baselines.backend import BackendConfig, get_backend
 from .projections_delay import tau_from_pole
 from .utils import bounded_coordinate_search, scipy_is_available, solve_lstsq
 
@@ -25,6 +28,12 @@ def _global_vp_config(config: dict) -> dict:
     """Return global-VP options with conservative defaults."""
     defaults = {
         "solver": "least_squares",
+        "backend": "cpu",
+        "gpu_device": 0,
+        "gpu_dtype": "complex128",
+        "gpu_keep_arrays_on_device": True,
+        "gpu_transfer_policy": "scalar_grad_only",
+        "validate_gpu_against_cpu": False,
         "mode": "adaptive_jones",
         "max_iter": 80,
         "ftol": 1.0e-12,
@@ -75,6 +84,23 @@ def _global_vp_config(config: dict) -> dict:
     options = dict(defaults)
     options.update(dict(config.get("global_vp", {})))
     return options
+
+
+_UNSCALED_EFIM_CACHE: dict[str, dict] = {}
+
+
+def _global_vp_backend(config: dict):
+    options = _global_vp_config(config)
+    dtype = str(options.get("gpu_dtype", "complex128"))
+    if dtype != "complex128":
+        raise ValueError("global_vp GPU backend supports only complex128")
+    return get_backend(
+        BackendConfig(
+            backend=str(options.get("backend", "cpu")),
+            gpu_device=int(options.get("gpu_device", 0)),
+            dtype="complex128",
+        )
+    )
 
 
 def distance_to_box_boundary(
@@ -615,6 +641,196 @@ def _build_global_dictionary(
     return phi, aux
 
 
+def _make_global_vp_gpu_context(
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    backend,
+) -> dict:
+    """Transfer refinement-static arrays once for the reduced CuPy path."""
+    cp = backend.xp
+    evs_bases, evs_mode = _evs_atom_bases(init_estimate, scene, config)
+    stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+    weight = _objective_weight_from_config(config, y_vec.size)
+    base_regularizer, _, lambda_jones, prior_status, loading = _jones_regularizer(
+        init_estimate, scene, config, y_vec, None
+    )
+    return {
+        "backend": backend,
+        "cp": cp,
+        "y": backend.asarray(y_vec, dtype=cp.complex128),
+        "evs_bases": [backend.asarray(value, dtype=cp.complex128) for value in evs_bases],
+        "evs_mode": evs_mode,
+        "rotations": backend.asarray(scene["rotations"], dtype=cp.float64),
+        "ris_centers": backend.asarray(scene["ris_centers"], dtype=cp.float64),
+        "ris_grid": backend.asarray(scene["ris_grid"], dtype=cp.float64),
+        "omega": [backend.asarray(scene["Omega"][k], dtype=cp.complex128) for k in range(scene["K"])],
+        "a_rb": [backend.asarray(scene["a_RB"][k], dtype=cp.complex128) for k in range(scene["K"])],
+        "d_rb": backend.asarray(scene["d_RB"], dtype=cp.float64),
+        "n_idx": cp.arange(scene["N"], dtype=cp.float64),
+        "n_idx_power": cp.arange(scene["N"], dtype=cp.int64),
+        "weight": None if weight is None else backend.asarray(weight),
+        "tau_stage1": backend.asarray(stage1_factors["tau_phys"], dtype=cp.float64),
+        "base_regularizer": backend.asarray(
+            base_regularizer, dtype=cp.complex128
+        ),
+        "lambda_jones": np.asarray(lambda_jones, dtype=float),
+        "jones_prior_status": list(prior_status),
+        "diagonal_loading": float(loading),
+    }
+
+
+def _build_global_dictionary_cupy(
+    xi: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    context: dict,
+    need_jacobian: bool = False,
+):
+    """CuPy equivalent of :func:`_build_global_dictionary`."""
+    cp = context["cp"]
+    xi_device = cp.asarray(xi, dtype=cp.float64).reshape(4)
+    p_u = xi_device[:3]
+    delta_t = xi_device[3]
+    evs_bases = context["evs_bases"]
+    k_paths = int(scene["K"])
+    i_dim = int(scene["I"])
+    n_dim = int(scene["N"])
+    t_dim = int(scene["T"])
+    kappa = 2.0 * np.pi / float(scene["wavelength"])
+    num_atoms = int(sum(int(basis.shape[1]) for basis in evs_bases))
+    rows = i_dim * n_dim * t_dim
+
+    phi = cp.empty((rows, num_atoms), dtype=cp.complex128)
+    d_mat = cp.empty((n_dim, k_paths), dtype=cp.complex128)
+    c_mat = cp.empty((t_dim, k_paths), dtype=cp.complex128)
+    poles = cp.empty(k_paths, dtype=cp.complex128)
+    ranges = cp.empty(k_paths, dtype=cp.float64)
+    elevations = cp.empty(k_paths, dtype=cp.float64)
+    azimuths = cp.empty(k_paths, dtype=cp.float64)
+    tau = cp.empty(k_paths, dtype=cp.float64)
+    q_local = cp.empty((k_paths, 3), dtype=cp.float64)
+    path_for_atom = cp.empty(num_atoms, dtype=cp.int64)
+    basis_for_atom = cp.empty(num_atoms, dtype=cp.int64)
+    dtau_dx_all = cp.empty((k_paths, 4), dtype=cp.float64) if need_jacobian else None
+    dphi_dx = (
+        [cp.empty((rows, num_atoms), dtype=cp.complex128) for _ in range(4)]
+        if need_jacobian
+        else None
+    )
+    eps = float(config.get("eps", 1.0e-10))
+    atom_col = 0
+    for k in range(k_paths):
+        rotation = context["rotations"][k]
+        q_vec = rotation @ (p_u - context["ris_centers"][k])
+        range_m = cp.maximum(cp.linalg.norm(q_vec), eps)
+        unit = q_vec / range_m
+        q_local[k] = q_vec
+        ranges[k] = range_m
+        elevations[k] = cp.arcsin(cp.clip(unit[2], -1.0, 1.0))
+        azimuths[k] = cp.arctan2(unit[1], unit[0])
+
+        tau_k = (range_m + context["d_rb"][k]) / float(scene["c0"]) + delta_t
+        tau[k] = tau_k
+        pole = cp.exp(-1j * 2.0 * cp.pi * float(scene["delta_f"]) * tau_k)
+        poles[k] = pole
+        d_vec = pole ** context["n_idx_power"]
+        d_mat[:, k] = d_vec
+
+        diff = q_vec[None, :] - context["ris_grid"]
+        dist_elem = cp.linalg.norm(diff, axis=1)
+        safe_dist = cp.maximum(dist_elem, eps)
+        delta = dist_elem - range_m
+        u_vec = cp.exp(-1j * kappa * delta)
+        c_vec = context["omega"][k] @ (context["a_rb"][k] * u_vec)
+        c_mat[:, k] = c_vec
+
+        evs_basis = evs_bases[k]
+        first_atom = atom_col
+        for basis_idx in range(int(evs_basis.shape[1])):
+            a_vec = evs_basis[:, basis_idx]
+            phi[:, atom_col] = (
+                a_vec[:, None, None]
+                * d_vec[None, :, None]
+                * c_vec[None, None, :]
+            ).reshape(-1)
+            path_for_atom[atom_col] = k
+            basis_for_atom[atom_col] = basis_idx
+            atom_col += 1
+
+        if need_jacobian and dphi_dx is not None:
+            dr_dp = (q_vec / range_m) @ rotation / float(scene["c0"])
+            dtau_dx = cp.concatenate([dr_dp, cp.ones(1, dtype=cp.float64)])
+            dtau_dx_all[k] = dtau_dx
+            geom_grad = diff / safe_dist[:, None] - q_vec[None, :] / range_m
+            ddelta_dp = geom_grad @ rotation
+            du_dp = -1j * kappa * u_vec[:, None] * ddelta_dp
+            dc_dp = cp.empty((3, t_dim), dtype=cp.complex128)
+            for dim in range(3):
+                dc_dp[dim] = context["omega"][k] @ (
+                    context["a_rb"][k] * du_dp[:, dim]
+                )
+            for basis_idx in range(int(evs_basis.shape[1])):
+                a_vec = evs_basis[:, basis_idx]
+                col = first_atom + basis_idx
+                for dim in range(4):
+                    dd_dx = (
+                        -1j
+                        * 2.0
+                        * cp.pi
+                        * float(scene["delta_f"])
+                        * context["n_idx"]
+                        * d_vec
+                        * dtau_dx[dim]
+                    )
+                    d_atom = (
+                        a_vec[:, None, None]
+                        * dd_dx[None, :, None]
+                        * c_vec[None, None, :]
+                    )
+                    if dim < 3:
+                        d_atom = d_atom + (
+                            a_vec[:, None, None]
+                            * d_vec[None, :, None]
+                            * dc_dp[dim][None, None, :]
+                        )
+                    dphi_dx[dim][:, col] = d_atom.reshape(-1)
+
+    aux = {
+        "q_local": q_local,
+        "ranges": ranges,
+        "elevations": elevations,
+        "azimuths": azimuths,
+        "tau": tau,
+        "D": d_mat,
+        "C": c_mat,
+        "poles": poles,
+        "path_for_atom": path_for_atom,
+        "basis_for_atom": basis_for_atom,
+        "evs_mode": context["evs_mode"],
+    }
+    if need_jacobian:
+        aux["dPhi_dx"] = dphi_dx
+        aux["dtau_dx"] = dtau_dx_all
+    return phi, aux
+
+
+def _gpu_aux_to_host(aux: dict, backend) -> dict:
+    result = {}
+    for key, value in aux.items():
+        if key in {"dPhi_dx", "dtau_dx"}:
+            continue
+        if isinstance(value, list):
+            result[key] = [backend.to_host(item) for item in value]
+        elif hasattr(value, "shape"):
+            result[key] = backend.to_host(value)
+        else:
+            result[key] = value
+    return result
+
+
 def build_jones_vp_dictionary(
     p_u: np.ndarray,
     delta_t: float,
@@ -826,8 +1042,56 @@ def _solve_linear_vp_regularized(
     y_vec: np.ndarray,
     regularizer: np.ndarray | None,
     diagonal_loading: float,
+    backend=None,
 ) -> tuple[np.ndarray, dict]:
     """Solve closed-form regularized LS for the current nonlinear state."""
+    if backend is not None and backend.name == "cupy":
+        cp = backend.xp
+        gram_data = phi.conj().T @ phi
+        rhs = phi.conj().T @ y_vec
+        gram = gram_data.copy()
+        if regularizer is not None:
+            gram += cp.asarray(regularizer, dtype=cp.complex128)
+        if diagonal_loading > 0.0:
+            gram += float(diagonal_loading) * cp.eye(
+                phi.shape[1], dtype=cp.complex128
+            )
+        try:
+            coeff = cp.linalg.solve(gram, rhs)
+        except Exception:
+            coeff = cp.linalg.pinv(gram) @ rhs
+        try:
+            trace_h = float(backend.to_host(cp.trace(cp.linalg.solve(gram, gram_data)).real))
+        except Exception:
+            trace_h = float(
+                backend.to_host(cp.trace(cp.linalg.pinv(gram) @ gram_data).real)
+            )
+        singular_device = cp.linalg.svd(gram_data, compute_uv=False)
+        singular = backend.to_host(singular_device)
+        rank = (
+            int(
+                np.sum(
+                    singular
+                    > max(gram_data.shape)
+                    * np.finfo(float).eps
+                    * singular[0]
+                )
+            )
+            if singular.size
+            else 0
+        )
+        cond = (
+            float(singular[0] / singular[-1])
+            if singular.size and singular[-1] > 0.0
+            else float("inf")
+        )
+        return coeff, {
+            "condition_number_gram": cond,
+            "rank_gram": rank,
+            "trace_H": trace_h,
+            "gram_singular_values": singular,
+            "linear_solve_backend": "cupy.linalg.solve",
+        }
     gram_data = phi.conj().T @ phi
     rhs = phi.conj().T @ y_vec
     gram = gram_data.copy()
@@ -854,7 +1118,78 @@ def _solve_linear_vp_regularized(
         "rank_gram": rank,
         "trace_H": trace_h,
         "gram_singular_values": singular,
+        "linear_solve_backend": "numpy.linalg.solve",
     }
+
+
+def _efim_hash_array(value) -> str:
+    arr = np.asarray(value)
+    if np.issubdtype(arr.dtype, np.floating):
+        arr = np.round(arr.astype(float), decimals=12)
+    return hashlib.sha256(
+        np.ascontiguousarray(arr).view(np.uint8)
+    ).hexdigest()[:16]
+
+
+def efim_unscaled_cache_key(
+    scene: dict,
+    config: dict,
+    p_u: np.ndarray,
+    delta_t: float,
+    *,
+    parameter_order: tuple[str, ...] = (
+        "p_x_m",
+        "p_y_m",
+        "p_z_m",
+        "delta_t_s",
+    ),
+    parameter_scaling: str = "seconds_and_c_delta_t",
+    nuisance_model: str = "jones_linear",
+    dictionary_mode: str = "jones_free",
+) -> str:
+    """Return a strict key for geometry-only projected-Jacobian information."""
+    scene_payload = {
+        "ris_centers": _efim_hash_array(scene.get("ris_centers", [])),
+        "rotations": _efim_hash_array(scene.get("rotations", [])),
+        "ris_grid": _efim_hash_array(scene.get("ris_grid", [])),
+        "Omega": _efim_hash_array(scene.get("Omega", [])),
+        "a_RB": _efim_hash_array(scene.get("a_RB", [])),
+        "Theta": _efim_hash_array(scene.get("Theta", [])),
+        "v_B": _efim_hash_array(scene.get("v_B", [])),
+        "d_RB": _efim_hash_array(scene.get("d_RB", [])),
+        "beta_true": _efim_hash_array(scene.get("beta_true", [])),
+        "wavelength": float(scene.get("wavelength", config.get("wavelength", 0.0))),
+        "delta_f": float(scene.get("delta_f", config.get("delta_f", 0.0))),
+        "c0": float(scene.get("c0", config.get("c0", 0.0))),
+        "N": int(scene.get("N", config.get("N", 0))),
+        "T": int(scene.get("T", config.get("T", 0))),
+        "I": int(scene.get("I", 0)),
+    }
+    scene_hash = str(scene.get("scene_hash", "")) or hashlib.sha256(
+        json.dumps(scene_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:20]
+    payload = {
+        "scene_hash": scene_hash,
+        "receiver_mode": str(
+            scene.get(
+                "receiver_mode",
+                config.get("receiver_mode", config.get("evs_selection", "")),
+            )
+        ),
+        "K": int(scene.get("K", config.get("K", 0))),
+        "p_u": [float(value) for value in np.asarray(p_u, dtype=float).reshape(3)],
+        "delta_t": float(delta_t),
+        "parameter_order": list(parameter_order),
+        "parameter_scaling": str(parameter_scaling),
+        "nuisance_model": str(nuisance_model),
+        "dictionary_mode": str(dictionary_mode),
+        "receiver_component_selection": _efim_hash_array(
+            scene.get("evs_observation_mask", [])
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def data_only_efim_diagnostic(
@@ -872,22 +1207,58 @@ def data_only_efim_diagnostic(
     efim_config["global_vp"] = dict(efim_config.get("global_vp", {}))
     efim_config["global_vp"]["mode"] = "jones_free"
     xi = np.r_[np.asarray(p_u, dtype=float).reshape(3), float(delta_t)]
-    phi, aux = _build_global_dictionary(
-        xi, init_estimate, scene, efim_config, need_jacobian=True
+    parameter_order = ("p_x_m", "p_y_m", "p_z_m", "delta_t_s")
+    cache_key = efim_unscaled_cache_key(
+        scene,
+        efim_config,
+        p_u,
+        delta_t,
+        parameter_order=parameter_order,
     )
-    coeff, linear_diag = _solve_linear_vp_regularized(phi, y_vec, None, 0.0)
-    d_model = np.column_stack([dphi @ coeff for dphi in aux["dPhi_dx"]])
-    try:
-        nuisance_fit = phi @ np.linalg.lstsq(phi, d_model, rcond=None)[0]
-    except np.linalg.LinAlgError:
-        nuisance_fit = phi @ (np.linalg.pinv(phi) @ d_model)
-    projected = d_model - nuisance_fit
-    if sigma2 is None or not np.isfinite(float(sigma2)) or float(sigma2) <= 0.0:
-        residual = y_vec - phi @ coeff
-        sigma2 = float(np.vdot(residual, residual).real / max(y_vec.size, 1))
-    j_eq = (2.0 / max(float(sigma2), config.get("eps", 1.0e-10))) * np.real(
-        projected.conj().T @ projected
+    cache_enabled = bool(
+        config.get("crb", {}).get("enable_unscaled_efim_cache", False)
     )
+    sigma2_is_valid = (
+        sigma2 is not None
+        and np.isfinite(float(sigma2))
+        and float(sigma2) > 0.0
+    )
+    cached = _UNSCALED_EFIM_CACHE.get(cache_key) if cache_enabled and sigma2_is_valid else None
+    if cached is not None:
+        j_unscaled = np.asarray(cached["j_unscaled"], dtype=float).copy()
+        linear_diag = copy.deepcopy(cached["linear_diag"])
+        cache_hit = True
+        reuse_mode = "snr_closed_form_scale"
+    else:
+        phi, aux = _build_global_dictionary(
+            xi, init_estimate, scene, efim_config, need_jacobian=True
+        )
+        coeff, linear_diag = _solve_linear_vp_regularized(
+            phi, y_vec, None, 0.0
+        )
+        d_model = np.column_stack(
+            [dphi @ coeff for dphi in aux["dPhi_dx"]]
+        )
+        try:
+            nuisance_fit = phi @ np.linalg.lstsq(phi, d_model, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            nuisance_fit = phi @ (np.linalg.pinv(phi) @ d_model)
+        projected = d_model - nuisance_fit
+        j_unscaled = np.real(projected.conj().T @ projected)
+        if not sigma2_is_valid:
+            residual = y_vec - phi @ coeff
+            sigma2 = float(
+                np.vdot(residual, residual).real / max(y_vec.size, 1)
+            )
+        if cache_enabled:
+            _UNSCALED_EFIM_CACHE[cache_key] = {
+                "j_unscaled": j_unscaled.copy(),
+                "linear_diag": copy.deepcopy(linear_diag),
+            }
+        cache_hit = False
+        reuse_mode = "computed_unscaled"
+    sigma2_value = max(float(sigma2), config.get("eps", 1.0e-10))
+    j_eq = (2.0 / sigma2_value) * j_unscaled
     scale = np.diag([1.0, 1.0, 1.0, 1.0 / float(scene["c0"])])
     j_eq_scaled = scale.T @ j_eq @ scale
     eigvals = np.linalg.eigvalsh((j_eq + j_eq.T) * 0.5)
@@ -934,6 +1305,12 @@ def data_only_efim_diagnostic(
         "data_only_scaled_efim_condition_number": condition_scaled,
         "data_only_linear_condition_number_gram": linear_diag["condition_number_gram"],
         "data_only_rank_gram": linear_diag["rank_gram"],
+        "data_only_efim_unscaled": j_unscaled,
+        "efim_unscaled_cache_hit": cache_hit,
+        "efim_unscaled_cache_key": cache_key,
+        "efim_sigma2": float(sigma2),
+        "efim_reuse_mode": reuse_mode,
+        "peb_backend": "cpu",
     }
 
 
@@ -1123,6 +1500,246 @@ def _vp_objective_only(
     return _vp_objective_and_grad(xi, y_vec, init_estimate, scene, config)[0]
 
 
+def _apply_weight_cupy(vec, weight, cp):
+    if weight is None:
+        return vec
+    if weight.ndim == 1:
+        return weight * vec if vec.ndim == 1 else weight[:, None] * vec
+    return weight @ vec
+
+
+def _vp_objective_parts_and_grad_cupy(
+    xi: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    context: dict,
+) -> tuple[dict, np.ndarray]:
+    """CuPy reduced VP objective; only scalar parts and the 4-D gradient leave GPU."""
+    backend = context["backend"]
+    cp = context["cp"]
+    options = _global_vp_config(config)
+    vp_mode = _global_vp_mode(config)
+    beta_reg = float(options.get("beta_reg", 0.0))
+    y_device = context["y"]
+    weight = context["weight"]
+    objective_scale = 1.0 / float(y_device.size)
+    phi, aux = _build_global_dictionary_cupy(
+        xi, init_estimate, scene, config, context, need_jacobian=True
+    )
+    regularizer = None
+    jones_rho = cp.zeros(scene["K"], dtype=cp.float64)
+    lambda_jones = context["lambda_jones"]
+    linear_diag = {}
+    if vp_mode in {"adaptive_jones", "jones_regularized", "jones_free"}:
+        regularizer = context["base_regularizer"].copy()
+        if str(options.get("jones_regularization_scaling", "gram")) == "gram":
+            for k in range(int(scene["K"])):
+                psi_k = phi[:, 2 * k : 2 * k + 2]
+                gram_scale = 0.5 * cp.trace(psi_k.conj().T @ psi_k).real
+                regularizer[2 * k : 2 * k + 2, 2 * k : 2 * k + 2] *= gram_scale
+                jones_rho[k] = float(lambda_jones[k]) * gram_scale
+        else:
+            jones_rho = cp.asarray(lambda_jones, dtype=cp.float64)
+        beta, linear_diag = _solve_linear_vp_regularized(
+            phi,
+            y_device,
+            regularizer,
+            context["diagonal_loading"],
+            backend=backend,
+        )
+    else:
+        weighted_phi = _apply_weight_cupy(phi, weight, cp)
+        gram = (
+            objective_scale * (phi.conj().T @ weighted_phi)
+            + beta_reg * cp.eye(phi.shape[1], dtype=cp.complex128)
+        )
+        rhs = objective_scale * (
+            phi.conj().T @ _apply_weight_cupy(y_device, weight, cp)
+        )
+        try:
+            beta = cp.linalg.solve(gram, rhs)
+        except Exception:
+            beta = cp.linalg.pinv(gram) @ rhs
+
+    residual = y_device - phi @ beta
+    raw_objective_device = objective_scale * cp.real(
+        cp.vdot(residual, _apply_weight_cupy(residual, weight, cp))
+    )
+    beta_reg_objective_device = (
+        beta_reg * cp.real(cp.vdot(beta, beta))
+        if beta_reg > 0.0
+        else cp.asarray(0.0, dtype=cp.float64)
+    )
+    jones_regularizer_objective_device = (
+        objective_scale * cp.real(cp.vdot(beta, regularizer @ beta))
+        if regularizer is not None
+        else cp.asarray(0.0, dtype=cp.float64)
+    )
+    grad_device = cp.empty(4, dtype=cp.float64)
+    for dim, dphi in enumerate(aux["dPhi_dx"]):
+        d_model = dphi @ beta
+        grad_device[dim] = -2.0 * objective_scale * cp.real(
+            cp.vdot(residual, _apply_weight_cupy(d_model, weight, cp))
+        )
+
+    delay_prior_objective_device = cp.asarray(0.0, dtype=cp.float64)
+    if _delay_prior_enabled(config):
+        sigma_tau = float(options.get("delay_prior_sigma_s", 2.0e-11))
+        lambda_tau = float(options.get("delay_prior_weight", 1.0))
+        tau_err = aux["tau"] - context["tau_stage1"]
+        delay_prior_objective_device = lambda_tau * cp.sum(
+            (tau_err / sigma_tau) ** 2
+        )
+        grad_device += 2.0 * lambda_tau * cp.sum(
+            (tau_err / (sigma_tau**2))[:, None] * aux["dtau_dx"], axis=0
+        )
+
+    total_device = (
+        raw_objective_device
+        + beta_reg_objective_device
+        + jones_regularizer_objective_device
+        + delay_prior_objective_device
+    )
+    grad = backend.to_host(grad_device).astype(float, copy=False)
+    parts = {
+        "raw_objective": float(backend.to_host(raw_objective_device)),
+        "beta_reg_objective": float(backend.to_host(beta_reg_objective_device)),
+        "jones_regularizer_objective": float(
+            backend.to_host(jones_regularizer_objective_device)
+        ),
+        "delay_prior_objective": float(
+            backend.to_host(delay_prior_objective_device)
+        ),
+        "total_objective": float(backend.to_host(total_device)),
+        "beta": beta,
+        "residual": residual,
+        "phi": phi,
+        "aux": aux,
+        "vp_mode": vp_mode,
+        "jones_rho": jones_rho,
+        "lambda_jones_per_path": lambda_jones,
+        "jones_prior_status": context["jones_prior_status"],
+        "linear_diagnostics": linear_diag,
+    }
+    return parts, grad
+
+
+def _relative_difference(left, right) -> float:
+    left_arr = np.asarray(left)
+    right_arr = np.asarray(right)
+    return float(
+        np.linalg.norm(left_arr - right_arr)
+        / max(np.linalg.norm(left_arr), np.linalg.norm(right_arr), 1.0e-300)
+    )
+
+
+def validate_gpu_against_cpu_once(
+    xi: np.ndarray,
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    gpu_parts: dict,
+    gpu_grad: np.ndarray,
+    backend,
+) -> dict:
+    """Validate one reduced objective evaluation at an identical nonlinear state."""
+    cpu_parts, cpu_grad = _vp_objective_parts_and_grad(
+        xi, y_vec, init_estimate, scene, config
+    )
+    gpu_beta = backend.to_host(gpu_parts["beta"])
+    objective_rel = _relative_difference(
+        cpu_parts["total_objective"], gpu_parts["total_objective"]
+    )
+    gradient_rel = _relative_difference(cpu_grad, gpu_grad)
+    xhat_rel = _relative_difference(cpu_parts["beta"], gpu_beta)
+    cpu_residual_norm = float(np.linalg.norm(cpu_parts["residual"]))
+    gpu_residual_norm = float(backend.to_host(backend.norm(gpu_parts["residual"])))
+    cpu_yhat_norm = float(
+        np.linalg.norm(y_vec - np.asarray(cpu_parts["residual"]))
+    )
+    gpu_yhat_norm = float(
+        backend.to_host(
+            backend.norm(gpu_parts["phi"] @ gpu_parts["beta"])
+        )
+    )
+    diagnostics = {
+        "global_vp_cpu_gpu_objective_rel_diff": objective_rel,
+        "global_vp_cpu_gpu_gradient_rel_diff": gradient_rel,
+        "global_vp_cpu_gpu_xhat_rel_diff": xhat_rel,
+        "global_vp_cpu_residual_norm_validation": cpu_residual_norm,
+        "global_vp_gpu_residual_norm_validation": gpu_residual_norm,
+        "global_vp_cpu_yhat_norm_validation": cpu_yhat_norm,
+        "global_vp_gpu_yhat_norm_validation": gpu_yhat_norm,
+    }
+    if objective_rel >= 1.0e-9 or gradient_rel >= 1.0e-7 or xhat_rel >= 1.0e-8:
+        raise RuntimeError(
+            "global VP CPU/GPU validation failed: "
+            + json.dumps(diagnostics, sort_keys=True)
+        )
+    return diagnostics
+
+
+class _CuPyReducedVPEvaluator:
+    def __init__(
+        self,
+        y_vec: np.ndarray,
+        init_estimate: dict,
+        scene: dict,
+        config: dict,
+        backend,
+    ):
+        self.y_vec = np.asarray(y_vec, dtype=complex)
+        self.init_estimate = init_estimate
+        self.scene = scene
+        self.config = config
+        self.backend = backend
+        self.context = _make_global_vp_gpu_context(
+            self.y_vec, init_estimate, scene, config, backend
+        )
+        self.num_calls = 0
+        self.validation_diagnostics: dict = {}
+        self._last_xi: np.ndarray | None = None
+        self._last_parts: dict | None = None
+        self._last_grad: np.ndarray | None = None
+
+    def evaluate(self, xi: np.ndarray) -> tuple[dict, np.ndarray]:
+        xi_arr = np.asarray(xi, dtype=float).reshape(4)
+        if self._last_xi is not None and np.array_equal(xi_arr, self._last_xi):
+            return self._last_parts, self._last_grad
+        parts, grad = _vp_objective_parts_and_grad_cupy(
+            xi_arr,
+            self.init_estimate,
+            self.scene,
+            self.config,
+            self.context,
+        )
+        self.num_calls += 1
+        if (
+            not self.validation_diagnostics
+            and bool(
+                _global_vp_config(self.config).get(
+                    "validate_gpu_against_cpu", False
+                )
+            )
+        ):
+            self.validation_diagnostics = validate_gpu_against_cpu_once(
+                xi_arr,
+                self.y_vec,
+                self.init_estimate,
+                self.scene,
+                self.config,
+                parts,
+                grad,
+                self.backend,
+            )
+        self._last_xi = xi_arr.copy()
+        self._last_parts = parts
+        self._last_grad = grad.copy()
+        return parts, grad
+
+
 def _candidate_starts(xi0: np.ndarray, lower: np.ndarray, upper: np.ndarray, config: dict) -> list[np.ndarray]:
     """Return xi starts; optional perturb starts are deterministic."""
     options = _global_vp_config(config)
@@ -1185,6 +1802,15 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     options = _global_vp_config(config)
     beta_reg = float(options.get("beta_reg", 0.0))
     y_vec = y_raw.reshape(-1)
+    backend = _global_vp_backend(config)
+    gpu_used = backend.name == "cupy"
+    gpu_evaluator = (
+        _CuPyReducedVPEvaluator(
+            y_vec, init_estimate, scene, config, backend
+        )
+        if gpu_used
+        else None
+    )
     stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
     xi0, init_diagnostics = _initial_xi_from_stage1_with_diagnostics(
         init_estimate, scene, config, stage1_factors
@@ -1200,17 +1826,32 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     objective_history: list[float] = []
 
     def fun(xi: np.ndarray) -> float:
-        value, _ = _vp_objective_and_grad(xi, y_vec, init_estimate, scene, config)
+        if gpu_evaluator is not None:
+            parts, _ = gpu_evaluator.evaluate(xi)
+            value = float(parts["total_objective"])
+        else:
+            value, _ = _vp_objective_and_grad(
+                xi, y_vec, init_estimate, scene, config
+            )
         objective_history.append(float(value))
         return float(value)
 
     def jac(xi: np.ndarray) -> np.ndarray:
-        _, grad = _vp_objective_and_grad(xi, y_vec, init_estimate, scene, config)
+        if gpu_evaluator is not None:
+            _, grad = gpu_evaluator.evaluate(xi)
+        else:
+            _, grad = _vp_objective_and_grad(
+                xi, y_vec, init_estimate, scene, config
+            )
         return grad
 
     best_x = xi0.copy()
     best_value = fun(best_x)
-    initial_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
+    initial_parts = (
+        gpu_evaluator.evaluate(best_x)[0]
+        if gpu_evaluator is not None
+        else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
+    )
     initial_objective = float(initial_parts["total_objective"])
     success = True
     message = "initial point only"
@@ -1250,7 +1891,7 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
 
         def scaled_objective(x_scaled: np.ndarray) -> float:
             xi = lower + np.clip(x_scaled, 0.0, 1.0) * span
-            return _vp_objective_only(xi, y_vec, init_estimate, scene, config)
+            return fun(xi)
 
         x_best_scaled, best_value, info = bounded_coordinate_search(
             scaled_objective,
@@ -1268,31 +1909,91 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
         solver_method = "bounded_coordinate_search"
         solver_backend = "fallback"
 
-    initial_parts = _vp_objective_parts(xi0, y_vec, init_estimate, scene, config)
-    beta0 = np.asarray(initial_parts["beta"], dtype=complex)
-    phi0 = _build_global_dictionary(xi0, init_estimate, scene, config)[0]
-    initial_residual_vec = y_vec - phi0 @ beta0
-    initial_residual = float(np.linalg.norm(initial_residual_vec) / np.sqrt(y_vec.size))
+    initial_parts = (
+        gpu_evaluator.evaluate(xi0)[0]
+        if gpu_evaluator is not None
+        else _vp_objective_parts(xi0, y_vec, init_estimate, scene, config)
+    )
+    if gpu_used:
+        initial_residual = float(
+            backend.to_host(backend.norm(initial_parts["residual"]))
+            / np.sqrt(y_vec.size)
+        )
+    else:
+        beta0 = np.asarray(initial_parts["beta"], dtype=complex)
+        phi0 = _build_global_dictionary(
+            xi0, init_estimate, scene, config
+        )[0]
+        initial_residual_vec = y_vec - phi0 @ beta0
+        initial_residual = float(
+            np.linalg.norm(initial_residual_vec) / np.sqrt(y_vec.size)
+        )
 
-    final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
-    phi_final, aux = _build_global_dictionary(best_x, init_estimate, scene, config)
-    beta_final = np.asarray(final_parts["beta"], dtype=complex)
-    final_residual_vec = y_vec - phi_final @ beta_final
-    final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
+    final_parts = (
+        gpu_evaluator.evaluate(best_x)[0]
+        if gpu_evaluator is not None
+        else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
+    )
+    if gpu_used:
+        phi_final_device = final_parts["phi"]
+        aux = _gpu_aux_to_host(final_parts["aux"], backend)
+        beta_final = backend.to_host(final_parts["beta"])
+        final_residual_norm = float(
+            backend.to_host(backend.norm(final_parts["residual"]))
+        )
+        final_residual = final_residual_norm / np.sqrt(y_vec.size)
+        y_hat = backend.to_host(
+            phi_final_device @ final_parts["beta"]
+        ).reshape(scene["I"], scene["N"], scene["T"])
+        linear_dim = int(phi_final_device.shape[1])
+    else:
+        phi_final, aux = _build_global_dictionary(
+            best_x, init_estimate, scene, config
+        )
+        beta_final = np.asarray(final_parts["beta"], dtype=complex)
+        final_residual_vec = y_vec - phi_final @ beta_final
+        final_residual_norm = float(np.linalg.norm(final_residual_vec))
+        final_residual = final_residual_norm / np.sqrt(y_vec.size)
+        y_hat = (phi_final @ beta_final).reshape(
+            scene["I"], scene["N"], scene["T"]
+        )
+        linear_dim = int(phi_final.shape[1])
     final_objective = float(final_parts["total_objective"])
     rollback_tolerance = float(options.get("objective_rollback_tolerance", 1.0e-12))
     if final_objective > initial_objective + rollback_tolerance:
         best_x = xi0.copy()
-        final_parts = _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
-        phi_final, aux = _build_global_dictionary(best_x, init_estimate, scene, config)
-        beta_final = np.asarray(final_parts["beta"], dtype=complex)
-        final_residual_vec = y_vec - phi_final @ beta_final
-        final_residual = float(np.linalg.norm(final_residual_vec) / np.sqrt(y_vec.size))
+        final_parts = (
+            gpu_evaluator.evaluate(best_x)[0]
+            if gpu_evaluator is not None
+            else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
+        )
+        if gpu_used:
+            phi_final_device = final_parts["phi"]
+            aux = _gpu_aux_to_host(final_parts["aux"], backend)
+            beta_final = backend.to_host(final_parts["beta"])
+            final_residual_norm = float(
+                backend.to_host(backend.norm(final_parts["residual"]))
+            )
+            final_residual = final_residual_norm / np.sqrt(y_vec.size)
+            y_hat = backend.to_host(
+                phi_final_device @ final_parts["beta"]
+            ).reshape(scene["I"], scene["N"], scene["T"])
+            linear_dim = int(phi_final_device.shape[1])
+        else:
+            phi_final, aux = _build_global_dictionary(
+                best_x, init_estimate, scene, config
+            )
+            beta_final = np.asarray(final_parts["beta"], dtype=complex)
+            final_residual_vec = y_vec - phi_final @ beta_final
+            final_residual_norm = float(np.linalg.norm(final_residual_vec))
+            final_residual = final_residual_norm / np.sqrt(y_vec.size)
+            y_hat = (phi_final @ beta_final).reshape(
+                scene["I"], scene["N"], scene["T"]
+            )
+            linear_dim = int(phi_final.shape[1])
         final_objective = float(final_parts["total_objective"])
         success = False
         message = "rollback_objective_increased"
-    y_hat = (phi_final @ beta_final).reshape(scene["I"], scene["N"], scene["T"])
-    linear_dim = int(phi_final.shape[1])
     vp_mode = str(final_parts.get("vp_mode", _global_vp_mode(config)))
     gamma_hat = None
     eta_hat = None
@@ -1375,7 +2076,11 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "global_vp_evs_mode": str(aux.get("evs_mode", options.get("evs_mode", "legacy_or_full_polarization"))),
             "nonlinear_dim": 4,
             "linear_nuisance_dim": linear_dim,
-            "jones_rho": np.asarray(final_parts.get("jones_rho", []), dtype=float).copy(),
+            "jones_rho": (
+                backend.to_host(final_parts.get("jones_rho"))
+                if gpu_used
+                else np.asarray(final_parts.get("jones_rho", []), dtype=float).copy()
+            ),
             "lambda_jones_per_path": np.asarray(final_parts.get("lambda_jones_per_path", []), dtype=float).copy(),
             "jones_leakage_per_path": leakage.copy(),
             "jones_prior_status": list(final_parts.get("jones_prior_status", [])),
@@ -1385,7 +2090,7 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             ),
             "rank_gram": int(final_parts.get("linear_diagnostics", {}).get("rank_gram", 0)),
             "trace_H": float(final_parts.get("linear_diagnostics", {}).get("trace_H", np.nan)),
-            "raw_residual_norm": float(np.linalg.norm(final_residual_vec)),
+            "raw_residual_norm": final_residual_norm,
             "global_vp_use_delay_prior": _delay_prior_enabled(config),
             "global_vp_trust_region_used": bool(trust_region_used),
             "global_vp_bounds_lower": lower.copy(),
@@ -1403,6 +2108,25 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "global_vp_message": message,
             "global_vp_num_iter": int(num_iter),
             "global_vp_objective_history": objective_history,
+            "global_vp_backend": backend.name,
+            "global_vp_gpu_used": gpu_used,
+            "global_vp_gpu_device": backend.device if gpu_used else "",
+            "global_vp_gpu_num_objective_calls": (
+                int(gpu_evaluator.num_calls) if gpu_evaluator is not None else 0
+            ),
+            "global_vp_gpu_transfer_policy": (
+                str(options.get("gpu_transfer_policy", "scalar_grad_only"))
+                if gpu_used
+                else ""
+            ),
+            "global_vp_backend_warning": str(getattr(backend, "warning", "")),
+            "global_vp_lstsq_backend": "cpu",
+            "global_vp_least_squares_gpu_partial": False,
+            **(
+                gpu_evaluator.validation_diagnostics
+                if gpu_evaluator is not None
+                else {}
+            ),
             "optimizer": {
                 "success": bool(success),
                 "status": 1 if success else 0,
@@ -1536,6 +2260,14 @@ def _augment_legacy_vp_result(
             "tau_stage1": np.asarray(stage1_factors["tau_phys"], dtype=float).copy(),
             "tau_after_global_vp": components["taus"].copy(),
             "global_vp_solver": "least_squares",
+            "global_vp_backend": "cpu",
+            "global_vp_gpu_used": False,
+            "global_vp_gpu_device": "",
+            "global_vp_gpu_num_objective_calls": 0,
+            "global_vp_gpu_transfer_policy": "",
+            "global_vp_backend_warning": "",
+            "global_vp_lstsq_backend": "cpu",
+            "global_vp_least_squares_gpu_partial": False,
             "global_vp_mode": "fixed_pol",
             "vp_mode": "fixed_pol",
             "global_vp_evs_mode": "legacy_or_full_polarization",
@@ -1763,7 +2495,34 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
         "jones_relative_residual_improvement": float(rel_improvement),
         "fixed_pol_anchor_raw_objective": fixed_raw,
         "adaptive_jones_raw_objective": jones_raw,
+        "global_vp_backend": jones_result.get("global_vp_backend", "cpu"),
+        "global_vp_gpu_used": bool(
+            jones_result.get("global_vp_gpu_used", False)
+        ),
+        "global_vp_gpu_device": jones_result.get("global_vp_gpu_device", ""),
+        "global_vp_gpu_num_objective_calls": int(
+            jones_result.get("global_vp_gpu_num_objective_calls", 0)
+        ),
+        "global_vp_gpu_transfer_policy": jones_result.get(
+            "global_vp_gpu_transfer_policy", ""
+        ),
+        "global_vp_backend_warning": jones_result.get(
+            "global_vp_backend_warning", ""
+        ),
+        "global_vp_lstsq_backend": "cpu",
+        "global_vp_least_squares_gpu_partial": False,
     }
+    for key in (
+        "global_vp_cpu_gpu_objective_rel_diff",
+        "global_vp_cpu_gpu_gradient_rel_diff",
+        "global_vp_cpu_gpu_xhat_rel_diff",
+        "global_vp_cpu_residual_norm_validation",
+        "global_vp_gpu_residual_norm_validation",
+        "global_vp_cpu_yhat_norm_validation",
+        "global_vp_gpu_yhat_norm_validation",
+    ):
+        if key in jones_result:
+            diagnostics[key] = jones_result[key]
     selected.update(diagnostics)
     selected["nonlinear_dim"] = 4
     if not choose_jones:

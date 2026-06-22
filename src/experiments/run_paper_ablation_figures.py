@@ -204,6 +204,11 @@ FIELDNAMES = [
     "peb_scalar_m",
     "peb_dual_m",
     "peb_evs_m",
+    "efim_unscaled_cache_hit",
+    "efim_unscaled_cache_key",
+    "efim_sigma2",
+    "efim_reuse_mode",
+    "peb_backend",
     "rss_mb_before",
     "rss_mb_after",
     "rss_mb_delta",
@@ -946,6 +951,15 @@ def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> di
         "peb_reference_type": str(
             payload.get("peb_reference_type", "matched_model")
         ),
+        "efim_unscaled_cache_hit": bool(
+            payload.get("efim_unscaled_cache_hit", False)
+        ),
+        "efim_unscaled_cache_key": str(
+            payload.get("efim_unscaled_cache_key", "")
+        ),
+        "efim_sigma2": _restore_cached_float(payload.get("efim_sigma2")),
+        "efim_reuse_mode": str(payload.get("efim_reuse_mode", "")),
+        "peb_backend": str(payload.get("peb_backend", "cpu")),
     }
 
 
@@ -976,6 +990,15 @@ def _write_persistent_peb_cache(
         "peb_reference_type": str(
             value.get("peb_reference_type", "matched_model")
         ),
+        "efim_unscaled_cache_hit": bool(
+            value.get("efim_unscaled_cache_hit", False)
+        ),
+        "efim_unscaled_cache_key": str(
+            value.get("efim_unscaled_cache_key", "")
+        ),
+        "efim_sigma2": _json_safe_float(value.get("efim_sigma2")),
+        "efim_reuse_mode": str(value.get("efim_reuse_mode", "")),
+        "peb_backend": str(value.get("peb_backend", "cpu")),
     }
     cache_key = _peb_cache_key_string(config)
     value_json = json.dumps(payload, sort_keys=True)
@@ -1155,6 +1178,7 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         peb = float("nan")
         warning = f"data_only_efim_peb_failed: {type(exc).__name__}: {exc}"
         parameter_order = ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"]
+        diag = {}
     mode = str(config.get("receiver_mode", "full_6d"))
     return {
         "peb_position_m": peb,
@@ -1169,6 +1193,15 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         "efim_condition_number": condition,
         "efim_parameter_order": list(parameter_order),
         "peb_reference_type": "matched_model",
+        "efim_unscaled_cache_hit": bool(
+            diag.get("efim_unscaled_cache_hit", False)
+        ),
+        "efim_unscaled_cache_key": str(
+            diag.get("efim_unscaled_cache_key", "")
+        ),
+        "efim_sigma2": float(diag.get("efim_sigma2", float("nan"))),
+        "efim_reuse_mode": str(diag.get("efim_reuse_mode", "")),
+        "peb_backend": str(diag.get("peb_backend", "cpu")),
     }
 
 
@@ -1265,6 +1298,19 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
     }
     for key in ("peb_position_m", "peb_scalar_m", "peb_dual_m", "peb_evs_m"):
         metrics[key] = _finite_float(result.get(key))
+    metrics.update(
+        {
+            "efim_unscaled_cache_hit": bool(
+                result.get("efim_unscaled_cache_hit", False)
+            ),
+            "efim_unscaled_cache_key": str(
+                result.get("efim_unscaled_cache_key", "")
+            ),
+            "efim_sigma2": _finite_float(result.get("efim_sigma2")),
+            "efim_reuse_mode": str(result.get("efim_reuse_mode", "")),
+            "peb_backend": str(result.get("peb_backend", "")),
+        }
+    )
     return metrics
 
 

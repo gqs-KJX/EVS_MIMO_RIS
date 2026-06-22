@@ -314,6 +314,12 @@ def default_config() -> dict:
         "vp_max_nfev": 10,
         "vp_max_iter": 10,
         "global_vp": {
+            "backend": "cpu",
+            "gpu_device": 0,
+            "gpu_dtype": "complex128",
+            "gpu_keep_arrays_on_device": True,
+            "gpu_transfer_policy": "scalar_grad_only",
+            "validate_gpu_against_cpu": False,
             "solver": "least_squares",
             "mode": "adaptive_jones",
             "max_iter": 80,
@@ -360,6 +366,9 @@ def default_config() -> dict:
             "z_rescue_margin_m": 0.02,
             "boundary_tol_m": 0.02,
             "boundary_accept_rel_tol": 1.0e-3,
+        },
+        "crb": {
+            "enable_unscaled_efim_cache": False,
         },
         "baselines": {
             "backend_config": {

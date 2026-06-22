@@ -84,6 +84,9 @@ class CPUBackend:
     def solve(self, A: Any, b: Any) -> Any:
         return np.linalg.solve(A, b)
 
+    def lstsq(self, A: Any, b: Any, rcond: Any = None) -> Any:
+        return np.linalg.lstsq(A, b, rcond=rcond)
+
     def synchronize(self) -> None:
         return None
 
@@ -134,6 +137,9 @@ class CuPyBackend:
 
     def solve(self, A: Any, b: Any) -> Any:
         return self.xp.linalg.solve(A, b)
+
+    def lstsq(self, A: Any, b: Any, rcond: Any = None) -> Any:
+        return self.xp.linalg.lstsq(A, b, rcond=rcond)
 
     def synchronize(self) -> None:
         self.xp.cuda.get_current_stream().synchronize()

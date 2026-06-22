@@ -66,6 +66,12 @@ REPEAT_TRIAL_FIELDS = [
     "final_position_error_m",
     "selected_branch",
     "global_vp_mode",
+    "global_vp_backend",
+    "global_vp_gpu_used",
+    "global_vp_gpu_num_objective_calls",
+    "global_vp_cpu_gpu_objective_rel_diff",
+    "global_vp_cpu_gpu_gradient_rel_diff",
+    "global_vp_cpu_gpu_xhat_rel_diff",
     "jones_mode",
     "adaptive_enabled",
     "boundary_hit",
@@ -91,6 +97,7 @@ REPEAT_NUMERIC_METRICS = [
         "error",
         "selected_branch",
         "global_vp_mode",
+        "global_vp_backend",
         "jones_mode",
         "adaptive_enabled",
         "boundary_hit_axis",
@@ -3375,6 +3382,9 @@ def _empty_repeat_trial_row(
             "error": "",
             "selected_branch": "",
             "global_vp_mode": "",
+            "global_vp_backend": "",
+            "global_vp_gpu_used": False,
+            "global_vp_gpu_num_objective_calls": 0,
             "jones_mode": "",
             "adaptive_enabled": False,
             "boundary_hit": False,
@@ -3472,6 +3482,20 @@ def _extract_repeat_trial_metrics(
                 result.get("selected_branch", final.get("selected_branch", ""))
             ),
             "global_vp_mode": global_vp_mode,
+            "global_vp_backend": str(final.get("global_vp_backend", "cpu")),
+            "global_vp_gpu_used": bool(final.get("global_vp_gpu_used", False)),
+            "global_vp_gpu_num_objective_calls": int(
+                final.get("global_vp_gpu_num_objective_calls", 0)
+            ),
+            "global_vp_cpu_gpu_objective_rel_diff": _repeat_float(
+                final.get("global_vp_cpu_gpu_objective_rel_diff")
+            ),
+            "global_vp_cpu_gpu_gradient_rel_diff": _repeat_float(
+                final.get("global_vp_cpu_gpu_gradient_rel_diff")
+            ),
+            "global_vp_cpu_gpu_xhat_rel_diff": _repeat_float(
+                final.get("global_vp_cpu_gpu_xhat_rel_diff")
+            ),
             "jones_mode": jones_mode,
             "adaptive_enabled": bool(
                 global_vp.get("mode") == "adaptive_jones"
@@ -3927,6 +3951,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--snr-db", type=float, default=None)
     parser.add_argument("--paper-k", type=int, default=None)
     parser.add_argument("--blas-threads", type=int, default=1)
+    parser.add_argument(
+        "--global-vp-backend",
+        choices=("cpu", "cupy", "auto"),
+        default=None,
+    )
+    parser.add_argument("--global-vp-gpu-device", type=int, default=None)
+    parser.add_argument(
+        "--global-vp-validate-gpu-against-cpu",
+        action="store_true",
+    )
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
     args = parser.parse_args(argv)
@@ -3960,6 +3994,15 @@ def main(argv: list[str] | None = None) -> None:
             overrides["SNR_dB"] = float(args.snr_db)
         if args.paper_k is not None:
             overrides["K"] = int(args.paper_k)
+        global_vp_overrides = {}
+        if args.global_vp_backend is not None:
+            global_vp_overrides["backend"] = args.global_vp_backend
+        if args.global_vp_gpu_device is not None:
+            global_vp_overrides["gpu_device"] = int(args.global_vp_gpu_device)
+        if args.global_vp_validate_gpu_against_cpu:
+            global_vp_overrides["validate_gpu_against_cpu"] = True
+        if global_vp_overrides:
+            overrides["global_vp"] = global_vp_overrides
         result = run_repeated_main_single(
             n_runs=len(rerun_seeds) if rerun_seeds is not None else int(args.repeat_runs),
             jobs=int(args.repeat_jobs),
@@ -3977,6 +4020,12 @@ def main(argv: list[str] | None = None) -> None:
         run_mr_sweep()
     else:
         config = default_config()
+        if args.global_vp_backend is not None:
+            config["global_vp"]["backend"] = args.global_vp_backend
+        if args.global_vp_gpu_device is not None:
+            config["global_vp"]["gpu_device"] = int(args.global_vp_gpu_device)
+        if args.global_vp_validate_gpu_against_cpu:
+            config["global_vp"]["validate_gpu_against_cpu"] = True
         if args.diagnostic_mode is not None:
             config["diagnostic_mode"] = args.diagnostic_mode
             if args.diagnostic_mode == "smoke":
