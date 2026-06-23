@@ -34,6 +34,32 @@ def test_fig1_variant_specs_are_exact():
     ]
 
 
+def test_variant_filter_defaults_to_none():
+    args = figures.parse_args([])
+    assert args.variant_filter is None
+    assert args.variant_filter_values is None
+
+
+def test_variant_filter_keeps_named_variant_and_peb_alias():
+    variants = figures._variants_for_figure(
+        "fig1",
+        figures.parse_variant_filter("free_jones_vp,peb_only"),
+    )
+    assert list(variants) == ["free_jones_vp", "PEB"]
+
+
+def test_variant_filter_does_not_apply_outside_fig1_fig2():
+    variants = figures._variants_for_figure(
+        "fig4",
+        figures.parse_variant_filter("free_jones_vp"),
+    )
+    assert list(variants) == [
+        "scalar_peb",
+        "dual_pol_peb",
+        "full_6d_evs_peb",
+    ]
+
+
 def test_fig3_variant_specs_include_receiver_modes():
     specs = figures._variant_specs("fig3")
     assert "scalar_receiver" in specs
@@ -200,6 +226,34 @@ def test_task_rows_expose_requested_and_effective_k(tmp_path):
         args=args,
     )
     assert fig6_tasks[0]["effective_K"] == int(fig6_tasks[0]["x_value"]) == 4
+
+
+def test_grouped_fig1_task_records_filtered_variants(tmp_path):
+    args = figures.parse_args(
+        [
+            "--figures",
+            "fig1",
+            "--variant-filter",
+            "free_jones_vp,data_only_peb",
+            "--out-dir",
+            str(tmp_path),
+        ]
+    )
+    variants = figures._variants_for_figure(
+        figures.FIG1_FIG2_SHARED_FIGURE,
+        args.variant_filter_values,
+    )
+    tasks = figures._tasks_for_figure(
+        figure=figures.FIG1_FIG2_SHARED_FIGURE,
+        grouped_group="fig1_fig2",
+        x_name="snr_db",
+        x_values=[0.0],
+        variants=variants,
+        trial_seeds=[123],
+        args=args,
+    )
+    assert len(tasks) == 1
+    assert tasks[0]["selected_variants"] == ["free_jones_vp", "PEB"]
 
 
 def test_peb_variants_map_to_peb_position():

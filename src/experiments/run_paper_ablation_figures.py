@@ -283,6 +283,15 @@ def parse_figures(value: str) -> list[str]:
     return [figure for figure in FIGURE_ORDER if figure in requested]
 
 
+def parse_variant_filter(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    variants = tuple(item.strip() for item in value.split(",") if item.strip())
+    if not variants:
+        raise ValueError("--variant-filter must contain at least one variant name")
+    return variants
+
+
 def apply_nested_update(config: dict, update_dict: dict) -> dict:
     result = copy.deepcopy(config)
     for key, value in update_dict.items():
@@ -464,6 +473,53 @@ def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
             }
         }
     return {}
+
+
+def _variant_filter_aliases(
+    variant: str,
+    spec: dict[str, Any],
+) -> set[str]:
+    aliases = {str(variant).lower()}
+    runner = str(spec.get("_runner", "")).lower()
+    if runner:
+        aliases.add(runner)
+    if variant == "PEB" and runner == "peb_only":
+        aliases.update({"peb", "peb_only", "data_only_peb"})
+    return aliases
+
+
+def _filter_variants(
+    figure: str,
+    variants: dict[str, dict[str, Any]],
+    variant_filter: tuple[str, ...] | None,
+) -> dict[str, dict[str, Any]]:
+    if variant_filter is None or not _is_fig1_fig2(figure):
+        return variants
+    requested = {name.lower() for name in variant_filter}
+    filtered = {
+        name: spec
+        for name, spec in variants.items()
+        if requested & _variant_filter_aliases(name, spec)
+    }
+    if not filtered:
+        available = ", ".join(variants)
+        raise ValueError(
+            "--variant-filter selected no Fig.1/Fig.2 variants; "
+            f"available variants: {available} (PEB aliases: PEB, peb_only, data_only_peb)"
+        )
+    return filtered
+
+
+def _variants_for_figure(
+    figure: str,
+    variant_filter: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, Any]]:
+    canonical = FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure
+    variants = {
+        **_variant_specs(canonical),
+        **_extra_peb_specs(canonical),
+    }
+    return _filter_variants(canonical, variants, variant_filter)
 
 
 def _trial_seed(seed_sequence: np.random.SeedSequence) -> int:
@@ -2026,7 +2082,13 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": list(figures),
         "seed": int(args.seed),
-        "variant_list": {figure: _expected_variant_names(figure) for figure in figures},
+        "variant_list": {
+            figure: _expected_variant_names(
+                figure,
+                getattr(args, "variant_filter_values", None),
+            )
+            for figure in figures
+        },
         "git_commit": _git_commit_hash(),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
@@ -2095,6 +2157,8 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "numpy": np.__version__,
         "scipy_available": bool(scipy_is_available()),
     }
+    if args.variant_filter_values is not None:
+        metadata["variant_filter"] = list(args.variant_filter_values)
     if any(figure in {"fig3", "fig4"} for figure in figures):
         metadata["nested_receiver_noise_convention"] = (
             NESTED_RECEIVER_NOISE_CONVENTION
@@ -2131,12 +2195,11 @@ def _metadata_matches_request(
     return True
 
 
-def _expected_variant_names(figure: str) -> list[str]:
-    variants = {
-        **_variant_specs(FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure),
-        **_extra_peb_specs(figure),
-    }
-    return list(variants)
+def _expected_variant_names(
+    figure: str,
+    variant_filter: tuple[str, ...] | None = None,
+) -> list[str]:
+    return list(_variants_for_figure(figure, variant_filter))
 
 
 def _csv_matches_request(
@@ -2151,7 +2214,12 @@ def _csv_matches_request(
         return False
     canonical_figure = FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure
     x_name, x_values = _figure_x_grid(canonical_figure, snr_grid, args.k_grid_values)
-    expected_variants = set(_expected_variant_names(figure))
+    expected_variants = set(
+        _expected_variant_names(
+            figure,
+            getattr(args, "variant_filter_values", None),
+        )
+    )
     expected_x_values = {float(value) for value in x_values}
     groups: dict[tuple[str, float], int] = {}
     for row in rows:
@@ -2378,6 +2446,7 @@ def _grouped_tasks(
     group: str,
     x_name: str,
     x_values: list[float],
+    variants: dict[str, dict[str, Any]],
     trial_seeds: list[int],
     outlier_threshold_m: float,
     paper_k: int,
@@ -2399,6 +2468,7 @@ def _grouped_tasks(
                     "task_kind": "grouped",
                     "figure": figure,
                     "group": group,
+                    "selected_variants": list(variants),
                     "trial_id": int(trial_id),
                     "trial_seed": int(trial_seed),
                     "snr_db": float(snr_db),
@@ -2444,6 +2514,7 @@ def _tasks_for_figure(
             group=grouped_group,
             x_name=x_name,
             x_values=x_values,
+            variants=variants,
             trial_seeds=trial_seeds,
             outlier_threshold_m=float(args.outlier_threshold_m),
             paper_k=int(args.paper_k),
@@ -2474,6 +2545,26 @@ def _tasks_for_figure(
         out_dir=pathlib.Path(args.out_dir),
     )
     return tasks
+
+
+def _print_task_summary(
+    tasks: list[dict[str, Any]],
+    variants: dict[str, dict[str, Any]],
+) -> None:
+    print(
+        f"Task summary: execution_tasks={len(tasks)} "
+        f"variant_runs={sum(1 for task in tasks for _ in task.get('selected_variants', [task.get('variant')]))}"
+    )
+    snr_values = sorted({float(task["snr_db"]) for task in tasks})
+    trial_ids = sorted({int(task["trial_id"]) for task in tasks})
+    snr_text = ",".join(f"{value:g}" for value in snr_values)
+    trial_text = ",".join(str(value) for value in trial_ids)
+    for variant, spec in variants.items():
+        receiver_mode = str(spec.get("receiver_mode", "full_6d"))
+        print(
+            f"  variant={variant} receiver_mode={receiver_mode} "
+            f"snr_db=[{snr_text}] trial_id=[{trial_text}]"
+        )
 
 
 def _init_worker(
@@ -2824,14 +2915,18 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
         elif group == "fig1_fig2":
             variants = _variant_specs(FIG1_FIG2_SHARED_FIGURE)
             result_identity_guard: dict[str, Any] = {"tokens": {}}
-            validation_variants = {
-                str(name) for name in task.get("validation_variants", [])
+            selected_variants = {
+                str(name)
+                for name in task.get(
+                    "selected_variants",
+                    task.get("validation_variants", []),
+                )
             }
-            if validation_variants:
+            if selected_variants:
                 variants = {
                     name: spec
                     for name, spec in variants.items()
-                    if name in validation_variants
+                    if name in selected_variants
                 }
             for variant, updates in variants.items():
                 config = apply_nested_update(copy.deepcopy(base_config), updates)
@@ -2923,7 +3018,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 rows.append(row)
                 if log:
                     logs.append(log)
-            if not validation_variants or "PEB" in validation_variants:
+            if not selected_variants or "PEB" in selected_variants:
                 peb_config = apply_nested_update(
                     copy.deepcopy(base_config),
                     _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"],
@@ -3341,10 +3436,10 @@ def _run_fig1_fig2_shared_trials(
     )
     if not can_reuse:
         x_name, x_values = _figure_x_grid(FIG1_FIG2_SHARED_FIGURE, snr_grid, args.k_grid_values)
-        variants = {
-            **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
-            **_extra_peb_specs(FIG1_FIG2_SHARED_FIGURE),
-        }
+        variants = _variants_for_figure(
+            FIG1_FIG2_SHARED_FIGURE,
+            args.variant_filter_values,
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
             figure=FIG1_FIG2_SHARED_FIGURE,
@@ -3355,6 +3450,7 @@ def _run_fig1_fig2_shared_trials(
             trial_seeds=trial_seeds,
             args=args,
         )
+        _print_task_summary(tasks, variants)
         rows = _write_trial_results(shared_trial_csv, tasks, log_path, args)
     shared_summary = summarize_fig1_fig2_shared_rows(rows)
     _write_csv(
@@ -3389,10 +3485,10 @@ def _ensure_fig1_fig2_shared_outputs(
     )
     if not can_reuse:
         x_name, x_values = _figure_x_grid(FIG1_FIG2_SHARED_FIGURE, snr_grid, args.k_grid_values)
-        variants = {
-            **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
-            **_extra_peb_specs(FIG1_FIG2_SHARED_FIGURE),
-        }
+        variants = _variants_for_figure(
+            FIG1_FIG2_SHARED_FIGURE,
+            args.variant_filter_values,
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
             figure=FIG1_FIG2_SHARED_FIGURE,
@@ -3403,6 +3499,7 @@ def _ensure_fig1_fig2_shared_outputs(
             trial_seeds=trial_seeds,
             args=args,
         )
+        _print_task_summary(tasks, variants)
         _write_trial_results(
             shared_trial_csv,
             tasks,
@@ -3454,10 +3551,10 @@ def _ensure_figure_outputs(
     )
     if not can_reuse:
         x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
-        variants = {
-            **_variant_specs("fig1" if figure == "fig2" else figure),
-            **_extra_peb_specs(figure),
-        }
+        variants = _variants_for_figure(
+            figure,
+            args.variant_filter_values,
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         grouped_group = {
             "fig3": "nested_receiver",
@@ -3474,6 +3571,7 @@ def _ensure_figure_outputs(
             trial_seeds=trial_seeds,
             args=args,
         )
+        _print_task_summary(tasks, variants)
         _write_trial_results(
             trial_csv,
             tasks,
@@ -3519,10 +3617,10 @@ def _run_figure(
         return rows
 
     x_name, x_values = _figure_x_grid(figure, snr_grid, args.k_grid_values)
-    variants = {
-        **_variant_specs("fig1" if figure == "fig2" else figure),
-        **_extra_peb_specs(figure),
-    }
+    variants = _variants_for_figure(
+        figure,
+        args.variant_filter_values,
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     grouped_group = {
         "fig3": "nested_receiver",
@@ -3539,6 +3637,7 @@ def _run_figure(
         trial_seeds=trial_seeds,
         args=args,
     )
+    _print_task_summary(tasks, variants)
     rows = _write_trial_results(trial_csv, tasks, log_path, args)
     summary = summarize_rows(rows, figure)
     _write_csv(summary_csv, summary, list(summary[0].keys()) if summary else [])
@@ -3709,6 +3808,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv_list = sys.argv[1:] if argv is None else list(argv)
     parser = argparse.ArgumentParser(description="Generate paper ablation figures.")
     parser.add_argument("--figures", default="all")
+    parser.add_argument(
+        "--variant-filter",
+        default=None,
+        help=(
+            "Comma-separated Fig.1/Fig.2 variant names. "
+            "PEB accepts PEB, peb_only, or data_only_peb."
+        ),
+    )
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
     parser.add_argument("--paper-k", type=int, default=DEFAULT_PAPER_K)
@@ -3775,6 +3882,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if str(args.blas_threads).lower() != "auto":
         args.blas_threads = int(args.blas_threads)
     args.k_grid_values = parse_k_grid(args.k_grid)
+    args.variant_filter_values = parse_variant_filter(args.variant_filter)
     return args
 
 
@@ -3800,10 +3908,10 @@ def _progress_task_count(
         multiplier = 1
         if args.task_grouping == "variant":
             multiplier = len(
-                {
-                    **_variant_specs(figure_key),
-                    **_extra_peb_specs(figure_key),
-                }
+                _variants_for_figure(
+                    figure_key,
+                    args.variant_filter_values,
+                )
             )
         total += int(args.n_trials) * x_count * multiplier
     return max(total, 1)
