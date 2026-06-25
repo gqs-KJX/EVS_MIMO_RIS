@@ -86,6 +86,10 @@ FIELDNAMES = [
     "support_size",
     "grid_size",
     "dictionary_mode",
+    "group_omp",
+    "offgrid_refinement",
+    "refinement_objective",
+    "model_variant",
     "selected_support",
     "peb_position_m",
     "peb_is_data_only",
@@ -174,27 +178,27 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
         baselines.update(
             {
                 "als_cpd": {"position_grid_shape": (3, 3, 2)},
-                "ff_omp": {"angle_grid_size": 5, "delay_grid_size": 5, "max_atoms": config["K"], "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_atoms": config["K"], "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "batch_size": 16, "max_batch_memory_mb": 64.0},
+                "ff_omp": {"angle_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
+                "ris_momp": {"direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
+                "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "offgrid_refinement": True, "batch_size": 16, "max_batch_memory_mb": 64.0},
             }
         )
     elif profile == "medium":
         baselines.update(
             {
                 "als_cpd": {"position_grid_shape": (5, 5, 3)},
-                "ff_omp": {"angle_grid_size": 31, "delay_grid_size": 41, "max_atoms": config["K"], "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_atoms": config["K"], "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "ff_omp": {"angle_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "ris_momp": {"direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
             }
         )
     elif profile == "fine":
         baselines.update(
             {
                 "als_cpd": {"position_grid_shape": (7, 7, 5)},
-                "ff_omp": {"angle_grid_size": 45, "delay_grid_size": 61, "max_atoms": config["K"], "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_atoms": config["K"], "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "ff_omp": {"angle_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "ris_momp": {"direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
             }
         )
     else:

@@ -159,6 +159,10 @@ def make_baseline_row(
         "support_size": len(selected_support),
         "grid_size": diagnostics.get("grid_size", ""),
         "dictionary_mode": diagnostics.get("dictionary_mode", ""),
+        "group_omp": diagnostics.get("group_omp", False),
+        "offgrid_refinement": diagnostics.get("offgrid_refinement", False),
+        "refinement_objective": diagnostics.get("refinement_objective", ""),
+        "model_variant": diagnostics.get("model_variant", ""),
         "selected_support": json.dumps(_jsonable(selected_support), separators=(",", ":")),
         "peb_position_m": _finite_float(diagnostics.get("peb_position_m")),
         "peb_is_data_only": diagnostics.get("peb_is_data_only", ""),
@@ -310,11 +314,153 @@ def raw_atom_from_support(scene: dict, config: dict, support: dict[str, Any]) ->
     return raw_atom_from_factors(evs, delay, training)
 
 
+def geometry_group_key(support: dict[str, Any]) -> tuple[Any, ...]:
+    """Hash a geometry support without its Jones polarization column index."""
+    position = support.get("position")
+    direction = support.get("direction")
+    return (
+        int(support.get("panel", 0)),
+        tuple(np.round(np.asarray(position, dtype=float).reshape(-1), 8))
+        if position is not None
+        else None,
+        tuple(np.round(np.asarray(direction, dtype=float).reshape(-1), 8))
+        if direction is not None
+        else None,
+        round(float(support.get("range", np.nan)), 8)
+        if "range" in support
+        else None,
+        round(float(support.get("tau", 0.0)), 15),
+        bool(support.get("near_field", True)),
+    )
+
+
+def expand_jones_group(support: dict[str, Any], num_polarizations: int = 2) -> list[dict[str, Any]]:
+    """Expand one geometry support to Jones-basis raw-domain columns."""
+    count = max(1, int(num_polarizations))
+    base = {key: copy_value for key, copy_value in support.items() if key != "pol_index"}
+    return [{**base, "pol_index": int(pol_index)} for pol_index in range(count)]
+
+
 def supports_to_design(scene: dict, config: dict, supports: list[dict[str, Any]]) -> np.ndarray:
     atoms = [simple_atom_normalize(raw_atom_from_support(scene, config, support)) for support in supports]
     if not atoms:
         return np.empty((int(scene["I"]) * int(scene["N"]) * int(scene["T"]), 0), dtype=complex)
     return np.column_stack(atoms)
+
+
+def group_design(
+    scene: dict,
+    config: dict,
+    group: dict[str, Any],
+    *,
+    normalize: bool = True,
+) -> np.ndarray:
+    atoms = [
+        raw_atom_from_support(scene, config, support)
+        for support in expand_jones_group(group, 2)
+    ]
+    if normalize:
+        atoms = [simple_atom_normalize(atom) for atom in atoms]
+    return np.column_stack(atoms)
+
+
+def group_projection_score(
+    group_matrix: np.ndarray,
+    residual: np.ndarray,
+    *,
+    rank_tol: float = 1.0e-10,
+) -> float:
+    """Return ||Q^H r||^2 for the numerically independent group subspace."""
+    matrix = np.asarray(group_matrix, dtype=complex)
+    residual = np.asarray(residual, dtype=complex).reshape(-1)
+    if matrix.ndim == 1:
+        matrix = matrix[:, None]
+    if matrix.shape[0] != residual.size or matrix.shape[1] == 0:
+        return float("-inf")
+    try:
+        q, r = np.linalg.qr(matrix, mode="reduced")
+    except np.linalg.LinAlgError:
+        return float("-inf")
+    diag = np.abs(np.diag(r)) if r.size else np.array([], dtype=float)
+    if diag.size == 0:
+        return float("-inf")
+    threshold = float(rank_tol) * max(float(np.max(diag)), 1.0)
+    rank = int(np.sum(diag > threshold))
+    if rank <= 0:
+        return float("-inf")
+    q = q[:, :rank]
+    return float(np.linalg.norm(q.conj().T @ residual) ** 2)
+
+
+def group_omp_select(
+    scene: dict,
+    config: dict,
+    groups: list[dict[str, Any]],
+    y_vec: np.ndarray,
+    *,
+    max_groups: int,
+    batch_size: int = 256,
+    ridge: float = 1.0e-10,
+    trim_memory_enabled: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], np.ndarray, np.ndarray, dict[str, Any]]:
+    """Select geometry groups by group projection energy and refit all Jones columns."""
+    from ..experiments.resource_control import trim_memory
+
+    y_vec = np.asarray(y_vec, dtype=complex).reshape(-1)
+    residual = y_vec.copy()
+    selected_groups: list[dict[str, Any]] = []
+    selected_keys: set[tuple[Any, ...]] = set()
+    expanded_supports: list[dict[str, Any]] = []
+    coeffs = np.zeros(0, dtype=complex)
+    y_hat = np.zeros_like(y_vec)
+    last_best_score = float("nan")
+    num_batches = 0
+    scoring_start = time.perf_counter()
+    effective_batch_size = max(1, int(batch_size))
+
+    for _ in range(max(0, int(max_groups))):
+        best_group = None
+        best_score = float("-inf")
+        for batch_start in range(0, len(groups), effective_batch_size):
+            batch = groups[batch_start : batch_start + effective_batch_size]
+            num_batches += 1
+            for group in batch:
+                key = geometry_group_key(group)
+                if key in selected_keys:
+                    continue
+                score = group_projection_score(group_design(scene, config, group), residual)
+                if score > best_score:
+                    best_score = score
+                    best_group = group
+            if trim_memory_enabled:
+                trim_memory()
+        if best_group is None or not np.isfinite(best_score):
+            break
+        selected_group = dict(best_group)
+        selected_groups.append(selected_group)
+        selected_keys.add(geometry_group_key(selected_group))
+        expanded_supports = [
+            support
+            for group in selected_groups
+            for support in expand_jones_group(group, 2)
+        ]
+        Phi = supports_to_design(scene, config, expanded_supports)
+        coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+        last_best_score = float(best_score)
+
+    diagnostics = {
+        "group_omp": True,
+        "selected_groups": selected_groups,
+        "expanded_supports": expanded_supports,
+        "selected_group_count": len(selected_groups),
+        "expanded_support_count": len(expanded_supports),
+        "last_best_group_score": last_best_score,
+        "residual_norm": float(np.linalg.norm(residual)),
+        "num_batches": num_batches,
+        "batch_size": effective_batch_size,
+        "scoring_time_s": time.perf_counter() - scoring_start,
+    }
+    return selected_groups, expanded_supports, coeffs, y_hat, diagnostics
 
 
 def reconstruct_from_supports(
@@ -459,6 +605,147 @@ def geometric_support_to_position_ls(scene: dict, supports: list[dict[str, Any]]
         except Exception as exc:  # noqa: BLE001 - fall back to bounded center.
             return p0.astype(float), dt0, {"geometry_solver": "fallback_center", "warning": str(exc)}
     return p0.astype(float), dt0, {"geometry_solver": "fallback_center"}
+
+
+def supports_from_position_clock(
+    scene: dict,
+    p_u: np.ndarray,
+    delta_t: float,
+    panels: list[int] | None = None,
+    *,
+    model_variant: str = "near_field",
+) -> list[dict[str, Any]]:
+    """Build one Jones geometry group per panel for a baseline model."""
+    p_u = np.asarray(p_u, dtype=float).reshape(3)
+    panel_indices = list(range(int(scene["K"]))) if panels is None else [int(p) for p in panels]
+    near_field = str(model_variant) != "far_field"
+    supports: list[dict[str, Any]] = []
+    for panel in panel_indices:
+        range_m, elev, az, q_local = local_geometry_from_position(
+            p_u,
+            np.asarray(scene["ris_centers"][panel], dtype=float),
+            np.asarray(scene["rotations"][panel], dtype=float),
+        )
+        tau = (range_m + scene["d_RB"][panel]) / scene["c0"] + float(delta_t)
+        support = {
+            "panel": int(panel),
+            "tau": float(tau),
+            "range": float(range_m),
+            "elevation": float(elev),
+            "azimuth": float(az),
+            "near_field": near_field,
+        }
+        if near_field:
+            support["position"] = p_u.copy()
+        else:
+            support["direction"] = q_local / (np.linalg.norm(q_local) + 1.0e-15)
+        supports.append(support)
+    return supports
+
+
+def fit_position_clock_data_domain(
+    scene: dict,
+    config: dict,
+    y_vec: np.ndarray,
+    initial_position: np.ndarray,
+    initial_clock: float,
+    *,
+    panels: list[int] | None = None,
+    model_variant: str,
+    enabled: bool = True,
+    max_nfev: int = 60,
+    ridge: float = 1.0e-10,
+) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, list[dict[str, Any]], dict[str, Any]]:
+    """Refine p_u and clock by minimizing baseline data-domain LS residual."""
+    y_vec = np.asarray(y_vec, dtype=complex).reshape(-1)
+    bounds_p = np.asarray(
+        config.get("ue_bounds", [[0.3, 2.7], [-1.4, 1.5], [0.35, 1.45]]),
+        dtype=float,
+    )
+    bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
+    lower = np.r_[bounds_p[:, 0], bounds_dt[0]]
+    upper = np.r_[bounds_p[:, 1], bounds_dt[1]]
+    x0 = np.clip(np.r_[np.asarray(initial_position, dtype=float).reshape(3), float(initial_clock)], lower, upper)
+    warning = ""
+
+    def fit_for_x(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
+        groups = supports_from_position_clock(
+            scene,
+            x[:3],
+            float(x[3]),
+            panels,
+            model_variant=model_variant,
+        )
+        expanded = [support for group in groups for support in expand_jones_group(group, 2)]
+        Phi = supports_to_design(scene, config, expanded)
+        coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+        return coeffs, y_hat, residual, groups
+
+    coeffs0, y_hat0, residual0, groups0 = fit_for_x(x0)
+    initial_norm = float(np.linalg.norm(residual0))
+    x_best = x0.copy()
+    coeffs_best = coeffs0
+    y_hat_best = y_hat0
+    residual_best = residual0
+    groups_best = groups0
+    success = False
+    solver = "disabled"
+    cost = float(initial_norm**2)
+
+    if enabled and scipy_is_available():
+        try:
+            from scipy.optimize import least_squares  # type: ignore[import-not-found]
+
+            def residual_real(x: np.ndarray) -> np.ndarray:
+                _, _, residual, _ = fit_for_x(x)
+                return np.r_[residual.real, residual.imag]
+
+            result = least_squares(
+                residual_real,
+                x0,
+                bounds=(lower, upper),
+                max_nfev=int(max_nfev),
+                x_scale=np.maximum(upper - lower, 1.0e-12),
+            )
+            x_candidate = np.asarray(result.x, dtype=float)
+            coeffs_cand, y_hat_cand, residual_cand, groups_cand = fit_for_x(x_candidate)
+            if np.linalg.norm(residual_cand) <= np.linalg.norm(residual_best) + 1.0e-12:
+                x_best = x_candidate
+                coeffs_best = coeffs_cand
+                y_hat_best = y_hat_cand
+                residual_best = residual_cand
+                groups_best = groups_cand
+            success = bool(result.success)
+            solver = "scipy.optimize.least_squares"
+            cost = float(result.cost)
+        except Exception as exc:  # noqa: BLE001 - retain coarse fit on optimizer failure.
+            warning = f"offgrid_refinement_failed: {type(exc).__name__}: {exc}"
+            solver = "fallback_initial"
+    elif enabled:
+        solver = "fallback_initial_no_scipy"
+
+    diagnostics = {
+        "offgrid_refinement": bool(enabled),
+        "refinement_objective": "data_domain_ls" if enabled else "",
+        "refinement_solver": solver,
+        "refinement_success": bool(success),
+        "refinement_initial_residual_norm": initial_norm,
+        "refinement_residual_norm": float(np.linalg.norm(residual_best)),
+        "refinement_cost": cost,
+        "refinement_initial_position": x0[:3].copy(),
+        "refinement_initial_clock": float(x0[3]),
+        "refined_position": x_best[:3].copy(),
+        "refined_clock": float(x_best[3]),
+        "warning": warning,
+    }
+    return (
+        x_best[:3].astype(float),
+        float(x_best[3]),
+        coeffs_best,
+        y_hat_best,
+        groups_best,
+        diagnostics,
+    )
 
 
 class Timer:

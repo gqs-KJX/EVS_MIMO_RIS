@@ -112,8 +112,8 @@ def test_k_mismatch_changes_estimator_order_not_true_data_order():
     assert true_data["scene"]["K"] == 1
     assert estimator_data["scene"]["K"] == 2
     assert configured["K"] == 2
-    assert configured["baselines"]["ff_omp"]["max_atoms"] == 2
-    assert configured["baselines"]["ris_momp"]["max_atoms"] == 2
+    assert configured["baselines"]["ff_omp"]["max_groups"] == 2
+    assert configured["baselines"]["ris_momp"]["max_groups"] == 2
     assert np.array_equal(estimator_data["Y_noisy"], true_data["Y_noisy"])
 
 

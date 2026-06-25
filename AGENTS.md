@@ -1,14 +1,15 @@
-# Project Instructions For Codex
+# AGENTS.md
 
-This repository implements EVS-RIS-OFDM tensor channel estimation with Stage-I CPD initialization, Stage-II structured projections, and optional raw-domain VP-WNLS refinement.
+This is a wireless-communication simulation repository.
 
-Always follow these project rules:
+Work as a careful simulation-code engineer. Make minimal localized changes. Do not broadly refactor. Preserve mathematical definitions, metric normalization, random seeds, CLI compatibility, and CSV/result schemas unless explicitly asked.
 
-1. For PDF-only papers, invoke `$paper-pdf-ingest` before implementing algorithms from the paper.
-2. For unexpected simulation results, invoke `$debug-experiment` before tuning hyperparameters.
-3. For publication figures, invoke `$paper-stage-experiment` and use staged experiments.
-4. Never modify physics formulas just to improve metrics.
-5. Never claim Stage-II is guaranteed to improve estimation unless ablation and raw-domain metrics support it.
-6. For RIS projection, remember that near-field structure is in `g_k`, while the CPD factor is `c_k = Omega_k g_k`.
-7. For delay projection, `B` and `Q` share a mother delay factor and must not be projected independently.
-8. Always run tests after code changes.
+Project-specific constraints:
+- Never modify physics formulas just to improve metrics.
+- Never claim Stage-II is guaranteed to improve estimation unless ablation and raw-domain metrics support it.
+- For RIS projection, the near-field structure is in `g_k`; the CPD factor is `c_k = Omega_k g_k`.
+- For delay projection, `B` and `Q` share a mother delay factor and must not be projected independently.
+
+Do not run full Monte Carlo experiments unless explicitly requested. Do not create new `test_*.py` files by default. Validate code changes with the smallest deterministic smoke run, preferably `--n-trials 1`, `--trials 1`, or the script's equivalent option after checking argparse.
+
+Report files inspected, files modified, what changed, the validation command, validation result, and remaining risks.

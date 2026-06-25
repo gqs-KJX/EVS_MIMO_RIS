@@ -132,6 +132,10 @@ def test_benchmark_row_contains_backend_diagnostics():
         "gpu_device",
         "gpu_num_batches",
         "gpu_batch_size",
+        "group_omp",
+        "offgrid_refinement",
+        "refinement_objective",
+        "model_variant",
         "cache_enabled",
         "cache_hits",
         "cache_misses",
@@ -162,7 +166,8 @@ def test_ff_omp_cpu_gpu_selected_support_match():
     gpu = far_field_omp.run_far_field_omp_baseline(data, gpu_config)
     assert gpu.selected_support[0]["direction_index"] == cpu.selected_support[0]["direction_index"]
     assert gpu.selected_support[0]["tau_index"] == cpu.selected_support[0]["tau_index"]
-    assert gpu.selected_support[0]["pol_index"] == cpu.selected_support[0]["pol_index"]
+    assert gpu.diagnostics["group_omp"] is True
+    assert len(gpu.diagnostics["expanded_supports"]) == 2 * len(gpu.selected_support)
 
 
 def test_ris_momp_cpu_gpu_selected_support_match():
@@ -184,7 +189,8 @@ def test_ris_momp_cpu_gpu_selected_support_match():
     gpu = ris_momp.run_ris_momp_baseline(data, gpu_config)
     assert gpu.selected_support[0]["direction_index"] == cpu.selected_support[0]["direction_index"]
     assert gpu.selected_support[0]["tau_index"] == cpu.selected_support[0]["tau_index"]
-    assert gpu.selected_support[0]["pol_index"] == cpu.selected_support[0]["pol_index"]
+    assert gpu.diagnostics["group_omp"] is True
+    assert len(gpu.diagnostics["expanded_supports"]) == 2 * len(gpu.selected_support)
 
 
 def test_nf_mmpsr_cpu_gpu_grid_and_position_match():

@@ -171,6 +171,11 @@ FIELDNAMES = [
     "used_main_single_proposed_path",
     "variant_config_hash",
     "global_vp_mode",
+    "global_vp_backend",
+    "global_vp_gpu_used",
+    "global_vp_gpu_device",
+    "global_vp_objective_backend",
+    "global_vp_linear_solve_backend",
     "jones_mode",
     "adaptive_enabled",
     "adaptive_policy_name",
@@ -302,6 +307,36 @@ def apply_nested_update(config: dict, update_dict: dict) -> dict:
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+def global_vp_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """Return global-VP backend overrides requested by the ablation CLI."""
+    if getattr(args, "global_vp_backend", None) is None:
+        return {}
+    overrides: dict[str, Any] = {
+        "backend": str(args.global_vp_backend),
+        "gpu_device": int(getattr(args, "global_vp_gpu_device", 0)),
+        "validate_gpu_against_cpu": bool(
+            getattr(args, "global_vp_validate_gpu_against_cpu", False)
+        ),
+        "gpu_dtype": str(getattr(args, "global_vp_gpu_dtype", "complex128")),
+    }
+    if bool(getattr(args, "global_vp_gpu_keep_arrays_on_device", False)):
+        overrides["gpu_keep_arrays_on_device"] = True
+    return overrides
+
+
+def apply_global_vp_cli_overrides(
+    config: dict,
+    args: argparse.Namespace,
+) -> dict:
+    """Apply global-VP backend CLI overrides in-place and return config."""
+    overrides = global_vp_cli_overrides(args)
+    if not overrides:
+        return config
+    global_vp = config.setdefault("global_vp", {})
+    global_vp.update(overrides)
+    return config
 
 
 def set_number_of_ris_paths(config: dict, k_paths: int) -> dict:
@@ -1307,6 +1342,19 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
         ),
         "variant_config_hash": variant_diagnostics.get("variant_config_hash", ""),
         "global_vp_mode": get_nested(result, ["final.global_vp_mode", "final.vp_mode"], ""),
+        "global_vp_backend": get_nested(result, ["final.global_vp_backend"], ""),
+        "global_vp_gpu_used": get_nested(result, ["final.global_vp_gpu_used"], ""),
+        "global_vp_gpu_device": get_nested(result, ["final.global_vp_gpu_device"], ""),
+        "global_vp_objective_backend": get_nested(
+            result,
+            ["final.global_vp_objective_backend"],
+            "",
+        ),
+        "global_vp_linear_solve_backend": get_nested(
+            result,
+            ["final.global_vp_linear_solve_backend", "final.global_vp_lstsq_backend"],
+            "",
+        ),
         "jones_mode": variant_diagnostics.get(
             "jones_mode",
             get_nested(result, ["final.selected_vp_family_branch", "final.global_vp_mode"], ""),
@@ -2075,6 +2123,7 @@ def _write_duplicate_curves_report(
 
 
 def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
+    global_vp_overrides = global_vp_cli_overrides(args)
     signature = {
         "n_trials": int(args.n_trials),
         "snr_grid": [float(value) for value in snr_grid],
@@ -2095,8 +2144,15 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "debug_compare_main_single_proposed": bool(
             getattr(args, "debug_compare_main_single_proposed", False)
         ),
+        "global_vp_backend": global_vp_overrides.get("backend", "cpu"),
+        "global_vp_gpu_device": global_vp_overrides.get("gpu_device", 0),
+        "global_vp_validate_gpu_against_cpu": bool(
+            global_vp_overrides.get("validate_gpu_against_cpu", False)
+        ),
         "fig1_proposed_dispatch_version": 2,
     }
+    if global_vp_overrides:
+        signature["global_vp_overrides"] = global_vp_overrides
     if any(figure in {"fig3", "fig4"} for figure in figures):
         signature["nested_receiver_noise_convention"] = (
             NESTED_RECEIVER_NOISE_CONVENTION
@@ -2114,6 +2170,7 @@ def _git_commit_hash() -> str:
 def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
     commit = _git_commit_hash()
     timestamp = datetime.now(timezone.utc).isoformat()
+    global_vp_overrides = global_vp_cli_overrides(args)
     metadata = {
         "git_commit": commit,
         "timestamp": timestamp,
@@ -2140,6 +2197,11 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
         "seed": int(args.seed),
+        "global_vp_backend": global_vp_overrides.get("backend", "cpu"),
+        "global_vp_gpu_device": global_vp_overrides.get("gpu_device", 0),
+        "global_vp_validate_gpu_against_cpu": bool(
+            global_vp_overrides.get("validate_gpu_against_cpu", False)
+        ),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
         "config_overrides": {
@@ -2147,6 +2209,7 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
             "outlier_threshold_m": float(args.outlier_threshold_m),
             "paper_k_for_fig1_to_fig5": int(args.paper_k),
             "k_grid_for_fig6": [int(value) for value in args.k_grid_values],
+            "global_vp": global_vp_overrides,
         },
         "shared_cache_signatures": {
             FIG1_FIG2_SHARED_FIGURE: _cache_signature(
@@ -3205,6 +3268,7 @@ def _write_trial_results(
     return_trial_rows = bool(getattr(args, "return_trial_rows", True))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     base_config = default_config()
+    apply_global_vp_cli_overrides(base_config, args)
     out_dir = pathlib.Path(args.out_dir)
     writer_context = (
         StreamingCsvWriter(
@@ -3698,6 +3762,8 @@ def _validation_rows_for_grouping(
         for task in tasks:
             task["validation_variants"] = list(variants)
     rows: list[dict[str, Any]] = []
+    validation_base_config = default_config()
+    apply_global_vp_cli_overrides(validation_base_config, validation_args)
     for row_batch, log_text in _iter_task_results(
         tasks,
         process_workers=min(
@@ -3705,7 +3771,7 @@ def _validation_rows_for_grouping(
             max(len(tasks), 1),
         ),
         maxtasksperchild=int(validation_args.maxtasksperchild),
-        base_config=default_config(),
+        base_config=validation_base_config,
         out_dir=validation_out_dir,
         blas_threads=int(validation_args.blas_threads),
         respect_existing_blas_env=bool(validation_args.respect_existing_blas_env),
@@ -3845,6 +3911,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
     )
     parser.add_argument("--blas-threads", default=DEFAULT_BLAS_THREADS)
+    parser.add_argument(
+        "--global-vp-backend",
+        choices=("cpu", "cupy", "auto"),
+        default=None,
+    )
+    parser.add_argument("--global-vp-gpu-device", type=int, default=0)
+    parser.add_argument(
+        "--global-vp-validate-gpu-against-cpu",
+        action="store_true",
+    )
+    parser.add_argument("--global-vp-gpu-dtype", default="complex128")
+    parser.add_argument(
+        "--global-vp-gpu-keep-arrays-on-device",
+        action="store_true",
+    )
     parser.add_argument("--memory-budget-gb", type=float, default=None)
     parser.add_argument("--memory-per-worker-gb", type=float, default=None)
     parser.add_argument("--respect-existing-blas-env", action="store_true")

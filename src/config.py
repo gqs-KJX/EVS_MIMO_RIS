@@ -384,14 +384,17 @@ def default_config() -> dict:
             "ff_omp": {
                 "batch_size": 256,
                 "max_batch_memory_mb": 256.0,
+                "offgrid_refinement": True,
             },
             "ris_momp": {
                 "batch_size": 256,
                 "max_batch_memory_mb": 256.0,
+                "offgrid_refinement": True,
             },
             "nf_mmpsr": {
                 "batch_size": 64,
                 "max_batch_memory_mb": 256.0,
+                "offgrid_refinement": True,
             },
         },
         "eps": 1.0e-10,

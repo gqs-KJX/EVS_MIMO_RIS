@@ -12,6 +12,8 @@ from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
 from .common import (
     BaselineResult,
     clock_grid_from_config,
+    expand_jones_group,
+    fit_position_clock_data_domain,
     linear_ls_fit,
     position_grid_from_config,
     raw_atom_from_support,
@@ -227,15 +229,64 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
             trim_memory()
     backend.synchronize()
     residual = y_vec - best_y_hat
+    coarse_position = best_position.copy()
+    coarse_delta_t = float(best_delta_t)
+    coarse_residual_norm = float(np.linalg.norm(residual))
+    if bool(cfg.get("offgrid_refinement", True)):
+        (
+            refined_position,
+            refined_delta_t,
+            refined_coeffs,
+            refined_y_hat,
+            refined_groups,
+            refine_diag,
+        ) = fit_position_clock_data_domain(
+            scene,
+            config,
+            y_vec,
+            best_position,
+            best_delta_t,
+            panels=list(range(int(scene["K"]))),
+            model_variant="near_field",
+            enabled=True,
+            max_nfev=int(cfg.get("refinement_max_nfev", 60)),
+        )
+        best_position = refined_position
+        best_delta_t = refined_delta_t
+        best_coeffs = refined_coeffs
+        best_y_hat = refined_y_hat
+        best_supports = refined_groups
+        residual = y_vec - best_y_hat
+    else:
+        refine_diag = {
+            "offgrid_refinement": False,
+            "refinement_objective": "",
+            "refined_position": best_position.copy(),
+            "refined_clock": float(best_delta_t),
+        }
     diagnostics = {
         "dictionary_mode": "near_field_spherical_grid_mmpsr",
+        "model_variant": "near_field_mmpsr",
+        "group_omp": False,
+        "offgrid_refinement": bool(refine_diag.get("offgrid_refinement", False)),
+        "refinement_objective": refine_diag.get("refinement_objective", ""),
         "grid_shape": list(grid_shape),
         "clock_grid_size": clock_grid_size,
         "grid_size": len(positions) * len(clocks),
         "best_score": float(best_score),
+        "coarse_score": float(best_score),
+        "coarse_grid_position": coarse_position.copy(),
+        "coarse_clock": coarse_delta_t,
+        "refined_position": np.asarray(best_position, dtype=float).copy(),
+        "refined_clock": float(best_delta_t),
+        "coarse_residual_norm": coarse_residual_norm,
+        "refined_residual_norm": float(np.linalg.norm(residual)),
         "selected_grid_index": list(best_index),
         "selected_delta_t": float(best_delta_t),
         "coeff_norm": float(np.linalg.norm(best_coeffs)),
+        "expanded_supports": [
+            support for group in best_supports for support in expand_jones_group(group, 2)
+        ],
         "batch_size": batch_size,
         "max_batch_memory_mb": max_batch_memory_mb,
         "num_batches": num_batches,
@@ -247,6 +298,7 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
         "scoring_time_s": time.perf_counter() - scoring_start,
         "backend_warning": backend.warning,
     }
+    diagnostics.update(refine_diag)
     diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     return BaselineResult(
         name="nf_mmpsr",

@@ -562,8 +562,8 @@ def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
     configured = copy.deepcopy(config)
     configured["K"] = int(assumed_k)
     baselines = copy.deepcopy(configured.get("baselines", {}))
-    baselines.setdefault("ff_omp", {})["max_atoms"] = int(assumed_k)
-    baselines.setdefault("ris_momp", {})["max_atoms"] = int(assumed_k)
+    baselines.setdefault("ff_omp", {})["max_groups"] = int(assumed_k)
+    baselines.setdefault("ris_momp", {})["max_groups"] = int(assumed_k)
     # NF-MMPSR creates two Jones nuisance columns per panel; its model
     # dimension and support therefore follow scene["K"] == assumed_K.
     baselines.setdefault("nf_mmpsr", {})["assumed_K"] = int(assumed_k)

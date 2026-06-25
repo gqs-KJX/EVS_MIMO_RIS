@@ -13,7 +13,10 @@ from .common import (
     BaselineResult,
     delay_grid_from_scene,
     direction_grid,
+    expand_jones_group,
+    fit_position_clock_data_domain,
     geometric_support_to_position_ls,
+    group_omp_select,
     raw_atom_from_support,
     reconstruct_from_supports,
     simple_atom_normalize,
@@ -46,7 +49,6 @@ def _support_key(support: dict[str, Any]) -> tuple[Any, ...]:
         int(support.get("panel", 0)),
         direction,
         round(float(support.get("tau", 0.0)), 15),
-        int(support.get("pol_index", 0)),
     )
 
 
@@ -54,21 +56,17 @@ def _far_field_supports(scene: dict, config: dict) -> Iterable[dict[str, Any]]:
     cfg = dict(config.get("baselines", {}).get("ff_omp", {}))
     directions = direction_grid(int(cfg.get("angle_grid_size", 31)))
     taus = delay_grid_from_scene(scene, config, int(cfg.get("delay_grid_size", 41)))
-    use_jones = bool(cfg.get("use_jones_basis", True))
-    pol_indices = range(2 if use_jones else 1)
     for panel in range(int(scene["K"])):
         for direction_idx, direction in enumerate(directions):
             for tau_idx, tau in enumerate(taus):
-                for pol_index in pol_indices:
-                    yield {
-                        "panel": int(panel),
-                        "direction": direction,
-                        "tau": float(tau),
-                        "pol_index": int(pol_index),
-                        "direction_index": int(direction_idx),
-                        "tau_index": int(tau_idx),
-                        "near_field": False,
-                    }
+                yield {
+                    "panel": int(panel),
+                    "direction": direction,
+                    "tau": float(tau),
+                    "direction_index": int(direction_idx),
+                    "tau_index": int(tau_idx),
+                    "near_field": False,
+                }
 
 
 def _omp_over_supports(
@@ -231,40 +229,76 @@ def run_far_field_omp_baseline(data: dict, config: dict) -> BaselineResult:
         grid_sizes=(
             int(cfg.get("angle_grid_size", 31)),
             int(cfg.get("delay_grid_size", 41)),
-            bool(cfg.get("use_jones_basis", True)),
+            "jones_group_omp",
         ),
     )
-    supports = BASELINE_CACHE.get_or_create(
+    groups = BASELINE_CACHE.get_or_create(
         cache_key,
         lambda: list(_far_field_supports(scene, config)),
     )
-    selected, y_hat, residual, diagnostics = _omp_over_supports(
+    max_groups = int(cfg.get("max_groups", cfg.get("max_atoms", scene["K"])))
+    selected, expanded_supports, coeffs, y_hat_vec, diagnostics = group_omp_select(
         scene,
         config,
-        supports,
+        groups,
         y_vec,
-        max_atoms=int(cfg.get("max_atoms", scene["K"])),
+        max_groups=max_groups,
         batch_size=int(cfg.get("batch_size", 256)),
-        max_batch_memory_mb=float(cfg.get("max_batch_memory_mb", 256.0)),
-        backend_config=backend_cfg,
         trim_memory_enabled=bool(
             config.get("baselines", {}).get("trim_memory", True)
         ),
     )
+    residual = y_vec - y_hat_vec
     p_hat, delta_t, geom_diag = geometric_support_to_position_ls(scene, selected, config)
+    panels = [int(support.get("panel", 0)) for support in selected]
+    if bool(cfg.get("offgrid_refinement", True)) and selected:
+        p_hat, delta_t, coeffs, y_hat_vec, refined_groups, refine_diag = fit_position_clock_data_domain(
+            scene,
+            config,
+            y_vec,
+            p_hat,
+            delta_t,
+            panels=panels,
+            model_variant="far_field",
+            enabled=True,
+            max_nfev=int(cfg.get("refinement_max_nfev", 60)),
+        )
+        selected = [
+            {**selected[idx], **refined_groups[idx]}
+            for idx in range(min(len(selected), len(refined_groups)))
+        ]
+        expanded_supports = [
+            support for group in selected for support in expand_jones_group(group, 2)
+        ]
+        residual = y_vec - y_hat_vec
+        diagnostics.update(refine_diag)
+    else:
+        diagnostics["offgrid_refinement"] = False
+        diagnostics["refinement_objective"] = ""
     diagnostics.update(geom_diag)
     diagnostics["dictionary_mode"] = "far_field_angular_delay_omp"
+    diagnostics["model_variant"] = "far_field_omp"
+    diagnostics["group_omp"] = True
+    diagnostics["expanded_supports"] = expanded_supports
+    diagnostics["coeff_norm"] = float(np.linalg.norm(coeffs))
     diagnostics["angle_grid_type"] = "direction_cosine_cos_uniform"
     diagnostics["angle_grid_size"] = int(cfg.get("angle_grid_size", 31))
     diagnostics["delay_grid_size"] = int(cfg.get("delay_grid_size", 41))
+    diagnostics["max_groups"] = max_groups
     diagnostics["selected_support"] = selected
+    diagnostics["backend"] = backend_cfg.backend
+    diagnostics["gpu_used"] = False
+    diagnostics["gpu_num_batches"] = 0
+    diagnostics["gpu_batch_size"] = ""
+    diagnostics["gpu_device"] = ""
+    diagnostics["backend_warning"] = ""
     diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     raw_objective = float(np.linalg.norm(residual) ** 2 / y_vec.size)
     return BaselineResult(
         name="ff_omp",
         p_u=p_hat,
         delta_t=delta_t,
-        Y_hat=y_hat,
+        Y_hat=y_hat_vec.reshape(scene["I"], scene["N"], scene["T"]),
         raw_objective_final=raw_objective,
         components=_components_from_supports(scene, selected),
         selected_support=selected,

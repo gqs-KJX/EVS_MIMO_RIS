@@ -60,6 +60,15 @@ def test_linear_ls_fit_recovers_known_complex_coefficients():
     assert np.allclose(y_hat, y)
 
 
+def test_group_projection_score_uses_subspace_energy():
+    group = np.array([[1.0, 1.0], [0.0, 1.0], [0.0, 0.0]], dtype=complex)
+    residual = np.array([0.0, 1.0, 0.0], dtype=complex)
+    score = common.group_projection_score(group, residual)
+    single_column_score = abs(np.vdot(common.simple_atom_normalize(group[:, 0]), residual)) ** 2
+    assert score > single_column_score
+    assert np.isclose(score, 1.0)
+
+
 def test_complex_cp_als_reconstructs_tiny_rank_two_tensor():
     rng = np.random.default_rng(2)
     a = rng.normal(size=(4, 2)) + 1j * rng.normal(size=(4, 2))
@@ -116,6 +125,10 @@ def test_ff_omp_recovers_known_far_field_support():
     assert result.selected_support[0]["direction_index"] == support["direction_index"]
     assert result.selected_support[0]["tau_index"] == support["tau_index"]
     assert result.diagnostics["dictionary_mode"] == "far_field_angular_delay_omp"
+    assert result.diagnostics["group_omp"] is True
+    assert result.diagnostics["offgrid_refinement"] is True
+    assert result.diagnostics["refinement_objective"] == "data_domain_ls"
+    assert len(result.diagnostics["expanded_supports"]) == 2 * len(result.selected_support)
 
 
 def test_ris_momp_recovers_known_multidimensional_support():
@@ -129,7 +142,10 @@ def test_ris_momp_recovers_known_multidimensional_support():
     result = ris_momp.run_ris_momp_baseline(data, config)
     assert result.selected_support[0]["direction_index"] == support["direction_index"]
     assert result.selected_support[0]["tau_index"] == support["tau_index"]
-    assert result.diagnostics["dictionary_mode"] == "batched_momp_equivalent"
+    assert result.diagnostics["dictionary_mode"] == "near_field_range_aware_momp"
+    assert result.diagnostics["group_omp"] is True
+    assert result.diagnostics["offgrid_refinement"] is True
+    assert result.diagnostics["model_variant"] == "near_field_momp"
 
 
 def test_nf_mmpsr_grid_search_selects_known_grid_point():
@@ -140,6 +156,9 @@ def test_nf_mmpsr_grid_search_selects_known_grid_point():
     assert np.allclose(result.p_u, config["p_u_true"])
     assert abs(result.delta_t - config["delta_t_true"]) < 1.0e-15
     assert result.diagnostics["dictionary_mode"] == "near_field_spherical_grid_mmpsr"
+    assert "coarse_grid_position" in result.diagnostics
+    assert "refined_position" in result.diagnostics
+    assert result.diagnostics["refinement_objective"] == "data_domain_ls"
 
 
 def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):

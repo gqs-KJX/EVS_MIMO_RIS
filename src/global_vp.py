@@ -2111,6 +2111,12 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "global_vp_backend": backend.name,
             "global_vp_gpu_used": gpu_used,
             "global_vp_gpu_device": backend.device if gpu_used else "",
+            "global_vp_objective_backend": "cupy" if gpu_used else "numpy",
+            "global_vp_linear_solve_backend": str(
+                final_parts.get("linear_diagnostics", {}).get(
+                    "linear_solve_backend", ""
+                )
+            ),
             "global_vp_gpu_num_objective_calls": (
                 int(gpu_evaluator.num_calls) if gpu_evaluator is not None else 0
             ),
@@ -2263,6 +2269,8 @@ def _augment_legacy_vp_result(
             "global_vp_backend": "cpu",
             "global_vp_gpu_used": False,
             "global_vp_gpu_device": "",
+            "global_vp_objective_backend": "legacy_least_squares",
+            "global_vp_linear_solve_backend": "cpu",
             "global_vp_gpu_num_objective_calls": 0,
             "global_vp_gpu_transfer_policy": "",
             "global_vp_backend_warning": "",
@@ -2500,6 +2508,12 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
             jones_result.get("global_vp_gpu_used", False)
         ),
         "global_vp_gpu_device": jones_result.get("global_vp_gpu_device", ""),
+        "global_vp_objective_backend": jones_result.get(
+            "global_vp_objective_backend", ""
+        ),
+        "global_vp_linear_solve_backend": jones_result.get(
+            "global_vp_linear_solve_backend", ""
+        ),
         "global_vp_gpu_num_objective_calls": int(
             jones_result.get("global_vp_gpu_num_objective_calls", 0)
         ),
