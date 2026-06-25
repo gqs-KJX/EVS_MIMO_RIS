@@ -497,6 +497,28 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     raise ValueError(f"unknown figure {figure!r}")
 
 
+def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
+    if _is_fig1_fig2(figure):
+        return {
+            "free_jones_vp_gated_rescue": {
+                "enable_global_vp": True,
+                "global_vp": {"mode": "jones_free"},
+                "_allow_stage2": True,
+                "stage2_adaptive": True,
+                "stage2_rescue_type": "ris_only",
+            },
+            "free_jones_vp_force_rescue": {
+                "enable_global_vp": True,
+                "global_vp": {"mode": "jones_free"},
+                "_allow_stage2": True,
+                "stage2_adaptive": True,
+                "stage2_rescue_type": "ris_only",
+                "proposed_stage2_policy": "force_ris_only",
+            },
+        }
+    return {}
+
+
 def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {"PEB": {"receiver_mode": "full_6d", "_runner": "peb_only"}}
@@ -531,6 +553,17 @@ def _filter_variants(
     if variant_filter is None or not _is_fig1_fig2(figure):
         return variants
     requested = {name.lower() for name in variant_filter}
+    diagnostic_requested = requested & {
+        name.lower() for name in _diagnostic_variant_specs(figure)
+    }
+    if diagnostic_requested and not any(
+        name in variants for name in _diagnostic_variant_specs(figure)
+    ):
+        requested_text = ", ".join(sorted(diagnostic_requested))
+        raise ValueError(
+            "--variant-filter requested diagnostic Fig.1/Fig.2 variant(s) "
+            f"{requested_text}; add --include-diagnostic-variants to enable them"
+        )
     filtered = {
         name: spec
         for name, spec in variants.items()
@@ -548,10 +581,17 @@ def _filter_variants(
 def _variants_for_figure(
     figure: str,
     variant_filter: tuple[str, ...] | None = None,
+    *,
+    include_diagnostic_variants: bool = False,
 ) -> dict[str, dict[str, Any]]:
     canonical = FIG1_FIG2_SHARED_FIGURE if _is_fig1_fig2(figure) else figure
     variants = {
         **_variant_specs(canonical),
+        **(
+            _diagnostic_variant_specs(canonical)
+            if include_diagnostic_variants
+            else {}
+        ),
         **_extra_peb_specs(canonical),
     }
     return _filter_variants(canonical, variants, variant_filter)
@@ -1886,6 +1926,285 @@ def _to_float(value: Any) -> float:
         return float("nan")
 
 
+RESCUE_POLICY_VARIANTS = {
+    "free_jones_vp",
+    "free_jones_vp_gated_rescue",
+    "free_jones_vp_force_rescue",
+}
+
+RESCUE_POLICY_PAIRED_FIELDS = [
+    "figure",
+    "variant",
+    "snr_db",
+    "trial_id",
+    "seed",
+    "receiver_mode",
+    "K",
+    "paper_k",
+    "effective_K",
+    "selected_branch",
+    "reliability_decision",
+    "trigger_reasons",
+    "gof_pass",
+    "position_error_m",
+    "peb_position_m",
+    "error_over_peb",
+    "relative_outlier_5peb",
+    "y_nmse",
+    "raw_objective_final",
+]
+
+RESCUE_POLICY_SUMMARY_FIELDS = [
+    "variant",
+    "snr_db",
+    "n",
+    "mean_error_over_peb",
+    "median_error_over_peb",
+    "p90_error_over_peb",
+    "max_error_over_peb",
+    "outlier_count_5peb",
+    "outlier_rate_5peb",
+    "direct_vp_count",
+    "ris_only_stage2_then_vp_count",
+    "direct_vp_rollback_count",
+    "jnpp_decision_count",
+    "gof_fail_count",
+]
+
+
+def _to_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+        if lowered == "":
+            return None
+    numeric = _to_float(value)
+    if np.isfinite(numeric):
+        return bool(numeric)
+    return None
+
+
+def _has_finite_metadata(row: dict[str, Any], fields: tuple[str, ...]) -> bool:
+    return all(np.isfinite(_to_float(row.get(field))) for field in fields)
+
+
+def _rescue_policy_valid_key_values(row: dict[str, Any]) -> bool:
+    return (
+        bool(str(row.get("figure", "")))
+        and bool(str(row.get("receiver_mode", "")))
+        and np.isfinite(_to_float(row.get("snr_db")))
+        and np.isfinite(_to_float(row.get("trial_id")))
+        and np.isfinite(_to_float(row.get("seed")))
+    )
+
+
+def _rescue_policy_key(
+    row: dict[str, Any],
+    *,
+    include_k_metadata: bool,
+) -> tuple[Any, ...]:
+    base = (
+        str(row.get("figure", "")),
+        float(_to_float(row.get("snr_db"))),
+        int(_to_float(row.get("trial_id"))),
+        int(_to_float(row.get("seed"))),
+        str(row.get("receiver_mode", "")),
+    )
+    if not include_k_metadata:
+        return base
+    return (
+        *base,
+        int(_to_float(row.get("K"))),
+        int(_to_float(row.get("paper_k"))),
+        int(_to_float(row.get("effective_K"))),
+    )
+
+
+def _write_rescue_policy_ablation_csvs(
+    out_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    present_variants = {str(row.get("variant", "")) for row in rows}
+    target_variants = RESCUE_POLICY_VARIANTS & present_variants
+    if not target_variants or "PEB" not in present_variants:
+        return
+
+    peb_by_full_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    peb_by_fallback_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    skipped_peb = 0
+    duplicate_peb = 0
+    for row in rows:
+        if str(row.get("variant", "")) != "PEB":
+            continue
+        if _to_bool(row.get("failed")) is True:
+            continue
+        peb = _to_float(row.get("peb_position_m"))
+        if not np.isfinite(peb) or peb <= 0.0 or not _rescue_policy_valid_key_values(row):
+            skipped_peb += 1
+            continue
+        fallback_key = _rescue_policy_key(row, include_k_metadata=False)
+        if fallback_key in peb_by_fallback_key:
+            duplicate_peb += 1
+        else:
+            peb_by_fallback_key[fallback_key] = row
+        if _has_finite_metadata(row, ("K", "paper_k", "effective_K")):
+            full_key = _rescue_policy_key(row, include_k_metadata=True)
+            if full_key in peb_by_full_key:
+                duplicate_peb += 1
+            else:
+                peb_by_full_key[full_key] = row
+
+    paired_rows: list[dict[str, Any]] = []
+    unpaired = 0
+    skipped_data = 0
+    for row in rows:
+        variant = str(row.get("variant", ""))
+        if variant not in RESCUE_POLICY_VARIANTS:
+            continue
+        if _to_bool(row.get("failed")) is True:
+            skipped_data += 1
+            continue
+        position_error = _to_float(row.get("position_error_m"))
+        if not np.isfinite(position_error) or not _rescue_policy_valid_key_values(row):
+            skipped_data += 1
+            continue
+        if _has_finite_metadata(row, ("K", "paper_k", "effective_K")):
+            peb_row = peb_by_full_key.get(
+                _rescue_policy_key(row, include_k_metadata=True)
+            )
+            if peb_row is None:
+                peb_row = peb_by_fallback_key.get(
+                    _rescue_policy_key(row, include_k_metadata=False)
+                )
+        else:
+            peb_row = peb_by_fallback_key.get(
+                _rescue_policy_key(row, include_k_metadata=False)
+            )
+        if peb_row is None:
+            unpaired += 1
+            continue
+        peb = _to_float(peb_row.get("peb_position_m"))
+        if not np.isfinite(peb) or peb <= 0.0:
+            skipped_data += 1
+            continue
+        error_over_peb = position_error / peb
+        paired_rows.append(
+            {
+                "figure": row.get("figure"),
+                "variant": variant,
+                "snr_db": row.get("snr_db"),
+                "trial_id": row.get("trial_id"),
+                "seed": row.get("seed"),
+                "receiver_mode": row.get("receiver_mode"),
+                "K": row.get("K"),
+                "paper_k": row.get("paper_k"),
+                "effective_K": row.get("effective_K"),
+                "selected_branch": row.get("selected_branch"),
+                "reliability_decision": row.get("reliability_decision"),
+                "trigger_reasons": row.get("trigger_reasons"),
+                "gof_pass": row.get("gof_pass"),
+                "position_error_m": position_error,
+                "peb_position_m": peb,
+                "error_over_peb": error_over_peb,
+                "relative_outlier_5peb": bool(error_over_peb > 5.0),
+                "y_nmse": row.get("y_nmse"),
+                "raw_objective_final": row.get("raw_objective_final"),
+            }
+        )
+
+    if unpaired or skipped_data or skipped_peb or duplicate_peb:
+        print(
+            "WARNING rescue_policy_ablation pairing: "
+            f"unpaired_rows={unpaired} skipped_data_rows={skipped_data} "
+            f"skipped_peb_rows={skipped_peb} duplicate_peb_keys={duplicate_peb}"
+        )
+
+    _write_csv(
+        out_dir / "rescue_policy_ablation_paired.csv",
+        paired_rows,
+        RESCUE_POLICY_PAIRED_FIELDS,
+    )
+    _write_csv(
+        out_dir / "rescue_policy_ablation_summary.csv",
+        _summarize_rescue_policy_ablation(paired_rows),
+        RESCUE_POLICY_SUMMARY_FIELDS,
+    )
+
+
+def _summarize_rescue_policy_ablation(
+    paired_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, float], list[dict[str, Any]]] = {}
+    for row in paired_rows:
+        snr_db = _to_float(row.get("snr_db"))
+        if not np.isfinite(snr_db):
+            continue
+        key = (str(row.get("variant", "")), float(snr_db))
+        grouped.setdefault(key, []).append(row)
+
+    summary_rows: list[dict[str, Any]] = []
+    for (variant, snr_db), group in sorted(
+        grouped.items(), key=lambda item: (item[0][0], item[0][1])
+    ):
+        values = np.asarray(
+            [
+                _to_float(row.get("error_over_peb"))
+                for row in group
+                if np.isfinite(_to_float(row.get("error_over_peb")))
+            ],
+            dtype=float,
+        )
+        n = int(values.size)
+        outlier_count = int(
+            sum(_to_bool(row.get("relative_outlier_5peb")) is True for row in group)
+        )
+        summary_rows.append(
+            {
+                "variant": variant,
+                "snr_db": snr_db,
+                "n": n,
+                "mean_error_over_peb": float(np.mean(values)) if n else float("nan"),
+                "median_error_over_peb": float(np.median(values)) if n else float("nan"),
+                "p90_error_over_peb": float(np.percentile(values, 90)) if n else float("nan"),
+                "max_error_over_peb": float(np.max(values)) if n else float("nan"),
+                "outlier_count_5peb": outlier_count,
+                "outlier_rate_5peb": float(outlier_count / n) if n else float("nan"),
+                "direct_vp_count": sum(
+                    str(row.get("selected_branch", "")) == "direct_vp"
+                    for row in group
+                ),
+                "ris_only_stage2_then_vp_count": sum(
+                    str(row.get("selected_branch", ""))
+                    == "ris_only_stage2_then_vp"
+                    for row in group
+                ),
+                "direct_vp_rollback_count": sum(
+                    str(row.get("selected_branch", "")) == "direct_vp_rollback"
+                    for row in group
+                ),
+                "jnpp_decision_count": sum(
+                    str(row.get("reliability_decision", "")) == "jnpp_then_vp"
+                    for row in group
+                ),
+                "gof_fail_count": sum(
+                    _to_bool(row.get("gof_pass")) is False for row in group
+                ),
+            }
+        )
+    return summary_rows
+
+
 def _finite_metric_values(group: list[dict[str, Any]], metric: str) -> np.ndarray:
     values = np.asarray(
         [
@@ -2135,9 +2454,15 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
             figure: _expected_variant_names(
                 figure,
                 getattr(args, "variant_filter_values", None),
+                include_diagnostic_variants=bool(
+                    getattr(args, "include_diagnostic_variants", False)
+                ),
             )
             for figure in figures
         },
+        "include_diagnostic_variants": bool(
+            getattr(args, "include_diagnostic_variants", False)
+        ),
         "git_commit": _git_commit_hash(),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
@@ -2197,6 +2522,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
         "seed": int(args.seed),
+        "include_diagnostic_variants": bool(
+            getattr(args, "include_diagnostic_variants", False)
+        ),
+        "diagnostic_variants": _enabled_diagnostic_variant_names(args, figures),
         "global_vp_backend": global_vp_overrides.get("backend", "cpu"),
         "global_vp_gpu_device": global_vp_overrides.get("gpu_device", 0),
         "global_vp_validate_gpu_against_cpu": bool(
@@ -2261,8 +2590,16 @@ def _metadata_matches_request(
 def _expected_variant_names(
     figure: str,
     variant_filter: tuple[str, ...] | None = None,
+    *,
+    include_diagnostic_variants: bool = False,
 ) -> list[str]:
-    return list(_variants_for_figure(figure, variant_filter))
+    return list(
+        _variants_for_figure(
+            figure,
+            variant_filter,
+            include_diagnostic_variants=include_diagnostic_variants,
+        )
+    )
 
 
 def _csv_matches_request(
@@ -2281,6 +2618,9 @@ def _csv_matches_request(
         _expected_variant_names(
             figure,
             getattr(args, "variant_filter_values", None),
+            include_diagnostic_variants=bool(
+                getattr(args, "include_diagnostic_variants", False)
+            ),
         )
     )
     expected_x_values = {float(value) for value in x_values}
@@ -2520,6 +2860,7 @@ def _grouped_tasks(
     trim_memory_enabled: bool,
     out_dir: pathlib.Path,
     debug_compare_main_single_proposed: bool = False,
+    include_diagnostic_variants: bool = False,
 ) -> list[dict[str, Any]]:
     tasks = []
     for x_value in x_values:
@@ -2550,6 +2891,9 @@ def _grouped_tasks(
                     "out_dir": str(out_dir),
                     "debug_compare_main_single_proposed": bool(
                         debug_compare_main_single_proposed
+                    ),
+                    "include_diagnostic_variants": bool(
+                        include_diagnostic_variants
                     ),
                 }
             )
@@ -2589,6 +2933,9 @@ def _tasks_for_figure(
             out_dir=pathlib.Path(args.out_dir),
             debug_compare_main_single_proposed=bool(
                 getattr(args, "debug_compare_main_single_proposed", False)
+            ),
+            include_diagnostic_variants=bool(
+                getattr(args, "include_diagnostic_variants", False)
             ),
         )
     tasks = _trial_tasks(
@@ -2976,7 +3323,14 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 if log:
                     logs.append(log)
         elif group == "fig1_fig2":
-            variants = _variant_specs(FIG1_FIG2_SHARED_FIGURE)
+            variants = {
+                **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
+                **(
+                    _diagnostic_variant_specs(FIG1_FIG2_SHARED_FIGURE)
+                    if bool(task.get("include_diagnostic_variants", False))
+                    else {}
+                ),
+            }
             result_identity_guard: dict[str, Any] = {"tokens": {}}
             selected_variants = {
                 str(name)
@@ -3385,11 +3739,21 @@ def _summarize_fig1_fig2_shared_csv(shared_trial_csv: pathlib.Path) -> list[dict
     return summarize_fig1_fig2_shared_rows(_read_csv(shared_trial_csv))
 
 
-def _write_fig1_fig2_derived_outputs(out_dir: pathlib.Path, rows: list[dict[str, Any]]) -> None:
+def _write_fig1_fig2_derived_outputs(
+    out_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+    *,
+    include_diagnostic_variants: bool = False,
+) -> None:
     fig1_rows = [{**row, "figure": "fig1"} for row in rows]
     fig2_rows = [{**row, "figure": "fig2"} for row in rows]
     _write_rows_atomic_csv(_figure_trial_csv(out_dir, "fig1"), fig1_rows, FIELDNAMES)
     _write_rows_atomic_csv(_figure_trial_csv(out_dir, "fig2"), fig2_rows, FIELDNAMES)
+    _write_rescue_policy_ablation_csvs(
+        out_dir,
+        rows,
+        enabled=include_diagnostic_variants,
+    )
     fig1_summary = summarize_rows(rows, "fig1")
     fig2_summary = summarize_rows(rows, "fig2")
     _write_csv(
@@ -3471,10 +3835,16 @@ def _write_fig1_main_single_consistency(
 def _write_fig1_fig2_derived_outputs_from_csv(
     out_dir: pathlib.Path,
     shared_trial_csv: pathlib.Path,
+    *,
+    include_diagnostic_variants: bool = False,
 ) -> None:
     rows = _read_csv(shared_trial_csv)
     try:
-        _write_fig1_fig2_derived_outputs(out_dir, rows)
+        _write_fig1_fig2_derived_outputs(
+            out_dir,
+            rows,
+            include_diagnostic_variants=include_diagnostic_variants,
+        )
     finally:
         del rows
 
@@ -3503,6 +3873,9 @@ def _run_fig1_fig2_shared_trials(
         variants = _variants_for_figure(
             FIG1_FIG2_SHARED_FIGURE,
             args.variant_filter_values,
+            include_diagnostic_variants=bool(
+                getattr(args, "include_diagnostic_variants", False)
+            ),
         )
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
@@ -3522,7 +3895,13 @@ def _run_fig1_fig2_shared_trials(
         shared_summary,
         list(shared_summary[0].keys()) if shared_summary else [],
     )
-    _write_fig1_fig2_derived_outputs(out_dir, rows)
+    _write_fig1_fig2_derived_outputs(
+        out_dir,
+        rows,
+        include_diagnostic_variants=bool(
+            getattr(args, "include_diagnostic_variants", False)
+        ),
+    )
     if bool(getattr(args, "debug_compare_main_single_proposed", False)):
         _write_fig1_main_single_consistency(out_dir, rows)
     return rows
@@ -3552,6 +3931,9 @@ def _ensure_fig1_fig2_shared_outputs(
         variants = _variants_for_figure(
             FIG1_FIG2_SHARED_FIGURE,
             args.variant_filter_values,
+            include_diagnostic_variants=bool(
+                getattr(args, "include_diagnostic_variants", False)
+            ),
         )
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
@@ -3579,7 +3961,13 @@ def _ensure_fig1_fig2_shared_outputs(
         shared_summary,
         list(shared_summary[0].keys()) if shared_summary else [],
     )
-    _write_fig1_fig2_derived_outputs_from_csv(out_dir, shared_trial_csv)
+    _write_fig1_fig2_derived_outputs_from_csv(
+        out_dir,
+        shared_trial_csv,
+        include_diagnostic_variants=bool(
+            getattr(args, "include_diagnostic_variants", False)
+        ),
+    )
     if bool(getattr(args, "debug_compare_main_single_proposed", False)):
         _write_fig1_main_single_consistency(
             out_dir, _read_csv(shared_trial_csv)
@@ -3618,6 +4006,9 @@ def _ensure_figure_outputs(
         variants = _variants_for_figure(
             figure,
             args.variant_filter_values,
+            include_diagnostic_variants=bool(
+                getattr(args, "include_diagnostic_variants", False)
+            ),
         )
         out_dir.mkdir(parents=True, exist_ok=True)
         grouped_group = {
@@ -3684,6 +4075,9 @@ def _run_figure(
     variants = _variants_for_figure(
         figure,
         args.variant_filter_values,
+        include_diagnostic_variants=bool(
+            getattr(args, "include_diagnostic_variants", False)
+        ),
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     grouped_group = {
@@ -3882,6 +4276,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "PEB accepts PEB, peb_only, or data_only_peb."
         ),
     )
+    parser.add_argument(
+        "--include-diagnostic-variants",
+        action="store_true",
+        help="Expose opt-in Fig.1/Fig.2 diagnostic variants before filtering.",
+    )
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
     parser.add_argument("--paper-k", type=int, default=DEFAULT_PAPER_K)
@@ -3992,10 +4391,41 @@ def _progress_task_count(
                 _variants_for_figure(
                     figure_key,
                     args.variant_filter_values,
+                    include_diagnostic_variants=bool(
+                        getattr(args, "include_diagnostic_variants", False)
+                    ),
                 )
             )
         total += int(args.n_trials) * x_count * multiplier
     return max(total, 1)
+
+
+def _enabled_diagnostic_variant_names(
+    args: argparse.Namespace,
+    figures: list[str],
+) -> list[str]:
+    if not bool(getattr(args, "include_diagnostic_variants", False)):
+        return []
+    names: list[str] = []
+    for figure in figures:
+        for name in _diagnostic_variant_specs(figure):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _print_diagnostic_comparison_note(
+    args: argparse.Namespace,
+    figures: list[str],
+) -> None:
+    if not _enabled_diagnostic_variant_names(args, figures):
+        return
+    print(
+        "Diagnostic comparison: match free_jones_vp, "
+        "free_jones_vp_gated_rescue, free_jones_vp_force_rescue, and PEB rows on "
+        "snr_db, trial_id, seed, receiver_mode; compute "
+        "error_over_peb = position_error_m / matched_peb_position_m."
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -4016,6 +4446,10 @@ def main(argv: list[str] | None = None) -> None:
     snr_grid = parse_snr_grid(args.snr_grid)
     print(f"Running Fig.1-Fig.5 with paper_k = {args.paper_k}")
     print(f"Running Fig.6 K-grid = {args.k_grid_values}")
+    diagnostic_variants = _enabled_diagnostic_variant_names(args, figures)
+    print(f"include_diagnostic_variants={bool(args.include_diagnostic_variants)}")
+    print(f"diagnostic_variants={','.join(diagnostic_variants)}")
+    _print_diagnostic_comparison_note(args, figures)
     progress_path = (
         pathlib.Path(args.progress_log)
         if args.progress_log is not None
