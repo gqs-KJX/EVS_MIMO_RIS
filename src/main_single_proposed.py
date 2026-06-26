@@ -1555,6 +1555,137 @@ def _branch_y_nmse(branch: dict) -> float:
     return float(relative_nmse(branch["final"]["Y_hat"], branch["Y_true"]))
 
 
+def _candidate_metric_float(*values: Any) -> float:
+    for value in values:
+        try:
+            value_float = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value_float):
+            return value_float
+    return float("nan")
+
+
+def _candidate_position_error_from_estimate(
+    result: dict,
+    data: dict | None,
+) -> float:
+    final = result.get("final", {})
+    p_hat = final.get("p_u", result.get("p_u"))
+    p_true = None
+    for source in (result, data or {}):
+        if not isinstance(source, dict):
+            continue
+        scene = source.get("scene", {})
+        if isinstance(scene, dict) and scene.get("p_u_true") is not None:
+            p_true = scene.get("p_u_true")
+            break
+        if source.get("p_u_true") is not None:
+            p_true = source.get("p_u_true")
+            break
+    if p_hat is None or p_true is None:
+        return float("nan")
+    try:
+        return float(
+            np.linalg.norm(
+                np.asarray(p_hat, dtype=float) - np.asarray(p_true, dtype=float)
+            )
+        )
+    except (TypeError, ValueError, FloatingPointError):
+        return float("nan")
+
+
+def _extract_branch_candidate_diagnostics(
+    prefix: str,
+    result: dict | None,
+    data: dict | None = None,
+) -> dict:
+    """Return offline diagnostics for a candidate branch without affecting selection."""
+    diagnostics = {
+        f"{prefix}_candidate_position_error_m": float("nan"),
+        f"{prefix}_candidate_y_nmse": float("nan"),
+        f"{prefix}_candidate_raw_objective": float("nan"),
+    }
+    if result is None:
+        return diagnostics
+
+    final = result.get("final", {})
+    position_error = _candidate_metric_float(
+        result.get("position_error_m"),
+        result.get("debug_main_position_error_m"),
+    )
+    if not np.isfinite(position_error):
+        position_error = _candidate_position_error_from_estimate(result, data)
+
+    y_nmse = _candidate_metric_float(
+        result.get("y_nmse"),
+        result.get("debug_main_y_nmse"),
+    )
+    if not np.isfinite(y_nmse):
+        y_hat = final.get("Y_hat")
+        y_true = result.get("Y_true")
+        if y_true is None and isinstance(data, dict):
+            y_true = data.get("Y_true")
+        if y_hat is not None and y_true is not None:
+            try:
+                y_nmse = float(relative_nmse(y_hat, y_true))
+            except (TypeError, ValueError, FloatingPointError):
+                y_nmse = float("nan")
+
+    raw_objective = _candidate_metric_float(
+        result.get("raw_objective_final"),
+        result.get("debug_main_raw_objective"),
+        final.get("raw_objective_final"),
+        final.get("raw_objective"),
+    )
+
+    diagnostics[f"{prefix}_candidate_position_error_m"] = position_error
+    diagnostics[f"{prefix}_candidate_y_nmse"] = y_nmse
+    diagnostics[f"{prefix}_candidate_raw_objective"] = raw_objective
+    return diagnostics
+
+
+def _rescue_candidate_selection_diagnostics(
+    rescue_result: dict | None,
+    selected_branch: str,
+    reliability: dict,
+    *,
+    rescue_requested: bool,
+) -> dict:
+    if rescue_result is None:
+        return {
+            "rescue_candidate_available": False,
+            "rescue_accept_decision": "not_run",
+            "rescue_reject_reason": (
+                "no_rescue_candidate" if rescue_requested else "not_requested"
+            ),
+        }
+
+    rescue_branch = str(rescue_result.get("branch_name", "ris_only_stage2_then_vp"))
+    rescue_branches = {
+        rescue_branch,
+        "ris_only_stage2_then_vp",
+        "multi_hypothesis_ris_reacquisition_then_vp",
+    }
+    if selected_branch in rescue_branches:
+        accept_decision = "accepted"
+        reject_reason = "accepted"
+    elif selected_branch == "direct_vp_rollback":
+        accept_decision = "rollback"
+        reject_reason = "existing_selector_rollback"
+    elif str(reliability.get("decision", "")) == "direct_vp":
+        accept_decision = "rollback"
+        reject_reason = "gate_direct_vp_hard_reject"
+    else:
+        accept_decision = "unknown"
+        reject_reason = "unknown"
+    return {
+        "rescue_candidate_available": True,
+        "rescue_accept_decision": accept_decision,
+        "rescue_reject_reason": reject_reason,
+    }
+
+
 def _normal_quantile(p: float) -> float:
     """Return a standard-normal quantile with scipy or a fixed fallback."""
     if scipy_is_available():
@@ -1970,6 +2101,28 @@ def run_from_existing_stage1(
     selected, no_gain = select_proposed_branch(
         direct_result, rescue_result, reliability, config
     )
+    selected_branch = str(
+        selected.get(
+            "selected_branch",
+            selected.get("final", {}).get("selected_branch", ""),
+        )
+    )
+    candidate_diagnostics = {}
+    candidate_diagnostics.update(
+        _extract_branch_candidate_diagnostics("direct", direct_result, data)
+    )
+    candidate_diagnostics.update(
+        _extract_branch_candidate_diagnostics("rescue", rescue_result, data)
+    )
+    candidate_diagnostics.update(
+        _rescue_candidate_selection_diagnostics(
+            rescue_result,
+            selected_branch,
+            reliability,
+            rescue_requested=bool(rescue_requested),
+        )
+    )
+    selected.update(candidate_diagnostics)
     if bool(config.get("run_full_legacy_comparison", False)):
         if progress_printed:
             print("running_full_legacy_comparison = True", flush=True)

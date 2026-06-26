@@ -224,6 +224,15 @@ FIELDNAMES = [
     "debug_main_global_vp_mode",
     "debug_main_adaptive_enabled",
     "debug_config_diff_summary",
+    "direct_candidate_position_error_m",
+    "direct_candidate_y_nmse",
+    "direct_candidate_raw_objective",
+    "rescue_candidate_position_error_m",
+    "rescue_candidate_y_nmse",
+    "rescue_candidate_raw_objective",
+    "rescue_candidate_available",
+    "rescue_accept_decision",
+    "rescue_reject_reason",
 ]
 
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -1455,6 +1464,35 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             "peb_backend": str(result.get("peb_backend", "")),
         }
     )
+    metrics.update(
+        {
+            "direct_candidate_position_error_m": _finite_float(
+                result.get("direct_candidate_position_error_m")
+            ),
+            "direct_candidate_y_nmse": _finite_float(
+                result.get("direct_candidate_y_nmse")
+            ),
+            "direct_candidate_raw_objective": _finite_float(
+                result.get("direct_candidate_raw_objective")
+            ),
+            "rescue_candidate_position_error_m": _finite_float(
+                result.get("rescue_candidate_position_error_m")
+            ),
+            "rescue_candidate_y_nmse": _finite_float(
+                result.get("rescue_candidate_y_nmse")
+            ),
+            "rescue_candidate_raw_objective": _finite_float(
+                result.get("rescue_candidate_raw_objective")
+            ),
+            "rescue_candidate_available": bool(
+                result.get("rescue_candidate_available", False)
+            ),
+            "rescue_accept_decision": str(
+                result.get("rescue_accept_decision", "")
+            ),
+            "rescue_reject_reason": str(result.get("rescue_reject_reason", "")),
+        }
+    )
     return metrics
 
 
@@ -1952,6 +1990,15 @@ RESCUE_POLICY_PAIRED_FIELDS = [
     "relative_outlier_5peb",
     "y_nmse",
     "raw_objective_final",
+    "direct_candidate_position_error_m",
+    "direct_candidate_y_nmse",
+    "direct_candidate_raw_objective",
+    "rescue_candidate_position_error_m",
+    "rescue_candidate_y_nmse",
+    "rescue_candidate_raw_objective",
+    "rescue_candidate_available",
+    "rescue_accept_decision",
+    "rescue_reject_reason",
 ]
 
 RESCUE_POLICY_SUMMARY_FIELDS = [
@@ -2120,6 +2167,25 @@ def _write_rescue_policy_ablation_csvs(
                 "relative_outlier_5peb": bool(error_over_peb > 5.0),
                 "y_nmse": row.get("y_nmse"),
                 "raw_objective_final": row.get("raw_objective_final"),
+                "direct_candidate_position_error_m": row.get(
+                    "direct_candidate_position_error_m"
+                ),
+                "direct_candidate_y_nmse": row.get("direct_candidate_y_nmse"),
+                "direct_candidate_raw_objective": row.get(
+                    "direct_candidate_raw_objective"
+                ),
+                "rescue_candidate_position_error_m": row.get(
+                    "rescue_candidate_position_error_m"
+                ),
+                "rescue_candidate_y_nmse": row.get("rescue_candidate_y_nmse"),
+                "rescue_candidate_raw_objective": row.get(
+                    "rescue_candidate_raw_objective"
+                ),
+                "rescue_candidate_available": row.get(
+                    "rescue_candidate_available"
+                ),
+                "rescue_accept_decision": row.get("rescue_accept_decision"),
+                "rescue_reject_reason": row.get("rescue_reject_reason"),
             }
         )
 
