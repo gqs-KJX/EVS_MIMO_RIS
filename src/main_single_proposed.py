@@ -3871,6 +3871,7 @@ def run_repeated_main_single(
     blas_threads: int = 1,
     rerun_seeds: list[int] | None = None,
     outlier_threshold_m: float = 0.1,
+    resource_options: dict[str, Any] | None = None,
 ) -> dict:
     if rerun_seeds is not None:
         rerun_seeds = [int(seed) for seed in rerun_seeds]
@@ -3958,6 +3959,7 @@ def run_repeated_main_single(
         "outlier_threshold_m": float(outlier_threshold_m),
         "blas_threads": int(blas_threads),
         "config_overrides": config_overrides or {},
+        "resource_options": resource_options or {},
         "git_commit": _git_commit(),
         "python": platform.python_version(),
         "numpy": np.__version__,
@@ -3998,6 +4000,58 @@ def _print_repeated_summary(result: dict[str, Any]) -> None:
     )
     print(f"Channel NMSE mean = {_fmt(summary.get('y_nmse_mean'))}")
     print(f"Results written to: {result['out_dir']}")
+
+
+def _parse_snr_db_values(value: str | float | int | None) -> list[float] | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    values = [
+        float(token.strip())
+        for token in str(value).split(",")
+        if token.strip()
+    ]
+    if not values:
+        raise ValueError("--snr-db must contain at least one numeric value")
+    return values
+
+
+def _resolve_alias_int(
+    parser: argparse.ArgumentParser,
+    *,
+    canonical: str,
+    values: list[tuple[str, int | None]],
+    default: int,
+) -> tuple[int, bool]:
+    provided = [(name, int(value)) for name, value in values if value is not None]
+    if provided:
+        first_name, first_value = provided[0]
+        conflicts = [
+            f"{name}={value}"
+            for name, value in provided[1:]
+            if value != first_value
+        ]
+        if conflicts:
+            all_values = ", ".join([f"{first_name}={first_value}", *conflicts])
+            parser.error(f"conflicting {canonical} aliases: {all_values}")
+        return first_value, True
+    return int(default), False
+
+
+def _snr_out_dir_name(snr_db: float) -> str:
+    text = f"{float(snr_db):g}".replace(".", "p")
+    return f"snr_{text}dB"
+
+
+def _repeat_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        args.repeat_runs_was_set
+        or args.repeat_jobs_was_set
+        or args.repeat_out_dir_was_set
+        or args.rerun_seeds is not None
+        or (args.snr_db is not None and len(args.snr_db) > 1)
+    )
 
 
 def run_default_diagnostic(config: dict | None = None) -> None:
@@ -4074,6 +4128,7 @@ def run_mr_sweep() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """CLI entrypoint for default diagnostics and optional sweeps."""
+    argv_list = sys.argv[1:] if argv is None else list(argv)
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostic-snr-sweep", action="store_true")
     parser.add_argument("--diagnostic-mr-sweep", action="store_true")
@@ -4087,21 +4142,36 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--full-size-diagnostic", action="store_true")
     parser.add_argument("--full-stage1-search", action="store_true")
-    parser.add_argument("--repeat-runs", type=int, default=1)
+    parser.add_argument("--repeat-runs", type=int, default=None)
+    parser.add_argument("--mc", type=int, default=None, help="Alias for --repeat-runs.")
     parser.add_argument(
         "--rerun-seeds",
         type=str,
         default=None,
         help="Comma-separated uint32 seeds; bypasses SeedSequence generation.",
     )
-    parser.add_argument("--repeat-jobs", type=int, default=1)
+    parser.add_argument("--repeat-jobs", type=int, default=None)
+    parser.add_argument("--jobs", type=int, default=None, help="Alias for --repeat-jobs.")
+    parser.add_argument(
+        "--process-workers",
+        type=int,
+        default=None,
+        help="Alias for --repeat-jobs.",
+    )
     parser.add_argument(
         "--repeat-out-dir",
         type=pathlib.Path,
         default=pathlib.Path("results/main_single_repeat"),
     )
     parser.add_argument("--seed", type=int, default=20260526)
-    parser.add_argument("--snr-db", type=float, default=None)
+    parser.add_argument(
+        "--snr-db",
+        default=None,
+        help=(
+            "Single SNR or comma-separated list. For negative lists, prefer "
+            "--snr-db=-30,-25,-20 to avoid argparse treating values as options."
+        ),
+    )
     parser.add_argument("--paper-k", type=int, default=None)
     parser.add_argument("--blas-threads", type=int, default=1)
     parser.add_argument(
@@ -4114,9 +4184,38 @@ def main(argv: list[str] | None = None) -> None:
         "--global-vp-validate-gpu-against-cpu",
         action="store_true",
     )
+    parser.add_argument("--memory-budget-gb", type=float, default=None)
+    parser.add_argument("--memory-per-worker-gb", type=float, default=None)
+    parser.add_argument(
+        "--trim-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
+
+    args.repeat_runs, args.repeat_runs_was_set = _resolve_alias_int(
+        parser,
+        canonical="repeat run count",
+        values=(("--repeat-runs", args.repeat_runs), ("--mc", args.mc)),
+        default=1,
+    )
+    args.repeat_jobs, args.repeat_jobs_was_set = _resolve_alias_int(
+        parser,
+        canonical="repeat job count",
+        values=(
+            ("--repeat-jobs", args.repeat_jobs),
+            ("--jobs", args.jobs),
+            ("--process-workers", args.process_workers),
+        ),
+        default=1,
+    )
+    args.snr_db = _parse_snr_db_values(args.snr_db)
+    args.repeat_out_dir_was_set = any(
+        token == "--repeat-out-dir" or token.startswith("--repeat-out-dir=")
+        for token in argv_list
+    )
 
     rerun_seeds = None
     if args.rerun_seeds is not None:
@@ -4130,23 +4229,25 @@ def main(argv: list[str] | None = None) -> None:
         if any(seed < 0 or seed > np.iinfo(np.uint32).max for seed in rerun_seeds):
             raise ValueError("--rerun-seeds values must be uint32 integers")
 
-    if args.repeat_runs > 1 or rerun_seeds is not None:
+    if _repeat_requested(args):
         if args.repeat_jobs <= 0:
             raise ValueError("--repeat-jobs must be positive")
         if args.blas_threads <= 0:
             raise ValueError("--blas-threads must be positive")
         if args.paper_k is not None and args.paper_k <= 0:
             raise ValueError("--paper-k must be positive")
-        trial_path = args.repeat_out_dir / "main_single_repeat_trials.csv"
-        if trial_path.exists() and not args.force_rerun:
-            raise FileExistsError(
-                f"{trial_path} already exists; use --force-rerun to overwrite"
-            )
-        overrides: dict[str, Any] = {}
-        if args.snr_db is not None:
-            overrides["SNR_dB"] = float(args.snr_db)
+        if args.memory_budget_gb is not None and args.memory_budget_gb <= 0:
+            raise ValueError("--memory-budget-gb must be positive")
+        if args.memory_per_worker_gb is not None and args.memory_per_worker_gb <= 0:
+            raise ValueError("--memory-per-worker-gb must be positive")
+
+        snr_values: list[float | None] = (
+            [None] if args.snr_db is None else [float(value) for value in args.snr_db]
+        )
+        multi_snr = len(snr_values) > 1
+        base_overrides: dict[str, Any] = {}
         if args.paper_k is not None:
-            overrides["K"] = int(args.paper_k)
+            base_overrides["K"] = int(args.paper_k)
         global_vp_overrides = {}
         if args.global_vp_backend is not None:
             global_vp_overrides["backend"] = args.global_vp_backend
@@ -4155,24 +4256,65 @@ def main(argv: list[str] | None = None) -> None:
         if args.global_vp_validate_gpu_against_cpu:
             global_vp_overrides["validate_gpu_against_cpu"] = True
         if global_vp_overrides:
-            overrides["global_vp"] = global_vp_overrides
-        result = run_repeated_main_single(
-            n_runs=len(rerun_seeds) if rerun_seeds is not None else int(args.repeat_runs),
-            jobs=int(args.repeat_jobs),
-            base_seed=int(args.seed),
-            out_dir=args.repeat_out_dir,
-            config_overrides=overrides,
-            blas_threads=int(args.blas_threads),
-            rerun_seeds=rerun_seeds,
-            outlier_threshold_m=float(args.outlier_threshold_m),
+            base_overrides["global_vp"] = global_vp_overrides
+        resource_options = {
+            "memory_budget_gb": args.memory_budget_gb,
+            "memory_per_worker_gb": args.memory_per_worker_gb,
+            "trim_memory": bool(args.trim_memory),
+        }
+        backend_label = (
+            args.global_vp_backend
+            if args.global_vp_backend is not None
+            else default_config().get("global_vp", {}).get("backend", "cpu")
         )
-        _print_repeated_summary(result)
+        gpu_device_label = (
+            int(args.global_vp_gpu_device)
+            if args.global_vp_gpu_device is not None
+            else default_config().get("global_vp", {}).get("gpu_device", 0)
+        )
+        for snr_db in snr_values:
+            out_dir = (
+                args.repeat_out_dir / _snr_out_dir_name(float(snr_db))
+                if multi_snr and snr_db is not None
+                else args.repeat_out_dir
+            )
+            trial_path = out_dir / "main_single_repeat_trials.csv"
+            if trial_path.exists() and not args.force_rerun:
+                raise FileExistsError(
+                    f"{trial_path} already exists; use --force-rerun to overwrite"
+                )
+            overrides = copy.deepcopy(base_overrides)
+            if snr_db is not None:
+                overrides["SNR_dB"] = float(snr_db)
+            print(
+                "repeat setup: "
+                f"snr_db={snr_db if snr_db is not None else 'default'} "
+                f"repeat_runs={len(rerun_seeds) if rerun_seeds is not None else int(args.repeat_runs)} "
+                f"repeat_jobs={int(args.repeat_jobs)} "
+                f"backend={backend_label} "
+                f"gpu_device={gpu_device_label} "
+                f"out_dir={out_dir}"
+            )
+            result = run_repeated_main_single(
+                n_runs=len(rerun_seeds) if rerun_seeds is not None else int(args.repeat_runs),
+                jobs=int(args.repeat_jobs),
+                base_seed=int(args.seed),
+                out_dir=out_dir,
+                config_overrides=overrides,
+                blas_threads=int(args.blas_threads),
+                rerun_seeds=rerun_seeds,
+                outlier_threshold_m=float(args.outlier_threshold_m),
+                resource_options=resource_options,
+            )
+            _print_repeated_summary(result)
     elif args.diagnostic_snr_sweep:
         run_snr_sweep()
     elif args.diagnostic_mr_sweep:
         run_mr_sweep()
     else:
         config = default_config()
+        if args.snr_db is not None:
+            config["SNR_dB"] = float(args.snr_db[0])
         if args.global_vp_backend is not None:
             config["global_vp"]["backend"] = args.global_vp_backend
         if args.global_vp_gpu_device is not None:
