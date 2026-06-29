@@ -119,9 +119,35 @@ def memory_snapshot_mb() -> float:
         return float("nan")
 
 
+def release_gpu_memory_pools() -> None:
+    """Return cached free blocks from CuPy memory pools to the device.
+
+    Guarded on ``"cupy" in sys.modules`` so CPU-only runs (where cupy is never
+    imported by the backend selector) incur zero cost and never trigger CUDA
+    context initialization. On GPU runs this stops each worker process from
+    holding its peak device footprint for the whole job. Only blocks that are
+    no longer referenced are released, so results are unchanged; the
+    re-allocation cost on the next trial is negligible relative to trial time.
+    """
+    cupy = sys.modules.get("cupy")
+    if cupy is None:
+        return
+    try:
+        cupy.get_default_memory_pool().free_all_blocks()
+        cupy.get_default_pinned_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+
+
 def trim_memory() -> None:
-    """Collect Python garbage and best-effort release free glibc arenas."""
+    """Collect Python garbage and best-effort release free glibc arenas.
+
+    When the CuPy GPU backend has been used in this process, also return cached
+    free blocks from the CuPy memory pools to the device. This is a no-op on
+    CPU-only runs, so CPU performance is unaffected.
+    """
     gc.collect()
+    release_gpu_memory_pools()
     if not sys.platform.startswith("linux"):
         return
     try:

@@ -40,6 +40,13 @@ if __package__ in (None, ""):
         trim_memory,
     )
     from src.experiments.progress_logger import ProgressLogger
+    from src.experiments.cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
@@ -59,6 +66,13 @@ else:
         trim_memory,
     )
     from .progress_logger import ProgressLogger
+    from .cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
 
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
@@ -744,22 +758,11 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run EVS-MIMO-RIS benchmark comparisons.")
-    parser.add_argument("--n-trials", type=int, default=50)
+    add_mc_args(parser, n_trials_default=50, paper_k_default=3, outlier_threshold_default=0.1)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
-    parser.add_argument("--paper-k", type=int, default=3)
-    parser.add_argument("--out-dir", type=pathlib.Path, default=pathlib.Path("results/benchmark_comparison"))
-    parser.add_argument("--jobs", type=int, default=10)
-    parser.add_argument("--process-workers", type=int, default=None)
-    parser.add_argument("--blas-threads", default="auto")
-    parser.add_argument("--memory-budget-gb", type=float, default=None)
-    parser.add_argument("--memory-per-worker-gb", type=float, default=None)
-    parser.add_argument("--respect-existing-blas-env", action="store_true")
-    parser.add_argument(
-        "--trim-memory",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    parser.add_argument("--profile-memory", action="store_true")
+    add_io_args(parser, default_out_dir="results/benchmark_comparison")
+    add_resource_args(parser, jobs_default=10, blas_threads_default="auto")
+    add_progress_args(parser)
     parser.add_argument(
         "--baseline-backend",
         choices=("cpu", "cupy", "auto"),
@@ -775,19 +778,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--cache-memory-budget-gb", type=float, default=None)
     parser.add_argument("--gpu-memory-fraction", type=float, default=None)
-    parser.add_argument("--force-rerun", action="store_true")
     parser.add_argument("--reuse-incompatible-cache", action="store_true")
-    parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--strict-ris-geometry", action="store_true")
     parser.add_argument("--grid-profile", choices=("coarse", "medium", "fine"), default="medium")
-    parser.add_argument("--seed", type=int, default=20260526)
-    parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
-    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
-    parser.add_argument("--quiet-progress", action="store_true")
     args = parser.parse_args(argv)
-    if str(args.blas_threads).lower() != "auto":
-        args.blas_threads = int(args.blas_threads)
+    normalize_blas_threads(args)
     return args
 
 

@@ -56,6 +56,13 @@ if __package__ in (None, ""):
         trim_memory,
     )
     from src.experiments.progress_logger import ProgressLogger
+    from src.experiments.cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
     from src.utils import scipy_is_available
 else:
     from ..channel_model import channel_components, evs_component_selection
@@ -86,6 +93,13 @@ else:
         trim_memory,
     )
     from .progress_logger import ProgressLogger
+    from .cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
     from ..utils import scipy_is_available
 
 
@@ -522,6 +536,15 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 
 def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
+        proposed_force_lower_raw = copy.deepcopy(
+            _variant_specs(figure)["adaptive_jones_vp_proposed"]
+        )
+        proposed_force_lower_raw.update(
+            {
+                "proposed_stage2_policy": "force_ris_only",
+                "rescue_accept_min_rel_improvement": 0.0,
+            }
+        )
         return {
             "free_jones_vp_gated_rescue": {
                 "enable_global_vp": True,
@@ -564,6 +587,7 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "proposed_stage2_policy": "geometry_gated_ris_only",
                 "rescue_accept_min_rel_improvement": 0.0,
             },
+            "adaptive_jones_vp_proposed_force_lower_raw": proposed_force_lower_raw,
         }
     return {}
 
@@ -2049,6 +2073,7 @@ def _to_float(value: Any) -> float:
 
 
 RESCUE_POLICY_VARIANTS = {
+    "adaptive_jones_vp_proposed_force_lower_raw",
     "free_jones_vp",
     "free_jones_vp_gated_rescue",
     "free_jones_vp_geometry_gated_rescue",
@@ -4484,17 +4509,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Expose opt-in Fig.1/Fig.2 diagnostic variants before filtering.",
     )
-    parser.add_argument("--n-trials", type=int, default=50)
+    add_mc_args(parser, n_trials_default=50, paper_k_default=DEFAULT_PAPER_K, outlier_threshold_default=0.1)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
-    parser.add_argument("--paper-k", type=int, default=DEFAULT_PAPER_K)
     parser.add_argument("--k-grid", default="1,2,3,4")
-    parser.add_argument("--out-dir", type=pathlib.Path, default=pathlib.Path("results/ablation_paper"))
-    parser.add_argument("--seed", type=int, default=20260526)
-    parser.add_argument("--outlier-threshold-m", type=float, default=0.1)
-    parser.add_argument("--force-rerun", action="store_true")
+    add_io_args(parser, default_out_dir="results/ablation_paper")
     parser.add_argument("--reuse-existing", action="store_true")
-    parser.add_argument("--jobs", type=int, default=10)
-    parser.add_argument("--process-workers", type=int, default=None)
+    add_resource_args(parser, jobs_default=10, blas_threads_default=DEFAULT_BLAS_THREADS)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument("--maxtasksperchild", type=int, default=1)
     parser.add_argument(
@@ -4512,7 +4532,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--blas-threads", default=DEFAULT_BLAS_THREADS)
     parser.add_argument(
         "--global-vp-backend",
         choices=("cpu", "cupy", "auto"),
@@ -4528,21 +4547,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--global-vp-gpu-keep-arrays-on-device",
         action="store_true",
     )
-    parser.add_argument("--memory-budget-gb", type=float, default=None)
-    parser.add_argument("--memory-per-worker-gb", type=float, default=None)
-    parser.add_argument("--respect-existing-blas-env", action="store_true")
-    parser.add_argument(
-        "--trim-memory",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     parser.add_argument("--csv-flush-every", type=int, default=10)
     parser.add_argument("--validate-grouped-equivalence", action="store_true")
-    parser.add_argument("--profile-memory", action="store_true")
-    parser.add_argument("--no-plots", action="store_true")
+    add_progress_args(parser)
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
-    parser.add_argument("--quiet-progress", action="store_true")
     parser.add_argument(
         "--debug-compare-main-single-proposed",
         action="store_true",
@@ -4562,8 +4570,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             )
         args.process_workers = int(args.max_workers)
     args.max_workers = args.process_workers
-    if str(args.blas_threads).lower() != "auto":
-        args.blas_threads = int(args.blas_threads)
+    normalize_blas_threads(args)
     args.k_grid_values = parse_k_grid(args.k_grid)
     args.variant_filter_values = parse_variant_filter(args.variant_filter)
     return args
@@ -4692,6 +4699,18 @@ def main(argv: list[str] | None = None) -> None:
     args.process_workers = int(args.resource_plan["process_workers"])
     args.max_workers = args.process_workers
     args.blas_threads = int(args.resource_plan["blas_threads"])
+    if (
+        str(getattr(args, "global_vp_backend", None)) in {"cupy", "auto"}
+        and int(args.process_workers) > 2
+    ):
+        print(
+            "WARNING: --global-vp-backend "
+            f"{args.global_vp_backend} with --process-workers "
+            f"{args.process_workers} runs that many CuPy processes on one GPU; "
+            "each keeps its own memory pool and can exhaust GPU memory. "
+            "Prefer --process-workers 1 or 2 for the GPU backend, or use "
+            "--global-vp-backend cpu with more workers."
+        )
     _apply_blas_thread_env(
         args.blas_threads,
         respect_existing_blas_env=bool(args.respect_existing_blas_env),

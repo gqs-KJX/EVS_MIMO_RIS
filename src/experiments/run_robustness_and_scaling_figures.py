@@ -39,6 +39,13 @@ if __package__ in (None, ""):
         trim_memory,
     )
     from src.experiments.progress_logger import ProgressLogger
+    from src.experiments.cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
     from src.experiments.run_benchmark_comparison import _apply_grid_profile
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -60,6 +67,13 @@ else:
         trim_memory,
     )
     from .progress_logger import ProgressLogger
+    from .cli_common import (
+        add_io_args,
+        add_mc_args,
+        add_progress_args,
+        add_resource_args,
+        normalize_blas_threads,
+    )
     from .run_benchmark_comparison import _apply_grid_profile
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -1033,7 +1047,7 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--figures", default=DEFAULT_FIGURES)
-    parser.add_argument("--n-trials", type=int, default=50)
+    add_mc_args(parser, n_trials_default=50, paper_k_default=None, outlier_threshold_default=None)
     parser.add_argument("--snr-db", type=float, default=0.0)
     parser.add_argument("--true-k", type=int, default=3)
     parser.add_argument("--calibration-std-grid", default="0,1,2,5,10,20")
@@ -1044,17 +1058,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--include-calibration-oracle-peb", action="store_true")
     parser.add_argument("--include-trueK-peb-reference", action="store_true")
-    parser.add_argument("--out-dir", type=pathlib.Path, default=pathlib.Path("results/robustness_and_scaling"))
-    parser.add_argument("--jobs", type=int, default=10)
-    parser.add_argument("--process-workers", type=int, default=None)
-    parser.add_argument("--blas-threads", default="auto")
-    parser.add_argument("--force-rerun", action="store_true")
-    parser.add_argument("--profile-memory", action="store_true")
+    add_io_args(parser, default_out_dir="results/robustness_and_scaling")
+    add_resource_args(
+        parser,
+        jobs_default=10,
+        blas_threads_default="auto",
+        include_respect_existing_blas_env=False,
+        include_trim_memory=False,
+    )
     parser.add_argument("--strict-ris-geometry", action="store_true")
-    parser.add_argument("--seed", type=int, default=20260526)
-    parser.add_argument("--no-plots", action="store_true")
-    parser.add_argument("--progress-log", type=pathlib.Path, default=None)
-    parser.add_argument("--quiet-progress", action="store_true")
+    add_progress_args(parser)
     args = parser.parse_args(argv)
     args.figures = parse_figures(args.figures)
     args.calibration_std_grid = parse_float_grid(args.calibration_std_grid)
@@ -1065,8 +1078,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     rue_config = default_config()
     set_number_of_ris_paths(rue_config, args.true_k)
     args.rue_grid = parse_float_grid(args.rue_grid) if args.rue_grid.strip() else default_rue_grid(rue_config)
-    if str(args.blas_threads).lower() != "auto":
-        args.blas_threads = int(args.blas_threads)
+    normalize_blas_threads(args)
     return args
 
 
@@ -1092,7 +1104,12 @@ def main(argv: list[str] | None = None) -> None:
         for figure in args.figures
     )
     args.resource_plan = resolve_hybrid_resources(
-        args.jobs, args.process_workers, args.blas_threads, max(all_task_count, 1)
+        args.jobs,
+        args.process_workers,
+        args.blas_threads,
+        max(all_task_count, 1),
+        memory_budget_gb=args.memory_budget_gb,
+        memory_per_worker_gb=args.memory_per_worker_gb,
     )
     args.process_workers = args.resource_plan["process_workers"]
     args.blas_threads = args.resource_plan["blas_threads"]
