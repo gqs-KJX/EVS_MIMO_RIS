@@ -1065,7 +1065,6 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                         c_mat = c_candidate
                         beta_z = beta_candidate
                         current_sse = sse_after_a
-                        z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
                         gamma[k] = evs_proj["gamma"]
                         eta_pol[k] = evs_proj["eta"]
                     evs_projection_details.append(

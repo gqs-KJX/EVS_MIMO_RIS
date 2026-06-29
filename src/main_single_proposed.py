@@ -1605,6 +1605,11 @@ def _extract_branch_candidate_diagnostics(
         f"{prefix}_candidate_position_error_m": float("nan"),
         f"{prefix}_candidate_y_nmse": float("nan"),
         f"{prefix}_candidate_raw_objective": float("nan"),
+        f"{prefix}_candidate_lambda_jones_per_path": None,
+        f"{prefix}_candidate_snr_eff_per_path": None,
+        f"{prefix}_candidate_jones_leakage_per_path": None,
+        f"{prefix}_candidate_data_only_scaled_efim_lambda_min": float("nan"),
+        f"{prefix}_candidate_data_only_scaled_efim_condition_number": float("nan"),
     }
     if result is None:
         return diagnostics
@@ -1642,6 +1647,70 @@ def _extract_branch_candidate_diagnostics(
     diagnostics[f"{prefix}_candidate_position_error_m"] = position_error
     diagnostics[f"{prefix}_candidate_y_nmse"] = y_nmse
     diagnostics[f"{prefix}_candidate_raw_objective"] = raw_objective
+    diagnostics[f"{prefix}_candidate_lambda_jones_per_path"] = final.get(
+        "lambda_jones_per_path"
+    )
+    diagnostics[f"{prefix}_candidate_snr_eff_per_path"] = final.get(
+        "snr_eff_per_path"
+    )
+    diagnostics[f"{prefix}_candidate_jones_leakage_per_path"] = final.get(
+        "jones_leakage_per_path"
+    )
+    diagnostics.update(_candidate_data_only_efim_diagnostics(prefix, result))
+    return diagnostics
+
+
+def _candidate_data_only_efim_diagnostics(prefix: str, result: dict) -> dict:
+    """Return optional candidate EFIM diagnostics, best-effort only."""
+    lambda_key = f"{prefix}_candidate_data_only_scaled_efim_lambda_min"
+    cond_key = f"{prefix}_candidate_data_only_scaled_efim_condition_number"
+    diagnostics = {
+        lambda_key: float("nan"),
+        cond_key: float("nan"),
+    }
+    for source in (
+        result.get("direct_vp_quality", {}),
+        result.get("final", {}),
+        result,
+    ):
+        if not isinstance(source, dict):
+            continue
+        lambda_min = source.get("data_only_scaled_efim_lambda_min")
+        condition = source.get("data_only_scaled_efim_condition_number")
+        try:
+            lambda_float = float(lambda_min)
+            condition_float = float(condition)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(lambda_float) and np.isfinite(condition_float):
+            diagnostics[lambda_key] = lambda_float
+            diagnostics[cond_key] = condition_float
+            return diagnostics
+
+    try:
+        final = result["final"]
+        scene = result["scene"]
+        config = result.get("stage1_config", {})
+        sigma2 = result.get("noise_variance", _final_raw_objective(final))
+        efim_diag = data_only_efim_diagnostic(
+            result["Y_noisy"],
+            final["p_u"],
+            final["delta_t"],
+            result["estimate_initial"],
+            scene,
+            config,
+            sigma2=float(sigma2),
+        )
+        diagnostics[lambda_key] = float(
+            efim_diag.get("data_only_scaled_efim_lambda_min", float("nan"))
+        )
+        diagnostics[cond_key] = float(
+            efim_diag.get(
+                "data_only_scaled_efim_condition_number", float("nan")
+            )
+        )
+    except Exception:
+        pass
     return diagnostics
 
 
@@ -2005,8 +2074,26 @@ def run_from_existing_stage1(
             direct_result, stage1, data["scene"], config
         )
     reliability = dict(reliability)
-    reliability["legacy_stage1_decision"] = reliability.get("decision", "unknown")
-    reliability["decision"] = str(direct_vp_quality.get("reliability_decision", "direct_vp"))
+    legacy_stage1_decision = str(reliability.get("decision", "unknown"))
+    gof_reliability_decision = str(
+        direct_vp_quality.get("reliability_decision", "direct_vp")
+    )
+    geometry_trigger_names = {
+        "low_assignment_margin",
+        "poor_clock_consistency",
+        "large_ris_residual",
+    }
+    stage1_geometry_trigger_reasons = [
+        str(reason)
+        for reason in reliability.get("trigger_reasons", [])
+        if str(reason) in geometry_trigger_names
+    ]
+    stage1_geometry_trigger = bool(stage1_geometry_trigger_reasons)
+    reliability["legacy_stage1_decision"] = legacy_stage1_decision
+    reliability["gof_reliability_decision"] = gof_reliability_decision
+    reliability["stage1_geometry_trigger"] = stage1_geometry_trigger
+    reliability["stage1_geometry_trigger_reasons"] = stage1_geometry_trigger_reasons
+    reliability["decision"] = gof_reliability_decision
     reliability.update(
         {
             "gof_stat": direct_vp_quality.get("gof_stat"),
@@ -2050,6 +2137,7 @@ def run_from_existing_stage1(
         "reliability_gated",
         "reliability_gated_ris_only",
         "force_ris_only",
+        "geometry_gated_ris_only",
     }
     if stage2_policy not in valid_stage2_policies:
         raise ValueError(f"unknown proposed_stage2_policy {stage2_policy!r}")
@@ -2058,6 +2146,13 @@ def run_from_existing_stage1(
         reliability["proposed_stage2_policy"] = stage2_policy
         reliability["stage2_policy_forced"] = True
         direct_vp_override = False
+    elif stage2_policy == "geometry_gated_ris_only":
+        if gof_reliability_decision == "jnpp_then_vp" or stage1_geometry_trigger:
+            reliability["decision"] = "jnpp_then_vp"
+        else:
+            reliability["decision"] = gof_reliability_decision
+        reliability["proposed_stage2_policy"] = stage2_policy
+        reliability["stage2_policy_forced"] = False
     else:
         reliability["proposed_stage2_policy"] = stage2_policy
         reliability["stage2_policy_forced"] = False

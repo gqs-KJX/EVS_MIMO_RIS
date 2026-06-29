@@ -26,13 +26,13 @@ def elev_az_from_unit_vector(unit_vector: np.ndarray) -> tuple[float, float]:
 def make_ris_grid(mx: int, my: int, dx: float, dy: float) -> np.ndarray:
     """Return RIS element coordinates, shape (M_R, 3), centered at the panel."""
     assert mx >= 2 and my >= 2, "RIS grid must have at least 2 elements per axis"
-    coords = []
-    for ix in range(mx):
-        for iy in range(my):
-            x = (ix - (mx - 1) / 2.0) * dx
-            y = (iy - (my - 1) / 2.0) * dy
-            coords.append([x, y, 0.0])
-    return np.asarray(coords, dtype=float)
+    x_axis = (np.arange(mx) - (mx - 1) / 2.0) * dx
+    y_axis = (np.arange(my) - (my - 1) / 2.0) * dy
+    grid_x, grid_y = np.meshgrid(x_axis, y_axis, indexing="ij")
+    coords = np.zeros((mx * my, 3), dtype=float)
+    coords[:, 0] = grid_x.reshape(-1)
+    coords[:, 1] = grid_y.reshape(-1)
+    return coords
 
 
 def local_geometry_from_position(

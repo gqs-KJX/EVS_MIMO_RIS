@@ -14,12 +14,10 @@ def hankelize_frequency(y: np.ndarray, p_dim: int) -> np.ndarray:
     assert y.ndim == 3, "Y must have shape I x N x T"
     i_dim, n_dim, t_dim = y.shape
     assert 1 <= p_dim <= n_dim, "P must satisfy 1 <= P <= N"
-    l_dim = n_dim - p_dim + 1
-    z = np.empty((i_dim, p_dim, l_dim, t_dim), dtype=y.dtype)
-    for p in range(p_dim):
-        for ell in range(l_dim):
-            z[:, p, ell, :] = y[:, p + ell, :]
-    return z
+    # sliding_window_view over the frequency axis yields W[i, ell, t, p] = Y[i, p + ell, t]
+    # as a zero-copy view; transpose to I x P x L x T and copy once (writable, C-contiguous).
+    windows = np.lib.stride_tricks.sliding_window_view(y, p_dim, axis=1)
+    return np.transpose(windows, (0, 3, 1, 2)).copy()
 
 
 def dehankelize_frequency(z: np.ndarray, n_dim: int) -> np.ndarray:

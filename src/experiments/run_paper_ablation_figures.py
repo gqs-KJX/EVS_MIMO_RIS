@@ -233,6 +233,20 @@ FIELDNAMES = [
     "rescue_candidate_available",
     "rescue_accept_decision",
     "rescue_reject_reason",
+    "direct_candidate_lambda_jones_per_path",
+    "direct_candidate_snr_eff_per_path",
+    "direct_candidate_jones_leakage_per_path",
+    "rescue_candidate_lambda_jones_per_path",
+    "rescue_candidate_snr_eff_per_path",
+    "rescue_candidate_jones_leakage_per_path",
+    "direct_candidate_data_only_scaled_efim_lambda_min",
+    "direct_candidate_data_only_scaled_efim_condition_number",
+    "rescue_candidate_data_only_scaled_efim_lambda_min",
+    "rescue_candidate_data_only_scaled_efim_condition_number",
+    "legacy_stage1_decision",
+    "gof_reliability_decision",
+    "stage1_geometry_trigger",
+    "stage1_geometry_trigger_reasons",
 ]
 
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -516,6 +530,14 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "stage2_adaptive": True,
                 "stage2_rescue_type": "ris_only",
             },
+            "free_jones_vp_geometry_gated_rescue": {
+                "enable_global_vp": True,
+                "global_vp": {"mode": "jones_free"},
+                "_allow_stage2": True,
+                "stage2_adaptive": True,
+                "stage2_rescue_type": "ris_only",
+                "proposed_stage2_policy": "geometry_gated_ris_only",
+            },
             "free_jones_vp_force_rescue": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
@@ -523,6 +545,24 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "stage2_adaptive": True,
                 "stage2_rescue_type": "ris_only",
                 "proposed_stage2_policy": "force_ris_only",
+            },
+            "free_jones_vp_force_rescue_lower_raw": {
+                "enable_global_vp": True,
+                "global_vp": {"mode": "jones_free"},
+                "_allow_stage2": True,
+                "stage2_adaptive": True,
+                "stage2_rescue_type": "ris_only",
+                "proposed_stage2_policy": "force_ris_only",
+                "rescue_accept_min_rel_improvement": 0.0,
+            },
+            "free_jones_vp_geometry_gated_lower_raw": {
+                "enable_global_vp": True,
+                "global_vp": {"mode": "jones_free"},
+                "_allow_stage2": True,
+                "stage2_adaptive": True,
+                "stage2_rescue_type": "ris_only",
+                "proposed_stage2_policy": "geometry_gated_ris_only",
+                "rescue_accept_min_rel_improvement": 0.0,
             },
         }
     return {}
@@ -705,6 +745,10 @@ def _empty_row() -> dict[str, Any]:
         "rss_mb_before",
         "rss_mb_after",
         "rss_mb_delta",
+        "direct_candidate_data_only_scaled_efim_lambda_min",
+        "direct_candidate_data_only_scaled_efim_condition_number",
+        "rescue_candidate_data_only_scaled_efim_lambda_min",
+        "rescue_candidate_data_only_scaled_efim_condition_number",
     ]
     for field in numeric_fields:
         row[field] = float("nan")
@@ -1491,6 +1535,46 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
                 result.get("rescue_accept_decision", "")
             ),
             "rescue_reject_reason": str(result.get("rescue_reject_reason", "")),
+            "direct_candidate_lambda_jones_per_path": _vector_string(
+                result.get("direct_candidate_lambda_jones_per_path")
+            ),
+            "direct_candidate_snr_eff_per_path": _vector_string(
+                result.get("direct_candidate_snr_eff_per_path")
+            ),
+            "direct_candidate_jones_leakage_per_path": _vector_string(
+                result.get("direct_candidate_jones_leakage_per_path")
+            ),
+            "rescue_candidate_lambda_jones_per_path": _vector_string(
+                result.get("rescue_candidate_lambda_jones_per_path")
+            ),
+            "rescue_candidate_snr_eff_per_path": _vector_string(
+                result.get("rescue_candidate_snr_eff_per_path")
+            ),
+            "rescue_candidate_jones_leakage_per_path": _vector_string(
+                result.get("rescue_candidate_jones_leakage_per_path")
+            ),
+            "direct_candidate_data_only_scaled_efim_lambda_min": _finite_float(
+                result.get("direct_candidate_data_only_scaled_efim_lambda_min")
+            ),
+            "direct_candidate_data_only_scaled_efim_condition_number": _finite_float(
+                result.get("direct_candidate_data_only_scaled_efim_condition_number")
+            ),
+            "rescue_candidate_data_only_scaled_efim_lambda_min": _finite_float(
+                result.get("rescue_candidate_data_only_scaled_efim_lambda_min")
+            ),
+            "rescue_candidate_data_only_scaled_efim_condition_number": _finite_float(
+                result.get("rescue_candidate_data_only_scaled_efim_condition_number")
+            ),
+            "legacy_stage1_decision": reliability.get("legacy_stage1_decision", ""),
+            "gof_reliability_decision": reliability.get(
+                "gof_reliability_decision", ""
+            ),
+            "stage1_geometry_trigger": reliability.get(
+                "stage1_geometry_trigger", ""
+            ),
+            "stage1_geometry_trigger_reasons": _list_string(
+                reliability.get("stage1_geometry_trigger_reasons", [])
+            ),
         }
     )
     return metrics
@@ -1967,7 +2051,10 @@ def _to_float(value: Any) -> float:
 RESCUE_POLICY_VARIANTS = {
     "free_jones_vp",
     "free_jones_vp_gated_rescue",
+    "free_jones_vp_geometry_gated_rescue",
     "free_jones_vp_force_rescue",
+    "free_jones_vp_force_rescue_lower_raw",
+    "free_jones_vp_geometry_gated_lower_raw",
 }
 
 RESCUE_POLICY_PAIRED_FIELDS = [
@@ -1999,6 +2086,20 @@ RESCUE_POLICY_PAIRED_FIELDS = [
     "rescue_candidate_available",
     "rescue_accept_decision",
     "rescue_reject_reason",
+    "direct_candidate_lambda_jones_per_path",
+    "direct_candidate_snr_eff_per_path",
+    "direct_candidate_jones_leakage_per_path",
+    "rescue_candidate_lambda_jones_per_path",
+    "rescue_candidate_snr_eff_per_path",
+    "rescue_candidate_jones_leakage_per_path",
+    "direct_candidate_data_only_scaled_efim_lambda_min",
+    "direct_candidate_data_only_scaled_efim_condition_number",
+    "rescue_candidate_data_only_scaled_efim_lambda_min",
+    "rescue_candidate_data_only_scaled_efim_condition_number",
+    "legacy_stage1_decision",
+    "gof_reliability_decision",
+    "stage1_geometry_trigger",
+    "stage1_geometry_trigger_reasons",
 ]
 
 RESCUE_POLICY_SUMMARY_FIELDS = [
@@ -2186,6 +2287,42 @@ def _write_rescue_policy_ablation_csvs(
                 ),
                 "rescue_accept_decision": row.get("rescue_accept_decision"),
                 "rescue_reject_reason": row.get("rescue_reject_reason"),
+                "direct_candidate_lambda_jones_per_path": row.get(
+                    "direct_candidate_lambda_jones_per_path"
+                ),
+                "direct_candidate_snr_eff_per_path": row.get(
+                    "direct_candidate_snr_eff_per_path"
+                ),
+                "direct_candidate_jones_leakage_per_path": row.get(
+                    "direct_candidate_jones_leakage_per_path"
+                ),
+                "rescue_candidate_lambda_jones_per_path": row.get(
+                    "rescue_candidate_lambda_jones_per_path"
+                ),
+                "rescue_candidate_snr_eff_per_path": row.get(
+                    "rescue_candidate_snr_eff_per_path"
+                ),
+                "rescue_candidate_jones_leakage_per_path": row.get(
+                    "rescue_candidate_jones_leakage_per_path"
+                ),
+                "direct_candidate_data_only_scaled_efim_lambda_min": row.get(
+                    "direct_candidate_data_only_scaled_efim_lambda_min"
+                ),
+                "direct_candidate_data_only_scaled_efim_condition_number": row.get(
+                    "direct_candidate_data_only_scaled_efim_condition_number"
+                ),
+                "rescue_candidate_data_only_scaled_efim_lambda_min": row.get(
+                    "rescue_candidate_data_only_scaled_efim_lambda_min"
+                ),
+                "rescue_candidate_data_only_scaled_efim_condition_number": row.get(
+                    "rescue_candidate_data_only_scaled_efim_condition_number"
+                ),
+                "legacy_stage1_decision": row.get("legacy_stage1_decision"),
+                "gof_reliability_decision": row.get("gof_reliability_decision"),
+                "stage1_geometry_trigger": row.get("stage1_geometry_trigger"),
+                "stage1_geometry_trigger_reasons": row.get(
+                    "stage1_geometry_trigger_reasons"
+                ),
             }
         )
 
