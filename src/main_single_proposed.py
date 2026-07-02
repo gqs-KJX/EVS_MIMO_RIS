@@ -145,7 +145,10 @@ if __package__ in (None, ""):
         local_ris_search_config,
         scaled_residual,
     )
-    from src.robust_jnpp import robust_jnpp_basin_recovery
+    from src.robust_jnpp import (
+        robust_jnpp_basin_recovery,
+        robust_jnpp_geometry_consistency_score,
+    )
     from src.global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
@@ -186,7 +189,10 @@ else:
         local_ris_search_config,
         scaled_residual,
     )
-    from .robust_jnpp import robust_jnpp_basin_recovery
+    from .robust_jnpp import (
+        robust_jnpp_basin_recovery,
+        robust_jnpp_geometry_consistency_score,
+    )
     from .global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from .tensor_utils import hankelize_frequency
     from .utils import scipy_is_available
@@ -449,6 +455,15 @@ def _apply_main_single_defaults(config: dict) -> dict:
         config["ris_search"] = ris_search
     config.setdefault("stage2_adaptive", True)
     config.setdefault("stage2_rescue_type", "ris_only")
+    config.setdefault("proposed_stage2_policy", "ngc_certified_ris_only")
+    config.setdefault("rescue_accept_min_rel_improvement", 0.0)
+    config.setdefault("rescue_accept_min_abs_improvement", 1.0e-8)
+    config.setdefault("ngc_lambda_ris", 1.0)
+    config.setdefault("ngc_clock_green_quantile", 0.99)
+    config.setdefault("ngc_clock_red_quantile", 0.999)
+    config.setdefault("ngc_clock_sigma_floor_ns", 0.5)
+    config.setdefault("ngc_ris_green_threshold", 0.3)
+    config.setdefault("ngc_ris_red_threshold", 0.7)
     config["stage2_mode"] = "none"
     config.setdefault("reliability_assignment_good", 1.0)
     config.setdefault("reliability_assignment_low", 0.3)
@@ -753,7 +768,33 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     print("proposed_ris_only_stage2_flags = EVS=False, delay=False, RIS=True")
     print(f"stage2_guarded = {config.get('stage2_guarded', False)}")
     print(f"configured_stage2_mode = {config.get('stage2_mode', 'none')}")
-    print("proposed_stage2_policy = reliability_gated_ris_only")
+    print(
+        "proposed_stage2_policy = "
+        f"{config.get('proposed_stage2_policy', 'ngc_certified_ris_only')}"
+    )
+    print(f"ngc_lambda_ris = {config.get('ngc_lambda_ris', 1.0)}")
+    print(
+        "ngc_clock_green_quantile = "
+        f"{config.get('ngc_clock_green_quantile', 0.99)}"
+    )
+    print(
+        "ngc_clock_red_quantile = "
+        f"{config.get('ngc_clock_red_quantile', 0.999)}"
+    )
+    print(
+        "rescue_accept_min_rel_improvement = "
+        f"{config.get('rescue_accept_min_rel_improvement', 0.0)}"
+    )
+    print(
+        "rescue_accept_min_abs_improvement = "
+        f"{config.get('rescue_accept_min_abs_improvement', 1.0e-8)}"
+    )
+    if str(config.get("proposed_stage2_policy", "")).lower() == "ngc_certified_ris_only":
+        print(
+            "ngc_clock_sigma_floor_ns = "
+            f"{config.get('ngc_clock_sigma_floor_ns', 0.5)}"
+        )
+        print("ngc_ris_availability_mode = robust_jnpp_geometry_score_if_C_available")
     print(f"run_full_legacy_comparison = {config.get('run_full_legacy_comparison', False)}")
     print(f"num_structured_iters = {config['num_structured_iters']}")
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
@@ -1784,6 +1825,260 @@ def _chi_square_gate_threshold(p_fa: float, dof: int) -> float:
     return float(dof + np.sqrt(2.0 * max(dof, 1)) * z)
 
 
+def _chi_square_quantile(q: float, dof: int) -> float:
+    """Return chi-square q quantile for NGC clock certification."""
+    dof = int(dof)
+    if dof <= 0:
+        return 0.0
+    q = float(np.clip(q, 0.0, 1.0))
+    if scipy_is_available():
+        from scipy.stats import chi2
+
+        return float(chi2.ppf(q, dof))
+    z = _normal_quantile(q)
+    return float(max(0.0, dof + np.sqrt(2.0 * dof) * z))
+
+
+def _ngc_tau_crb_from_efim(
+    branch_result: dict | None,
+    scene: dict,
+    config: dict,
+) -> tuple[np.ndarray | None, str]:
+    if branch_result is None or "final" not in branch_result:
+        return None, ""
+    final = branch_result["final"]
+    if "p_u" not in final:
+        return None, ""
+    efim_diag = {}
+    for source in (
+        branch_result.get("direct_vp_quality", {}),
+        branch_result.get("data_only_efim_diagnostic", {}),
+        final,
+        branch_result,
+    ):
+        if isinstance(source, dict) and "data_only_efim" in source:
+            efim_diag = source
+            break
+    if not efim_diag:
+        try:
+            sigma2 = branch_result.get("noise_variance", _final_raw_objective(final))
+            efim_diag = data_only_efim_diagnostic(
+                branch_result["Y_noisy"],
+                final["p_u"],
+                final["delta_t"],
+                branch_result["estimate_initial"],
+                scene,
+                config,
+                sigma2=float(sigma2),
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            np.linalg.LinAlgError,
+            FloatingPointError,
+        ):
+            return None, ""
+    try:
+        j_tau = np.asarray(efim_diag["data_only_efim"], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None, ""
+    if j_tau.shape != (4, 4) or not np.all(np.isfinite(j_tau)):
+        return None, ""
+    cov = np.linalg.pinv((j_tau + j_tau.T) * 0.5)
+    p_u = np.asarray(final["p_u"], dtype=float).reshape(3)
+    sigmas = []
+    for k in range(int(scene["K"])):
+        diff = p_u - np.asarray(scene["ris_centers"][k], dtype=float)
+        range_m = float(np.linalg.norm(diff))
+        if not np.isfinite(range_m) or range_m <= 0.0:
+            return None, ""
+        grad = np.empty(4, dtype=float)
+        grad[:3] = diff / (range_m * float(scene["c0"]))
+        grad[3] = 1.0
+        variance = float(grad @ cov @ grad)
+        if not np.isfinite(variance) or variance < 0.0:
+            return None, ""
+        sigmas.append(float(np.sqrt(max(variance, 0.0))))
+    arr = np.asarray(sigmas, dtype=float)
+    if arr.size != int(scene["K"]) or not np.all(np.isfinite(arr)):
+        return None, ""
+    return arr, "data_only_efim_tau_crb"
+
+
+def _ngc_clock_sigmas_s(
+    stage1_estimate: dict,
+    k_paths: int,
+    config: dict,
+    branch_result: dict | None = None,
+    scene: dict | None = None,
+) -> tuple[np.ndarray, str]:
+    floor_s = float(config.get("ngc_clock_sigma_floor_ns", 0.5)) * 1.0e-9
+    floor_s = max(floor_s, 1.0e-15)
+    for key in (
+        "sigma_tau_k",
+        "tau_sigma_k",
+        "delay_sigma_k",
+        "stage1_tau_sigma_s",
+        "stage1_delay_sigma_s",
+    ):
+        value = stage1_estimate.get(key)
+        if value is None:
+            continue
+        arr = np.asarray(value, dtype=float).reshape(-1)
+        if arr.size == k_paths and np.all(np.isfinite(arr)):
+            return np.maximum(arr, floor_s), key
+    if scene is not None:
+        sigmas, source = _ngc_tau_crb_from_efim(branch_result, scene, config)
+        if sigmas is not None:
+            sigmas = np.maximum(sigmas, floor_s)
+            stage1_estimate["sigma_tau_k"] = sigmas.copy()
+            stage1_estimate["sigma_tau_k_source"] = source
+            return sigmas, source
+    return np.full(k_paths, floor_s, dtype=float), "fallback_floor"
+
+
+def _ngc_optional_threshold(config: dict, key: str) -> float:
+    value = config.get(key)
+    if value is None or value == "":
+        return float("nan")
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return out if np.isfinite(out) else float("nan")
+
+
+def _ngc_certificate(
+    prefix: str,
+    branch_result: dict | None,
+    stage1_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    k_paths = int(scene["K"])
+    clock_dof = k_paths - 1
+    q_green = _chi_square_quantile(
+        float(config.get("ngc_clock_green_quantile", 0.99)), clock_dof
+    )
+    q_red = _chi_square_quantile(
+        float(config.get("ngc_clock_red_quantile", 0.999)), clock_dof
+    )
+    base = {
+        f"ngc_{prefix}_clock_score": float("nan"),
+        f"ngc_{prefix}_clock_score_norm": float("nan"),
+        f"ngc_{prefix}_clock_dof": int(clock_dof),
+        f"ngc_{prefix}_clock_sigma_source": "",
+        f"ngc_{prefix}_clock_std_ns": float("nan"),
+        f"ngc_{prefix}_ris_score": float("nan"),
+        f"ngc_{prefix}_ris_score_norm": float("nan"),
+        f"ngc_{prefix}_ris_available": False,
+        f"ngc_{prefix}_total_score": float("nan"),
+        f"ngc_{prefix}_cert_status": "",
+        f"ngc_{prefix}_cert_reason": "candidate_unavailable",
+        "ngc_threshold_clock_green": float(q_green),
+        "ngc_threshold_clock_red": float(q_red),
+    }
+    if branch_result is None or "final" not in branch_result:
+        return base
+    final = branch_result["final"]
+    if "p_u" not in final:
+        return base
+
+    p_u = np.asarray(final["p_u"], dtype=float).reshape(3)
+    tau_stage1, _, _, _ = _stage1_clock_panel_order(stage1_estimate, scene)
+    sigmas_s, sigma_source = _ngc_clock_sigmas_s(
+        stage1_estimate,
+        k_paths,
+        config,
+        branch_result=branch_result,
+        scene=scene,
+    )
+    weights = 1.0 / np.maximum(sigmas_s**2, 1.0e-30)
+    delta_t_hat = np.empty(k_paths, dtype=float)
+    for k in range(k_paths):
+        d_ur = float(np.linalg.norm(p_u - np.asarray(scene["ris_centers"][k], dtype=float)))
+        delta_t_hat[k] = float(tau_stage1[k] - (d_ur + scene["d_RB"][k]) / scene["c0"])
+    weight_sum = float(np.sum(weights))
+    if weight_sum > 0.0 and np.all(np.isfinite(delta_t_hat)):
+        delta_bar = float(np.sum(weights * delta_t_hat) / weight_sum)
+        residual = delta_t_hat - delta_bar
+        clock_score = float(np.sum(weights * residual**2))
+        clock_std_ns = float(np.std(delta_t_hat) * 1.0e9)
+    else:
+        clock_score = float("nan")
+        clock_std_ns = float("nan")
+
+    ris_diag = robust_jnpp_geometry_consistency_score(
+        p_u, stage1_estimate, scene, config
+    )
+    ris_available = bool(ris_diag.get("available", False))
+    ris_score = float(ris_diag.get("score", float("nan")))
+    ris_score_norm = float(ris_diag.get("score_norm", float("nan")))
+    lambda_ris = float(config.get("ngc_lambda_ris", 1.0))
+    total_score = clock_score
+    reasons = []
+    if ris_available and np.isfinite(ris_score_norm):
+        total_score = float(total_score + lambda_ris * ris_score_norm)
+    else:
+        reasons.append("clock_only_no_ris_score")
+
+    ris_green_threshold = _ngc_optional_threshold(config, "ngc_ris_green_threshold")
+    ris_red_threshold = _ngc_optional_threshold(config, "ngc_ris_red_threshold")
+    clock_green = bool(np.isfinite(clock_score) and clock_score <= q_green)
+    clock_red = bool(np.isfinite(clock_score) and clock_score >= q_red)
+    if not np.isfinite(clock_score):
+        status = "gray"
+        reasons.append("clock_score_unavailable")
+    else:
+        ris_green = True
+        ris_red = False
+        if ris_available and np.isfinite(ris_score_norm):
+            if np.isfinite(ris_green_threshold):
+                ris_green = bool(ris_score_norm <= ris_green_threshold)
+            else:
+                reasons.append("ris_green_threshold_unset")
+            if np.isfinite(ris_red_threshold):
+                ris_red = bool(ris_score_norm > ris_red_threshold)
+            else:
+                reasons.append("ris_red_threshold_unset")
+        if clock_red or ris_red:
+            status = "red"
+        elif clock_green and ris_green:
+            status = "green"
+        else:
+            status = "gray"
+    if not reasons:
+        reasons.append(f"clock_{status}")
+    base.update(
+        {
+            f"ngc_{prefix}_clock_score": clock_score,
+            f"ngc_{prefix}_clock_score_norm": clock_score,
+            f"ngc_{prefix}_clock_dof": int(clock_dof),
+            f"ngc_{prefix}_clock_sigma_source": sigma_source,
+            f"ngc_{prefix}_clock_std_ns": clock_std_ns,
+            f"ngc_{prefix}_ris_score": ris_score,
+            f"ngc_{prefix}_ris_score_norm": ris_score_norm,
+            f"ngc_{prefix}_ris_available": ris_available,
+            f"ngc_{prefix}_total_score": total_score,
+            f"ngc_{prefix}_cert_status": status,
+            f"ngc_{prefix}_cert_reason": ",".join(reasons),
+        }
+    )
+    return base
+
+
+def _ngc_base_diagnostics(config: dict) -> dict:
+    return {
+        "ngc_policy_active": False,
+        "ngc_lambda_ris": float(config.get("ngc_lambda_ris", 1.0)),
+        "ngc_rescue_requested": False,
+        "ngc_rescue_request_reason": "",
+        "ngc_selected_by": "",
+        "ngc_final_unreliable": False,
+    }
+
+
 def evaluate_direct_vp_quality(
     direct_result: dict,
     stage1_result: dict,
@@ -2010,6 +2305,100 @@ def select_proposed_branch(
     return selected, bool(no_gain)
 
 
+def select_ngc_branch(
+    direct_result: dict,
+    rescue_result: dict | None,
+    reliability: dict,
+    ngc_diagnostics: dict,
+) -> tuple[dict, bool]:
+    """Select direct/rescue candidate using the NGC certification policy."""
+    direct_status = str(ngc_diagnostics.get("ngc_direct_cert_status", ""))
+    rescue_status = str(ngc_diagnostics.get("ngc_rescue_cert_status", ""))
+    direct_green = direct_status == "green"
+    rescue_green = rescue_status == "green"
+    direct_raw = _final_raw_objective(direct_result.get("final", {}))
+    rescue_raw = (
+        _final_raw_objective(rescue_result.get("final", {}))
+        if rescue_result is not None
+        else float("nan")
+    )
+    branch_score_margin = (
+        float(rescue_raw - direct_raw)
+        if np.isfinite(direct_raw) and np.isfinite(rescue_raw)
+        else float("nan")
+    )
+    final_unreliable = False
+
+    if rescue_result is None:
+        selected = dict(direct_result)
+        selected_branch = "direct_vp"
+        selected_by = str(
+            ngc_diagnostics.get(
+                "ngc_selected_by",
+                "rescue_unavailable_direct_fallback",
+            )
+        )
+        if not selected_by:
+            selected_by = "rescue_unavailable_direct_fallback"
+        final_unreliable = direct_status != "green"
+        no_gain = False
+    elif direct_green and not rescue_green:
+        selected = dict(direct_result)
+        selected_branch = "direct_vp_rollback"
+        selected_by = "ngc_certified_candidate"
+        no_gain = True
+    elif rescue_green and not direct_green:
+        selected = dict(rescue_result)
+        selected_branch = str(rescue_result.get("branch_name", "ris_only_stage2_then_vp"))
+        selected_by = "ngc_certified_candidate"
+        no_gain = False
+    elif direct_green and rescue_green:
+        if np.isfinite(rescue_raw) and (
+            not np.isfinite(direct_raw) or rescue_raw < direct_raw
+        ):
+            selected = dict(rescue_result)
+            selected_branch = str(rescue_result.get("branch_name", "ris_only_stage2_then_vp"))
+            no_gain = False
+        else:
+            selected = dict(direct_result)
+            selected_branch = "direct_vp_rollback"
+            no_gain = True
+        selected_by = "both_green_lower_raw"
+    else:
+        final_unreliable = True
+        if np.isfinite(rescue_raw) and (
+            not np.isfinite(direct_raw) or rescue_raw < direct_raw
+        ):
+            selected = dict(rescue_result)
+            selected_branch = str(rescue_result.get("branch_name", "ris_only_stage2_then_vp"))
+            no_gain = False
+        else:
+            selected = dict(direct_result)
+            selected_branch = "direct_vp_rollback"
+            no_gain = True
+        selected_by = "both_uncertified_lower_raw"
+
+    ngc_diagnostics["ngc_selected_by"] = selected_by
+    ngc_diagnostics["ngc_final_unreliable"] = bool(final_unreliable)
+    selected["selected_branch"] = selected_branch
+    selected["reliability"] = reliability
+    selected["ris_stage2_no_gain"] = bool(no_gain)
+    selected["branch_score_margin"] = branch_score_margin
+    selected["boundary_selection_rule_used"] = False
+    selected["warning"] = selected.get("warning", "")
+    selected["final"] = dict(selected["final"])
+    selected["final"]["selected_branch"] = selected_branch
+    selected["final"]["reliability"] = reliability
+    selected["final"].update(
+        {
+            "branch_score_margin": branch_score_margin,
+            "boundary_selection_rule_used": False,
+            "warning": selected["warning"],
+        }
+    )
+    return selected, bool(no_gain)
+
+
 def run_from_existing_stage1(
     data: dict,
     stage1: dict,
@@ -2131,22 +2520,65 @@ def run_from_existing_stage1(
         and reliability["decision"] != "direct_vp"
     )
     stage2_policy = str(
-        config.get("proposed_stage2_policy", "reliability_gated_ris_only")
+        config.get("proposed_stage2_policy", "ngc_certified_ris_only")
     ).lower()
     valid_stage2_policies = {
         "reliability_gated",
         "reliability_gated_ris_only",
         "force_ris_only",
         "geometry_gated_ris_only",
+        "ngc_certified_ris_only",
     }
     if stage2_policy not in valid_stage2_policies:
         raise ValueError(f"unknown proposed_stage2_policy {stage2_policy!r}")
-    if stage2_policy == "force_ris_only":
+    stage2_rescue_enabled = (
+        allow_stage2
+        and bool(config.get("stage2_adaptive", True))
+        and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
+    )
+    ngc_active = stage2_policy == "ngc_certified_ris_only"
+    ngc_diagnostics = _ngc_base_diagnostics(config)
+    if ngc_active:
+        ngc_diagnostics["ngc_policy_active"] = True
+        ngc_diagnostics.update(
+            _ngc_certificate(
+                "direct", direct_result, stage1_estimate, data["scene"], config
+            )
+        )
+        direct_status = str(ngc_diagnostics.get("ngc_direct_cert_status", ""))
+        reliability["proposed_stage2_policy"] = stage2_policy
+        reliability["stage2_policy_forced"] = False
+        if stage2_rescue_enabled and direct_status == "green":
+            reliability["decision"] = "direct_vp"
+            ngc_diagnostics["ngc_rescue_requested"] = False
+            ngc_diagnostics[
+                "ngc_rescue_request_reason"
+            ] = "ngc_green_skip_rescue"
+            ngc_diagnostics["ngc_selected_by"] = "ngc_green_skip_rescue"
+            direct_vp_override = False
+        elif stage2_rescue_enabled:
+            reliability["decision"] = "jnpp_then_vp"
+            ngc_diagnostics["ngc_rescue_requested"] = True
+            ngc_diagnostics["ngc_rescue_request_reason"] = (
+                "ngc_red_run_rescue"
+                if direct_status == "red"
+                else "ngc_gray_run_rescue"
+            )
+            direct_vp_override = False
+        else:
+            reliability["proposed_stage2_policy"] = stage2_policy
+            ngc_diagnostics[
+                "ngc_rescue_request_reason"
+            ] = "ngc_stage2_disabled_direct_fallback"
+            ngc_diagnostics[
+                "ngc_selected_by"
+            ] = "rescue_unavailable_direct_fallback"
+    elif stage2_policy == "force_ris_only" and stage2_rescue_enabled:
         reliability["decision"] = "jnpp_then_vp"
         reliability["proposed_stage2_policy"] = stage2_policy
         reliability["stage2_policy_forced"] = True
         direct_vp_override = False
-    elif stage2_policy == "geometry_gated_ris_only":
+    elif stage2_policy == "geometry_gated_ris_only" and stage2_rescue_enabled:
         if gof_reliability_decision == "jnpp_then_vp" or stage1_geometry_trigger:
             reliability["decision"] = "jnpp_then_vp"
         else:
@@ -2160,9 +2592,7 @@ def run_from_existing_stage1(
         print("GATE_OVERRIDE_DIRECT_VP_GOOD", flush=True)
 
     rescue_requested = (
-        allow_stage2
-        and bool(config.get("stage2_adaptive", True))
-        and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
+        stage2_rescue_enabled
         and reliability["decision"] == "jnpp_then_vp"
         and not direct_vp_override
     )
@@ -2193,9 +2623,19 @@ def run_from_existing_stage1(
             rescue_result["structured_diag"]["stage2_rescue_mode"] = rescue_mode
             branches["ris_only_stage2_then_vp"] = rescue_result
 
-    selected, no_gain = select_proposed_branch(
-        direct_result, rescue_result, reliability, config
-    )
+    if ngc_active:
+        ngc_diagnostics.update(
+            _ngc_certificate(
+                "rescue", rescue_result, stage1_estimate, data["scene"], config
+            )
+        )
+        selected, no_gain = select_ngc_branch(
+            direct_result, rescue_result, reliability, ngc_diagnostics
+        )
+    else:
+        selected, no_gain = select_proposed_branch(
+            direct_result, rescue_result, reliability, config
+        )
     selected_branch = str(
         selected.get(
             "selected_branch",
@@ -2217,6 +2657,7 @@ def run_from_existing_stage1(
             rescue_requested=bool(rescue_requested),
         )
     )
+    candidate_diagnostics.update(ngc_diagnostics)
     selected.update(candidate_diagnostics)
     if bool(config.get("run_full_legacy_comparison", False)):
         if progress_printed:

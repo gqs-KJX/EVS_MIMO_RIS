@@ -138,6 +138,39 @@ FIGURE_METRICS = {
     "fig5": "outlier_flag",
     "fig6": "position_rmse_m",
 }
+
+VARIANT_LABELS = {
+    "adaptive_jones_vp_proposed": "Proposed",
+    "adaptive_jones_vp_proposed_force_lower_raw": "Proposed w/ always-run rescue",
+    "adaptive_jones_vp_proposed_old_gated": "Proposed w/ GoF-gated rescue",
+}
+
+
+def _proposed_ngc_spec(*, allow_stage2: bool = True) -> dict[str, Any]:
+    return {
+        "enable_global_vp": True,
+        "global_vp": {"mode": "adaptive_jones"},
+        "_runner": "main_single_proposed",
+        "_allow_stage2": bool(allow_stage2),
+        "stage2_adaptive": True,
+        "stage2_rescue_type": "ris_only",
+        "proposed_stage2_policy": "ngc_certified_ris_only",
+        "rescue_accept_min_rel_improvement": 0.0,
+        "rescue_accept_min_abs_improvement": 1.0e-8,
+    }
+
+
+def _proposed_force_lower_raw_spec() -> dict[str, Any]:
+    spec = _proposed_ngc_spec(allow_stage2=True)
+    spec["proposed_stage2_policy"] = "force_ris_only"
+    return spec
+
+
+def _proposed_old_gated_spec() -> dict[str, Any]:
+    spec = _proposed_ngc_spec(allow_stage2=True)
+    spec["proposed_stage2_policy"] = "reliability_gated_ris_only"
+    spec["rescue_accept_min_rel_improvement"] = 1.0e-3
+    return spec
 RAW_SUMMARY_METRICS = [
     "position_rmse_m",
     "y_nmse",
@@ -261,6 +294,37 @@ FIELDNAMES = [
     "gof_reliability_decision",
     "stage1_geometry_trigger",
     "stage1_geometry_trigger_reasons",
+    "ngc_policy_active",
+    "ngc_lambda_ris",
+    "ngc_direct_clock_score",
+    "ngc_direct_clock_score_norm",
+    "ngc_direct_clock_dof",
+    "ngc_direct_clock_sigma_source",
+    "ngc_direct_clock_std_ns",
+    "ngc_direct_ris_score",
+    "ngc_direct_ris_score_norm",
+    "ngc_direct_ris_available",
+    "ngc_direct_total_score",
+    "ngc_direct_cert_status",
+    "ngc_direct_cert_reason",
+    "ngc_rescue_requested",
+    "ngc_rescue_request_reason",
+    "ngc_rescue_clock_score",
+    "ngc_rescue_clock_score_norm",
+    "ngc_rescue_clock_dof",
+    "ngc_rescue_clock_sigma_source",
+    "ngc_rescue_clock_std_ns",
+    "ngc_rescue_ris_score",
+    "ngc_rescue_ris_score_norm",
+    "ngc_rescue_ris_available",
+    "ngc_rescue_total_score",
+    "ngc_rescue_cert_status",
+    "ngc_rescue_cert_reason",
+    "ngc_selected_by",
+    "ngc_final_unreliable",
+    "ngc_threshold_clock_green",
+    "ngc_threshold_clock_red",
+    "proposed_stage2_policy",
 ]
 
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -462,29 +526,30 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             "stage1_only": {
                 "enable_global_vp": False,
                 "stage2_adaptive": False,
+                "proposed_stage2_policy": "reliability_gated",
                 "_runner": "stage1_only",
                 "_allow_stage2": False,
             },
             "fixed_pol_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "fixed_pol"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "free_jones_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "regularized_jones_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_regularized"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "adaptive_jones_vp_proposed": {
-                "enable_global_vp": True,
-                "global_vp": {"mode": "adaptive_jones"},
-                "_runner": "main_single_proposed",
-                "_allow_stage2": True,
+                **_proposed_ngc_spec(allow_stage2=True),
             },
         }
     if figure == "fig3":
@@ -503,6 +568,7 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
         return {
             "direct_vp": {
                 "global_vp": {"mode": "adaptive_jones"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "jnpp_always": {
@@ -513,20 +579,34 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             "reliability_gated_proposed": {
                 "global_vp": {"mode": "adaptive_jones"},
                 "proposed_stage2_policy": "reliability_gated_ris_only",
+                "rescue_accept_min_rel_improvement": 1.0e-3,
+                "rescue_accept_min_abs_improvement": 1.0e-8,
                 "_allow_stage2": True,
             },
             "oracle_init_vp": {
                 "global_vp": {"mode": "adaptive_jones"},
                 "_runner": "oracle_init_vp",
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
         }
     if figure == "fig6":
         return {
-            "fixed_pol_vp": {"global_vp": {"mode": "fixed_pol"}, "_allow_stage2": False},
-            "free_jones_vp": {"global_vp": {"mode": "jones_free"}, "_allow_stage2": False},
+            "fixed_pol_vp": {
+                "global_vp": {"mode": "fixed_pol"},
+                "proposed_stage2_policy": "reliability_gated",
+                "_allow_stage2": False,
+            },
+            "free_jones_vp": {
+                "global_vp": {"mode": "jones_free"},
+                "proposed_stage2_policy": "reliability_gated",
+                "_allow_stage2": False,
+            },
             "adaptive_jones_vp_proposed": {
+                "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
+                "stage2_adaptive": False,
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "proposed_peb": {"global_vp": {"mode": "adaptive_jones"}, "_runner": "peb_only"},
@@ -536,15 +616,6 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 
 def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
-        proposed_force_lower_raw = copy.deepcopy(
-            _variant_specs(figure)["adaptive_jones_vp_proposed"]
-        )
-        proposed_force_lower_raw.update(
-            {
-                "proposed_stage2_policy": "force_ris_only",
-                "rescue_accept_min_rel_improvement": 0.0,
-            }
-        )
         return {
             "free_jones_vp_gated_rescue": {
                 "enable_global_vp": True,
@@ -587,7 +658,8 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "proposed_stage2_policy": "geometry_gated_ris_only",
                 "rescue_accept_min_rel_improvement": 0.0,
             },
-            "adaptive_jones_vp_proposed_force_lower_raw": proposed_force_lower_raw,
+            "adaptive_jones_vp_proposed_old_gated": _proposed_old_gated_spec(),
+            "adaptive_jones_vp_proposed_force_lower_raw": _proposed_force_lower_raw_spec(),
         }
     return {}
 
@@ -1500,6 +1572,10 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             get_nested(result, ["final.jones_leakage_per_path"], None)
         ),
         "reliability_decision": reliability.get("decision", ""),
+        "proposed_stage2_policy": reliability.get(
+            "proposed_stage2_policy",
+            get_nested(result, ["stage1_config.proposed_stage2_policy"], ""),
+        ),
         "trigger_reasons": _list_string(reliability.get("trigger_reasons", [])),
         "gof_stat": _finite_float(reliability.get("gof_stat")),
         "gof_dof": reliability.get("gof_dof", ""),
@@ -1598,6 +1674,88 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             ),
             "stage1_geometry_trigger_reasons": _list_string(
                 reliability.get("stage1_geometry_trigger_reasons", [])
+            ),
+        }
+    )
+    metrics.update(
+        {
+            "ngc_policy_active": bool(result.get("ngc_policy_active", False)),
+            "ngc_lambda_ris": _finite_float(result.get("ngc_lambda_ris")),
+            "ngc_direct_clock_score": _finite_float(
+                result.get("ngc_direct_clock_score")
+            ),
+            "ngc_direct_clock_score_norm": _finite_float(
+                result.get("ngc_direct_clock_score_norm")
+            ),
+            "ngc_direct_clock_dof": result.get("ngc_direct_clock_dof", ""),
+            "ngc_direct_clock_sigma_source": str(
+                result.get("ngc_direct_clock_sigma_source", "")
+            ),
+            "ngc_direct_clock_std_ns": _finite_float(
+                result.get("ngc_direct_clock_std_ns")
+            ),
+            "ngc_direct_ris_score": _finite_float(
+                result.get("ngc_direct_ris_score")
+            ),
+            "ngc_direct_ris_score_norm": _finite_float(
+                result.get("ngc_direct_ris_score_norm")
+            ),
+            "ngc_direct_ris_available": bool(
+                result.get("ngc_direct_ris_available", False)
+            ),
+            "ngc_direct_total_score": _finite_float(
+                result.get("ngc_direct_total_score")
+            ),
+            "ngc_direct_cert_status": str(
+                result.get("ngc_direct_cert_status", "")
+            ),
+            "ngc_direct_cert_reason": str(
+                result.get("ngc_direct_cert_reason", "")
+            ),
+            "ngc_rescue_requested": bool(result.get("ngc_rescue_requested", False)),
+            "ngc_rescue_request_reason": str(
+                result.get("ngc_rescue_request_reason", "")
+            ),
+            "ngc_rescue_clock_score": _finite_float(
+                result.get("ngc_rescue_clock_score")
+            ),
+            "ngc_rescue_clock_score_norm": _finite_float(
+                result.get("ngc_rescue_clock_score_norm")
+            ),
+            "ngc_rescue_clock_dof": result.get("ngc_rescue_clock_dof", ""),
+            "ngc_rescue_clock_sigma_source": str(
+                result.get("ngc_rescue_clock_sigma_source", "")
+            ),
+            "ngc_rescue_clock_std_ns": _finite_float(
+                result.get("ngc_rescue_clock_std_ns")
+            ),
+            "ngc_rescue_ris_score": _finite_float(
+                result.get("ngc_rescue_ris_score")
+            ),
+            "ngc_rescue_ris_score_norm": _finite_float(
+                result.get("ngc_rescue_ris_score_norm")
+            ),
+            "ngc_rescue_ris_available": bool(
+                result.get("ngc_rescue_ris_available", False)
+            ),
+            "ngc_rescue_total_score": _finite_float(
+                result.get("ngc_rescue_total_score")
+            ),
+            "ngc_rescue_cert_status": str(
+                result.get("ngc_rescue_cert_status", "")
+            ),
+            "ngc_rescue_cert_reason": str(
+                result.get("ngc_rescue_cert_reason", "")
+            ),
+            "ngc_selected_by": str(result.get("ngc_selected_by", "")),
+            "ngc_final_unreliable": bool(
+                result.get("ngc_final_unreliable", False)
+            ),
+            "ngc_threshold_clock_green": _finite_float(
+                result.get("ngc_threshold_clock_green")
+            ),
+            "ngc_threshold_clock_red": _finite_float(
+                result.get("ngc_threshold_clock_red")
             ),
         }
     )
@@ -2073,6 +2231,7 @@ def _to_float(value: Any) -> float:
 
 
 RESCUE_POLICY_VARIANTS = {
+    "adaptive_jones_vp_proposed_old_gated",
     "adaptive_jones_vp_proposed_force_lower_raw",
     "free_jones_vp",
     "free_jones_vp_gated_rescue",
@@ -2125,12 +2284,44 @@ RESCUE_POLICY_PAIRED_FIELDS = [
     "gof_reliability_decision",
     "stage1_geometry_trigger",
     "stage1_geometry_trigger_reasons",
+    "ngc_policy_active",
+    "ngc_lambda_ris",
+    "ngc_direct_clock_score",
+    "ngc_direct_clock_score_norm",
+    "ngc_direct_clock_dof",
+    "ngc_direct_clock_sigma_source",
+    "ngc_direct_clock_std_ns",
+    "ngc_direct_ris_score",
+    "ngc_direct_ris_score_norm",
+    "ngc_direct_ris_available",
+    "ngc_direct_total_score",
+    "ngc_direct_cert_status",
+    "ngc_direct_cert_reason",
+    "ngc_rescue_requested",
+    "ngc_rescue_request_reason",
+    "ngc_rescue_clock_score",
+    "ngc_rescue_clock_score_norm",
+    "ngc_rescue_clock_dof",
+    "ngc_rescue_clock_sigma_source",
+    "ngc_rescue_clock_std_ns",
+    "ngc_rescue_ris_score",
+    "ngc_rescue_ris_score_norm",
+    "ngc_rescue_ris_available",
+    "ngc_rescue_total_score",
+    "ngc_rescue_cert_status",
+    "ngc_rescue_cert_reason",
+    "ngc_selected_by",
+    "ngc_final_unreliable",
+    "ngc_threshold_clock_green",
+    "ngc_threshold_clock_red",
+    "proposed_stage2_policy",
 ]
 
 RESCUE_POLICY_SUMMARY_FIELDS = [
     "variant",
     "snr_db",
     "n",
+    "rescue_run_rate",
     "mean_error_over_peb",
     "median_error_over_peb",
     "p90_error_over_peb",
@@ -2272,8 +2463,7 @@ def _write_rescue_policy_ablation_csvs(
             skipped_data += 1
             continue
         error_over_peb = position_error / peb
-        paired_rows.append(
-            {
+        paired_row = {
                 "figure": row.get("figure"),
                 "variant": variant,
                 "snr_db": row.get("snr_db"),
@@ -2348,8 +2538,11 @@ def _write_rescue_policy_ablation_csvs(
                 "stage1_geometry_trigger_reasons": row.get(
                     "stage1_geometry_trigger_reasons"
                 ),
-            }
-        )
+        }
+        for field in RESCUE_POLICY_PAIRED_FIELDS:
+            if field.startswith("ngc_"):
+                paired_row[field] = row.get(field)
+        paired_rows.append(paired_row)
 
     if unpaired or skipped_data or skipped_peb or duplicate_peb:
         print(
@@ -2397,11 +2590,13 @@ def _summarize_rescue_policy_ablation(
         outlier_count = int(
             sum(_to_bool(row.get("relative_outlier_5peb")) is True for row in group)
         )
+        rescue_run_rate = _ngc_rescue_run_rate(group)
         summary_rows.append(
             {
                 "variant": variant,
                 "snr_db": snr_db,
                 "n": n,
+                "rescue_run_rate": rescue_run_rate,
                 "mean_error_over_peb": float(np.mean(values)) if n else float("nan"),
                 "median_error_over_peb": float(np.median(values)) if n else float("nan"),
                 "p90_error_over_peb": float(np.percentile(values, 90)) if n else float("nan"),
@@ -2490,6 +2685,18 @@ def _summary_stats(values: np.ndarray) -> dict[str, float]:
     return {name: float("nan") for name in ("mean", "median", "std", "p10", "p90")}
 
 
+def _ngc_rescue_run_rate(rows: list[dict[str, Any]]) -> float:
+    active_rows = [
+        row for row in rows if _to_bool(row.get("ngc_policy_active")) is True
+    ]
+    if not active_rows:
+        return float("nan")
+    requested = sum(
+        _to_bool(row.get("ngc_rescue_requested")) is True for row in active_rows
+    )
+    return float(requested / len(active_rows))
+
+
 def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, Any]]:
     groups: dict[tuple[str, float], list[dict[str, Any]]] = {}
     for row in rows:
@@ -2518,6 +2725,7 @@ def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, An
             **stats,
             "success_rate": float((len(group) - failed_count) / max(len(group), 1)),
             "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
+            "rescue_run_rate": _ngc_rescue_run_rate(group),
             "n": len(group),
         }
         for metadata_field in ("K", "paper_k", "effective_K"):
@@ -2577,7 +2785,7 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
             ys[order],
             marker=markers[idx % len(markers)],
             linewidth=2.5 if is_proposed else 1.5,
-            label="Proposed" if is_proposed else variant,
+            label=VARIANT_LABELS.get(variant, variant),
             zorder=10 if is_proposed else 2,
         )
     ax.set_xlabel(xlabel)
@@ -3201,7 +3409,15 @@ def _print_task_summary(
         receiver_mode = str(spec.get("receiver_mode", "full_6d"))
         print(
             f"  variant={variant} receiver_mode={receiver_mode} "
-            f"snr_db=[{snr_text}] trial_id=[{trial_text}]"
+            f"snr_db=[{snr_text}] trial_id=[{trial_text}] "
+            f"proposed_stage2_policy={spec.get('proposed_stage2_policy', '')} "
+            f"ngc_lambda_ris={spec.get('ngc_lambda_ris', 1.0)} "
+            f"ngc_clock_green_quantile={spec.get('ngc_clock_green_quantile', 0.99)} "
+            f"ngc_clock_red_quantile={spec.get('ngc_clock_red_quantile', 0.999)} "
+            "rescue_accept_min_rel_improvement="
+            f"{spec.get('rescue_accept_min_rel_improvement', '')} "
+            "rescue_accept_min_abs_improvement="
+            f"{spec.get('rescue_accept_min_abs_improvement', '')}"
         )
 
 

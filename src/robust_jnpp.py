@@ -180,6 +180,75 @@ def _objective_and_grad_factory(
     return value_and_grad, counters
 
 
+def robust_jnpp_geometry_consistency_score(
+    p_u: np.ndarray,
+    stage1_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Return the panel-summed normalized RIS near-field projection mismatch.
+
+    This is the same compressed near-field response used by robust JNPP, but
+    evaluated once at a supplied position without changing the optimizer state.
+    """
+    k_paths = int(scene["K"])
+    c_value = stage1_estimate.get("C")
+    if c_value is None:
+        return {
+            "available": False,
+            "score": float("nan"),
+            "score_norm": float("nan"),
+            "reason": "missing_stage1_C",
+        }
+    c_tilde = np.asarray(c_value, dtype=complex)
+    if c_tilde.shape != (scene["T"], k_paths):
+        return {
+            "available": False,
+            "score": float("nan"),
+            "score_norm": float("nan"),
+            "reason": "stage1_C_shape_mismatch",
+        }
+    eps = float(config.get("eps", 1.0e-10))
+    weights, _, weight_mode, weight_warning = _confidence_weights(
+        stage1_estimate, config, k_paths
+    )
+    p_u = np.asarray(p_u, dtype=float).reshape(3)
+    total = 0.0
+    per_path = []
+    for k in range(k_paths):
+        c_k = c_tilde[:, k]
+        h_k, _ = _response_and_jacobian(p_u, k, scene, eps)
+        c_norm = float(np.real(np.vdot(c_k, c_k)))
+        h_norm = float(np.real(np.vdot(h_k, h_k)))
+        if not np.isfinite(c_norm) or c_norm <= eps or h_norm <= eps:
+            mismatch = float("nan")
+        else:
+            projection = float(np.abs(np.vdot(h_k, c_k)) ** 2 / (c_norm * h_norm))
+            mismatch = float(max(0.0, 1.0 - min(projection, 1.0)))
+        per_path.append(mismatch)
+        if np.isfinite(mismatch):
+            total += float(weights[k]) * mismatch
+    if not any(np.isfinite(value) for value in per_path):
+        return {
+            "available": False,
+            "score": float("nan"),
+            "score_norm": float("nan"),
+            "reason": "nonfinite_ris_mismatch",
+            "weight_mode": weight_mode,
+            "weight_warning": weight_warning,
+            "per_path": per_path,
+        }
+    return {
+        "available": True,
+        "score": float(total),
+        "score_norm": float(total),
+        "reason": "",
+        "weight_mode": weight_mode,
+        "weight_warning": weight_warning,
+        "per_path": per_path,
+    }
+
+
 def _numeric_grad(fun, p_u: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     grad = np.zeros(3, dtype=float)
     for dim in range(3):

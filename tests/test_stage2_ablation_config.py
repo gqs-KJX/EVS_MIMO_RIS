@@ -3,13 +3,14 @@ import numpy as np
 from src.config import apply_stage1_init_preset, default_config
 from src.estimators import _accept_strict_sse, structured_refinement
 from src.main_single_proposed import (
+    _ngc_certificate,
     _print_stage_two_update_diagnostics,
     _weak_reasonable_stage1_config,
     enumerate_top_assignment_hypotheses,
     select_proposed_branch,
     stage2_severe_unreliable,
 )
-from src.projections_delay import bq_from_poles
+from src.projections_delay import bq_from_poles, pole_from_tau
 
 
 def test_default_config_matches_single_diagnostic_defaults():
@@ -50,8 +51,15 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["direct_vp_max_good_nfev"] == 12
     assert config["direct_vp_noise_floor_factor"] == 1.5
     assert config["direct_vp_min_rel_residual_decrease"] == 1.0e-4
-    assert config["rescue_accept_min_rel_improvement"] == 1.0e-3
+    assert config["proposed_stage2_policy"] == "ngc_certified_ris_only"
+    assert config["rescue_accept_min_rel_improvement"] == 0.0
     assert config["rescue_accept_min_abs_improvement"] == 1.0e-8
+    assert config["ngc_lambda_ris"] == 1.0
+    assert config["ngc_clock_green_quantile"] == 0.99
+    assert config["ngc_clock_red_quantile"] == 0.999
+    assert config["ngc_clock_sigma_floor_ns"] == 0.5
+    assert config["ngc_ris_green_threshold"] == 0.3
+    assert config["ngc_ris_red_threshold"] == 0.7
     assert config["mhr_assignment_margin_threshold"] == 0.3
     assert config["mhr_rank1_ratio_threshold"] == 0.9
     assert config["mhr_z_residual_threshold"] == 0.98
@@ -249,6 +257,44 @@ def test_mhrr_acceptance_and_rollback_use_raw_objective():
     assert no_gain is True
     assert selected["selected_branch"] == "direct_vp_rollback"
     assert rescue_equal["structured_diag"]["mhr_accepted"] is False
+
+
+def test_ngc_certificate_uses_efim_tau_crb_and_marks_bad_clock_red():
+    config = default_config()
+    scene = {
+        "K": 3,
+        "T": 4,
+        "delta_f": 5.0e6,
+        "c0": 299_792_458.0,
+        "ris_centers": np.array(
+            [[1.0, 0.0, 0.0], [1.0, 0.1, 0.0], [1.0, 0.2, 0.0]],
+            dtype=float,
+        ),
+        "d_RB": np.zeros(3, dtype=float),
+    }
+    stage1_estimate = {
+        "poles": np.array(
+            [pole_from_tau(tau, scene["delta_f"]) for tau in (0.0, 5.0e-9, 10.0e-9)]
+        ),
+        "ris_eta": np.zeros((3, 3), dtype=float),
+        "columns_are_panel_ordered": True,
+    }
+    branch = {
+        "final": {
+            "p_u": np.zeros(3, dtype=float),
+            "delta_t": 0.0,
+        },
+        "direct_vp_quality": {
+            "data_only_efim": np.diag([1.0e20, 1.0e20, 1.0e20, 1.0e24]),
+        },
+    }
+
+    cert = _ngc_certificate("direct", branch, stage1_estimate, scene, config)
+
+    assert cert["ngc_direct_clock_sigma_source"] == "data_only_efim_tau_crb"
+    assert "sigma_tau_k" in stage1_estimate
+    assert cert["ngc_direct_cert_status"] == "red"
+    assert cert["ngc_direct_clock_score_norm"] >= cert["ngc_threshold_clock_red"]
 
 
 def test_main_single_weak_reasonable_stage1_config():

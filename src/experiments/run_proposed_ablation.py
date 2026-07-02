@@ -74,6 +74,24 @@ FIELDNAMES = [
     "delta_t_k_ns",
     "stage1_runtime_s",
     "proposed_stage2_policy",
+    "ngc_policy_active",
+    "ngc_lambda_ris",
+    "ngc_direct_clock_score_norm",
+    "ngc_direct_clock_std_ns",
+    "ngc_direct_ris_score_norm",
+    "ngc_direct_ris_available",
+    "ngc_direct_total_score",
+    "ngc_direct_cert_status",
+    "ngc_rescue_requested",
+    "ngc_rescue_request_reason",
+    "ngc_rescue_clock_score_norm",
+    "ngc_rescue_ris_score_norm",
+    "ngc_rescue_total_score",
+    "ngc_rescue_cert_status",
+    "ngc_selected_by",
+    "ngc_final_unreliable",
+    "ngc_threshold_clock_green",
+    "ngc_threshold_clock_red",
 ]
 
 
@@ -89,6 +107,32 @@ def _deep_update(base: dict, updates: dict) -> dict:
     return merged
 
 
+def _proposed_ngc_spec(*, allow_stage2: bool = True) -> dict[str, Any]:
+    return {
+        "enable_global_vp": True,
+        "global_vp": {"mode": "adaptive_jones"},
+        "stage2_adaptive": True,
+        "stage2_rescue_type": "ris_only",
+        "proposed_stage2_policy": "ngc_certified_ris_only",
+        "rescue_accept_min_rel_improvement": 0.0,
+        "rescue_accept_min_abs_improvement": 1.0e-8,
+        "_allow_stage2": bool(allow_stage2),
+    }
+
+
+def _proposed_force_lower_raw_spec() -> dict[str, Any]:
+    spec = _proposed_ngc_spec(allow_stage2=True)
+    spec["proposed_stage2_policy"] = "force_ris_only"
+    return spec
+
+
+def _proposed_old_gated_spec() -> dict[str, Any]:
+    spec = _proposed_ngc_spec(allow_stage2=True)
+    spec["proposed_stage2_policy"] = "reliability_gated_ris_only"
+    spec["rescue_accept_min_rel_improvement"] = 1.0e-3
+    return spec
+
+
 def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
     """Return config updates keyed by formal ablation variant name."""
     if ablation == "vp_family":
@@ -96,26 +140,32 @@ def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
             "stage1_only_no_vp": {
                 "enable_global_vp": False,
                 "stage2_adaptive": False,
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "fixed_pol_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "fixed_pol"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "jones_free_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "jones_regularized_vp": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_regularized"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "adaptive_jones_vp_proposed": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
+                "stage2_adaptive": False,
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
         }
@@ -124,23 +174,17 @@ def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
             "direct_vp_only": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
-            "ris_jnpp_always_then_vp": {
-                "enable_global_vp": True,
-                "proposed_stage2_policy": "force_ris_only",
-                "stage2_adaptive": True,
-                "stage2_rescue_type": "ris_only",
-                "global_vp": {"mode": "adaptive_jones"},
-                "_allow_stage2": True,
+            "adaptive_jones_vp_proposed_force_lower_raw": {
+                **_proposed_force_lower_raw_spec(),
             },
-            "reliability_gated_ris_jnpp_then_vp_proposed": {
-                "enable_global_vp": True,
-                "proposed_stage2_policy": "reliability_gated_ris_only",
-                "stage2_adaptive": True,
-                "stage2_rescue_type": "ris_only",
-                "global_vp": {"mode": "adaptive_jones"},
-                "_allow_stage2": True,
+            "adaptive_jones_vp_proposed_old_gated": {
+                **_proposed_old_gated_spec(),
+            },
+            "adaptive_jones_vp_proposed": {
+                **_proposed_ngc_spec(allow_stage2=True),
             },
         }
     if ablation == "jones_lambda":
@@ -158,6 +202,7 @@ def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
                     "jones_lambda_min": value,
                     "jones_lambda_max": value,
                 },
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             }
 
@@ -165,6 +210,7 @@ def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
             "fixed_pol_limit": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "fixed_pol"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "lambda_1e4": lambda_cfg(1.0e4),
@@ -174,11 +220,13 @@ def _variant_specs(ablation: str) -> dict[str, dict[str, Any]]:
             "free_jones": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
             "adaptive_jones": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
+                "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
         }
@@ -197,6 +245,19 @@ def _parse_snr_grid(args: argparse.Namespace) -> list[float]:
     if args.snr_grid is None or str(args.snr_grid).strip() == "":
         return [float(args.snr_db)]
     return [float(item.strip()) for item in str(args.snr_grid).split(",") if item.strip()]
+
+
+def _policy_log_fragment(spec: dict[str, Any]) -> str:
+    return (
+        f"proposed_stage2_policy={spec.get('proposed_stage2_policy', '')} "
+        f"ngc_lambda_ris={spec.get('ngc_lambda_ris', 1.0)} "
+        f"ngc_clock_green_quantile={spec.get('ngc_clock_green_quantile', 0.99)} "
+        f"ngc_clock_red_quantile={spec.get('ngc_clock_red_quantile', 0.999)} "
+        "rescue_accept_min_rel_improvement="
+        f"{spec.get('rescue_accept_min_rel_improvement', '')} "
+        "rescue_accept_min_abs_improvement="
+        f"{spec.get('rescue_accept_min_abs_improvement', '')}"
+    )
 
 
 def _trial_seed(seed_sequence: np.random.SeedSequence) -> int:
@@ -437,6 +498,46 @@ def _extract_row(
                 "proposed_stage2_policy",
                 get_nested(result, ["stage1_config.proposed_stage2_policy"], ""),
             ),
+            "ngc_policy_active": bool(result.get("ngc_policy_active", False)),
+            "ngc_lambda_ris": _finite_float(result.get("ngc_lambda_ris")),
+            "ngc_direct_clock_score_norm": _finite_float(
+                result.get("ngc_direct_clock_score_norm")
+            ),
+            "ngc_direct_clock_std_ns": _finite_float(
+                result.get("ngc_direct_clock_std_ns")
+            ),
+            "ngc_direct_ris_score_norm": _finite_float(
+                result.get("ngc_direct_ris_score_norm")
+            ),
+            "ngc_direct_ris_available": bool(
+                result.get("ngc_direct_ris_available", False)
+            ),
+            "ngc_direct_total_score": _finite_float(
+                result.get("ngc_direct_total_score")
+            ),
+            "ngc_direct_cert_status": str(result.get("ngc_direct_cert_status", "")),
+            "ngc_rescue_requested": bool(result.get("ngc_rescue_requested", False)),
+            "ngc_rescue_request_reason": str(
+                result.get("ngc_rescue_request_reason", "")
+            ),
+            "ngc_rescue_clock_score_norm": _finite_float(
+                result.get("ngc_rescue_clock_score_norm")
+            ),
+            "ngc_rescue_ris_score_norm": _finite_float(
+                result.get("ngc_rescue_ris_score_norm")
+            ),
+            "ngc_rescue_total_score": _finite_float(
+                result.get("ngc_rescue_total_score")
+            ),
+            "ngc_rescue_cert_status": str(result.get("ngc_rescue_cert_status", "")),
+            "ngc_selected_by": str(result.get("ngc_selected_by", "")),
+            "ngc_final_unreliable": bool(result.get("ngc_final_unreliable", False)),
+            "ngc_threshold_clock_green": _finite_float(
+                result.get("ngc_threshold_clock_green")
+            ),
+            "ngc_threshold_clock_red": _finite_float(
+                result.get("ngc_threshold_clock_red")
+            ),
         }
     )
     return row
@@ -501,6 +602,40 @@ def _write_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+        if lowered == "":
+            return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isfinite(numeric):
+        return bool(numeric)
+    return None
+
+
+def _ngc_rescue_run_rate(rows: list[dict[str, Any]]) -> float:
+    active_rows = [
+        row for row in rows if _optional_bool(row.get("ngc_policy_active")) is True
+    ]
+    if not active_rows:
+        return float("nan")
+    requested = sum(
+        _optional_bool(row.get("ngc_rescue_requested")) is True for row in active_rows
+    )
+    return float(requested / len(active_rows))
+
+
 def _print_summary(rows: list[dict[str, Any]]) -> None:
     print("\nGrouped summary")
     try:
@@ -513,10 +648,20 @@ def _print_summary(rows: list[dict[str, Any]]) -> None:
         if frame.empty:
             print("No successful rows.")
             return
+        ngc_active = frame["ngc_policy_active"].map(_optional_bool)
+        ngc_requested = frame["ngc_rescue_requested"].map(_optional_bool)
+        frame = frame.assign(
+            rescue_run_rate=np.where(
+                ngc_active == True,  # noqa: E712 - pandas elementwise comparison.
+                ngc_requested.fillna(False).astype(float),
+                np.nan,
+            )
+        )
         summary = frame.groupby(["ablation", "variant", "snr_db"], dropna=False).agg(
             median_position_rmse_m=("position_rmse_m", "median"),
             p90_position_rmse_m=("position_rmse_m", lambda x: float(np.percentile(x, 90.0))),
             outlier_rate=("outlier_flag", "mean"),
+            rescue_run_rate=("rescue_run_rate", "mean"),
             median_y_nmse=("y_nmse", "median"),
             median_runtime_s=("runtime_s", "median"),
         )
@@ -534,7 +679,8 @@ def _print_summary(rows: list[dict[str, Any]]) -> None:
         return
     header = (
         "ablation, variant, snr_db, median_position_rmse_m, "
-        "p90_position_rmse_m, outlier_rate, median_y_nmse, median_runtime_s"
+        "p90_position_rmse_m, outlier_rate, rescue_run_rate, "
+        "median_y_nmse, median_runtime_s"
     )
     print(header)
     for key in sorted(groups):
@@ -543,9 +689,11 @@ def _print_summary(rows: list[dict[str, Any]]) -> None:
         y_nmse = np.asarray([row["y_nmse"] for row in group], dtype=float)
         runtime = np.asarray([row["runtime_s"] for row in group], dtype=float)
         outliers = np.asarray([bool(row["outlier_flag"]) for row in group], dtype=float)
+        rescue_run_rate = _ngc_rescue_run_rate(group)
         print(
             f"{key[0]}, {key[1]}, {key[2]:.6g}, {np.nanmedian(pos):.6e}, "
             f"{np.nanpercentile(pos, 90.0):.6e}, {np.nanmean(outliers):.6f}, "
+            f"{rescue_run_rate:.6f}, "
             f"{np.nanmedian(y_nmse):.6e}, {np.nanmedian(runtime):.6e}"
         )
 
@@ -582,7 +730,8 @@ def main(argv: list[str] | None = None) -> None:
                 for variant, updates in _variant_specs(ablation).items():
                     print(
                         f"Running {ablation}/{variant} trial={trial_id + 1}/{args.n_trials} "
-                        f"seed={trial_seed} snr_db={snr_db}",
+                        f"seed={trial_seed} snr_db={snr_db} "
+                        f"{_policy_log_fragment(updates)}",
                         flush=True,
                     )
                     start = time.perf_counter()

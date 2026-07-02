@@ -241,6 +241,19 @@ def _trial_seed(seed: int, figure: str, trial_id: int) -> int:
     return int(sequence.generate_state(1, dtype=np.uint32)[0])
 
 
+def _proposed_policy_log_fragment(config: dict) -> str:
+    return (
+        f"proposed_stage2_policy={config.get('proposed_stage2_policy', '')} "
+        f"ngc_lambda_ris={config.get('ngc_lambda_ris', 1.0)} "
+        f"ngc_clock_green_quantile={config.get('ngc_clock_green_quantile', 0.99)} "
+        f"ngc_clock_red_quantile={config.get('ngc_clock_red_quantile', 0.999)} "
+        "rescue_accept_min_rel_improvement="
+        f"{config.get('rescue_accept_min_rel_improvement', '')} "
+        "rescue_accept_min_abs_improvement="
+        f"{config.get('rescue_accept_min_abs_improvement', '')}"
+    )
+
+
 def _git_commit() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -324,6 +337,11 @@ def make_config(
             "print_progress": False,
             "verbose_stage2": False,
             "run_full_legacy_comparison": False,
+            "stage2_adaptive": True,
+            "stage2_rescue_type": "ris_only",
+            "proposed_stage2_policy": "ngc_certified_ris_only",
+            "rescue_accept_min_rel_improvement": 0.0,
+            "rescue_accept_min_abs_improvement": 1.0e-8,
         }
     )
     if strict_ris_geometry and np.asarray(config["ris_centers"]).shape[0] < int(k_paths):
@@ -627,7 +645,7 @@ def _proposed_result_row(data: dict, config: dict, task: dict[str, Any]) -> dict
         raw_objective_final=float(final.get("raw_objective_final", final.get("raw_objective", np.nan))),
         components=final.get("components", {}),
         runtime_s=runtime_s,
-        diagnostics={"dictionary_mode": "proposed_assumed_K"},
+        diagnostics={"dictionary_mode": "proposed_ngc_assumed_K"},
     )
     return make_baseline_row(
         baseline_result,
@@ -1144,6 +1162,17 @@ def main(argv: list[str] | None = None) -> None:
             include_calibration_oracle_peb=args.include_calibration_oracle_peb,
             include_trueK_peb_reference=args.include_trueK_peb_reference,
         )
+        if "proposed" in baselines:
+            preview_config = make_config(
+                int(args.seed),
+                float(args.snr_db),
+                int(args.true_k),
+                strict_ris_geometry=bool(args.strict_ris_geometry),
+            )
+            print(
+                f"figure={figure} baseline=proposed "
+                f"{_proposed_policy_log_fragment(preview_config)}"
+            )
         trials_name, summary_name, _ = FIGURE_FILES[figure]
         trial_path = args.out_dir / trials_name
         summary_path = args.out_dir / summary_name

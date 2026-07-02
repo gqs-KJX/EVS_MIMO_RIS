@@ -137,7 +137,7 @@ BASELINE_LABELS = {
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
-    "proposed": "Proposed RG-JNPP-Adaptive-Jones-VP",
+    "proposed": "Proposed",
     "peb": "PEB",
 }
 
@@ -184,6 +184,19 @@ def parse_baselines(value: str) -> list[str]:
 def _trial_seed(seed: int, trial_id: int) -> int:
     sequence = np.random.SeedSequence(int(seed))
     return int(sequence.spawn(int(trial_id) + 1)[int(trial_id)].generate_state(1, dtype=np.uint32)[0])
+
+
+def _proposed_policy_log_fragment(config: dict) -> str:
+    return (
+        f"proposed_stage2_policy={config.get('proposed_stage2_policy', '')} "
+        f"ngc_lambda_ris={config.get('ngc_lambda_ris', 1.0)} "
+        f"ngc_clock_green_quantile={config.get('ngc_clock_green_quantile', 0.99)} "
+        f"ngc_clock_red_quantile={config.get('ngc_clock_red_quantile', 0.999)} "
+        "rescue_accept_min_rel_improvement="
+        f"{config.get('rescue_accept_min_rel_improvement', '')} "
+        "rescue_accept_min_abs_improvement="
+        f"{config.get('rescue_accept_min_abs_improvement', '')}"
+    )
 
 
 def _apply_grid_profile(config: dict, profile: str) -> dict:
@@ -236,6 +249,11 @@ def make_config(
     config["print_progress"] = False
     config["verbose_stage2"] = False
     config["run_full_legacy_comparison"] = False
+    config["stage2_adaptive"] = True
+    config["stage2_rescue_type"] = "ris_only"
+    config["proposed_stage2_policy"] = "ngc_certified_ris_only"
+    config["rescue_accept_min_rel_improvement"] = 0.0
+    config["rescue_accept_min_abs_improvement"] = 1.0e-8
     if strict_ris_geometry and np.asarray(config.get("ris_centers", [])).shape[0] < int(paper_k):
         raise ValueError(
             f"--strict-ris-geometry requested K={paper_k}, but config has only "
@@ -263,7 +281,7 @@ def _proposed_row(data: dict, config: dict, trial_id: int, baseline: str) -> dic
         components=final.get("components", {}),
         selected_support=[],
         runtime_s=runtime_s,
-        diagnostics={"dictionary_mode": "proposed_rg_jnpp_adaptive_jones_vp"},
+        diagnostics={"dictionary_mode": "proposed_ngc_adaptive_jones_vp"},
     )
     return make_baseline_row(
         baseline_result,
@@ -821,6 +839,15 @@ def main(argv: list[str] | None = None) -> None:
     metadata_path = out_dir / "benchmark_metadata.json"
     baselines = parse_baselines(args.baselines)
     snr_grid = parse_snr_grid(args.snr_grid)
+    if "proposed" in baselines:
+        preview_config = make_config(
+            seed=int(args.seed),
+            snr_db=float(snr_grid[0]),
+            paper_k=int(args.paper_k),
+            grid_profile=str(args.grid_profile),
+            strict_ris_geometry=bool(args.strict_ris_geometry),
+        )
+        print(f"baseline=proposed {_proposed_policy_log_fragment(preview_config)}")
     tasks = _tasks(args, snr_grid, baselines)
     progress = ProgressLogger(
         progress_path, len(tasks), "run_benchmark_comparison"

@@ -8,12 +8,52 @@ def test_import_run_proposed_ablation():
 def test_vp_family_specs_include_proposed_adaptive_jones():
     specs = ablation._variant_specs("vp_family")
     assert "adaptive_jones_vp_proposed" in specs
+    proposed = specs["adaptive_jones_vp_proposed"]
+    assert proposed["global_vp"]["mode"] == "adaptive_jones"
+    assert proposed["stage2_adaptive"] is False
+    assert proposed["proposed_stage2_policy"] == "reliability_gated"
+    assert proposed["_allow_stage2"] is False
 
 
 def test_stage2_gate_specs_include_direct_and_proposed_gated():
     specs = ablation._variant_specs("stage2_gate")
     assert "direct_vp_only" in specs
-    assert "reliability_gated_ris_jnpp_then_vp_proposed" in specs
+    assert "adaptive_jones_vp_proposed" in specs
+    assert "adaptive_jones_vp_proposed_force_lower_raw" in specs
+    assert "ris_jnpp_always_then_vp" not in specs
+    assert "reliability_gated_ris_jnpp_then_vp_proposed" not in specs
+    assert "adaptive_jones_vp_proposed_old_gated" in specs
+    assert specs["direct_vp_only"]["proposed_stage2_policy"] == "reliability_gated"
+    assert (
+        specs["adaptive_jones_vp_proposed"]["proposed_stage2_policy"]
+        == "ngc_certified_ris_only"
+    )
+    assert (
+        specs["adaptive_jones_vp_proposed_force_lower_raw"][
+            "proposed_stage2_policy"
+        ]
+        == "force_ris_only"
+    )
+    assert (
+        specs["adaptive_jones_vp_proposed_old_gated"]["proposed_stage2_policy"]
+        == "reliability_gated_ris_only"
+    )
+    assert (
+        specs["adaptive_jones_vp_proposed_old_gated"][
+            "rescue_accept_min_rel_improvement"
+        ]
+        == 1.0e-3
+    )
+
+
+def test_ngc_rescue_run_rate_counts_active_ngc_rows_only():
+    rows = [
+        {"ngc_policy_active": True, "ngc_rescue_requested": True},
+        {"ngc_policy_active": True, "ngc_rescue_requested": False},
+        {"ngc_policy_active": False, "ngc_rescue_requested": True},
+    ]
+    assert ablation._ngc_rescue_run_rate(rows) == 0.5
+    assert ablation._ngc_rescue_run_rate(rows[2:]) != ablation._ngc_rescue_run_rate(rows[2:])
 
 
 def test_jones_lambda_specs_include_adaptive_and_free():

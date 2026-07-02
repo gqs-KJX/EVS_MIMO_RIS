@@ -1,6 +1,7 @@
 import argparse
 
 import numpy as np
+import pytest
 
 from src.config import default_config
 from src.experiments import run_paper_ablation_figures as figures
@@ -25,13 +26,60 @@ def test_snr_grid_parser_default_grid():
 
 
 def test_fig1_variant_specs_are_exact():
-    assert list(figures._variant_specs("fig1")) == [
+    specs = figures._variant_specs("fig1")
+    assert list(specs) == [
         "stage1_only",
         "fixed_pol_vp",
         "free_jones_vp",
         "regularized_jones_vp",
         "adaptive_jones_vp_proposed",
     ]
+    assert specs["adaptive_jones_vp_proposed"]["proposed_stage2_policy"] == "ngc_certified_ris_only"
+    assert specs["adaptive_jones_vp_proposed"]["stage2_adaptive"] is True
+    assert specs["adaptive_jones_vp_proposed"]["stage2_rescue_type"] == "ris_only"
+    assert specs["adaptive_jones_vp_proposed"]["_allow_stage2"] is True
+    assert specs["adaptive_jones_vp_proposed"]["rescue_accept_min_rel_improvement"] == 0.0
+    assert specs["adaptive_jones_vp_proposed"]["rescue_accept_min_abs_improvement"] == 1.0e-8
+    diagnostics = figures._diagnostic_variant_specs("fig1")
+    assert "adaptive_jones_vp_proposed_old_gated" in diagnostics
+    assert "adaptive_jones_vp_proposed_ngc" not in diagnostics
+    assert "adaptive_jones_vp_proposed_force_lower_raw" in diagnostics
+    assert (
+        diagnostics["adaptive_jones_vp_proposed_force_lower_raw"][
+            "proposed_stage2_policy"
+        ]
+        == "force_ris_only"
+    )
+    assert (
+        diagnostics["adaptive_jones_vp_proposed_force_lower_raw"][
+            "rescue_accept_min_rel_improvement"
+        ]
+        == 0.0
+    )
+    assert (
+        diagnostics["adaptive_jones_vp_proposed_old_gated"]["proposed_stage2_policy"]
+        == "reliability_gated_ris_only"
+    )
+    assert (
+        diagnostics["adaptive_jones_vp_proposed_old_gated"][
+            "rescue_accept_min_rel_improvement"
+        ]
+        == 1.0e-3
+    )
+
+
+def test_ngc_diagnostic_variant_requires_include_flag():
+    with pytest.raises(ValueError, match="include-diagnostic-variants"):
+        figures._variants_for_figure(
+            "fig1",
+            figures.parse_variant_filter("adaptive_jones_vp_proposed_force_lower_raw"),
+        )
+    variants = figures._variants_for_figure(
+        "fig1",
+        figures.parse_variant_filter("adaptive_jones_vp_proposed_force_lower_raw"),
+        include_diagnostic_variants=True,
+    )
+    assert list(variants) == ["adaptive_jones_vp_proposed_force_lower_raw"]
 
 
 def test_variant_filter_defaults_to_none():
@@ -163,6 +211,15 @@ def test_fig5_variant_specs_include_gate_variants():
 
 def test_figure6_k_grid():
     assert figures.FIGURE6_K_GRID == [1, 2, 3, 4]
+
+
+def test_fig6_vp_family_proposed_keeps_stage2_off():
+    specs = figures._variant_specs("fig6")
+    proposed = specs["adaptive_jones_vp_proposed"]
+    assert proposed["global_vp"]["mode"] == "adaptive_jones"
+    assert proposed["stage2_adaptive"] is False
+    assert proposed["proposed_stage2_policy"] == "reliability_gated"
+    assert proposed["_allow_stage2"] is False
 
 
 def test_default_paper_k_is_three():
@@ -336,6 +393,45 @@ def test_summary_carries_unique_k_metadata():
     assert summary[0]["effective_K"] == 3
 
 
+def test_summary_carries_ngc_rescue_run_rate():
+    rows = [
+        {
+            "figure": "fig1",
+            "variant": "adaptive_jones_vp_proposed",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "position_rmse_m": "1.0",
+            "ngc_policy_active": "True",
+            "ngc_rescue_requested": "True",
+        },
+        {
+            "figure": "fig1",
+            "variant": "adaptive_jones_vp_proposed",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "position_rmse_m": "2.0",
+            "ngc_policy_active": "True",
+            "ngc_rescue_requested": "False",
+        },
+        {
+            "figure": "fig1",
+            "variant": "fixed_pol_vp",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "position_rmse_m": "3.0",
+            "ngc_policy_active": "False",
+            "ngc_rescue_requested": "False",
+        },
+    ]
+    summary = figures.summarize_rows(rows, "fig1")
+    by_variant = {row["variant"]: row for row in summary}
+    assert by_variant["adaptive_jones_vp_proposed"]["rescue_run_rate"] == 0.5
+    assert np.isnan(by_variant["fixed_pol_vp"]["rescue_run_rate"])
+
+
 def test_cache_reuse_refuses_ten_trial_csv_when_requesting_fifty():
     args = argparse.Namespace(
         n_trials=50,
@@ -405,6 +501,9 @@ def test_csv_fieldnames_include_required_diagnostics():
     assert "lambda_jones_per_path" in figures.FIELDNAMES
     assert "data_only_scaled_efim_condition_number" in figures.FIELDNAMES
     assert "peb_position_m" in figures.FIELDNAMES
+    assert "ngc_policy_active" in figures.FIELDNAMES
+    assert "ngc_selected_by" in figures.FIELDNAMES
+    assert "ngc_threshold_clock_red" in figures.FIELDNAMES
     assert {"K", "paper_k", "effective_K", "num_ris_paths", "receiver_mode", "config_seed"} <= set(
         figures.FIELDNAMES
     )
