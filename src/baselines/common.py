@@ -184,6 +184,37 @@ def make_baseline_row(
         "cache_estimated_bytes": diagnostics.get("cache_estimated_bytes", 0),
         "scoring_time_s": diagnostics.get("scoring_time_s", ""),
         "backend_warning": diagnostics.get("backend_warning", ""),
+        "selected_grid_index": json.dumps(_jsonable(diagnostics.get("selected_grid_index", "")), separators=(",", ":")),
+        "momp_group_omp_enabled": diagnostics.get("momp_group_omp_enabled", ""),
+        "momp_score_mode": diagnostics.get("momp_score_mode", ""),
+        "momp_group_size": diagnostics.get("momp_group_size", ""),
+        "momp_max_groups": diagnostics.get("momp_max_groups", ""),
+        "momp_selected_groups": json.dumps(_jsonable(diagnostics.get("momp_selected_groups", "")), separators=(",", ":")),
+        "momp_local_refinement_used": diagnostics.get("momp_local_refinement_used", ""),
+        "momp_refinement_levels": diagnostics.get("momp_refinement_levels", ""),
+        "momp_refinement_num_evals": diagnostics.get("momp_refinement_num_evals", ""),
+        "nf_mmpsr_cc_metric": diagnostics.get("nf_mmpsr_cc_metric", ""),
+        "nf_mmpsr_top_candidates": diagnostics.get("nf_mmpsr_top_candidates", ""),
+        "nf_mmpsr_local_refinement_used": diagnostics.get("nf_mmpsr_local_refinement_used", ""),
+        "nf_mmpsr_refinement_levels": diagnostics.get("nf_mmpsr_refinement_levels", ""),
+        "nf_mmpsr_refinement_num_evals": diagnostics.get("nf_mmpsr_refinement_num_evals", ""),
+        "nf_mmpsr_coarse_best_score": diagnostics.get("nf_mmpsr_coarse_best_score", ""),
+        "nf_mmpsr_refined_best_score": diagnostics.get("nf_mmpsr_refined_best_score", ""),
+        "reference_algorithm": diagnostics.get("reference_algorithm", ""),
+        "cpd_omp_adapted_used": diagnostics.get("cpd_omp_adapted_used", ""),
+        "near_field_l1_refinement_used": diagnostics.get("near_field_l1_refinement_used", ""),
+        "sage_enabled": diagnostics.get("sage_enabled", ""),
+        "sage_iterations": diagnostics.get("sage_iterations", ""),
+        "sage_num_evals": diagnostics.get("sage_num_evals", ""),
+        "local_grid_enabled": diagnostics.get("local_grid_enabled", ""),
+        "local_grid_iterations": diagnostics.get("local_grid_iterations", ""),
+        "local_grid_num_evals": diagnostics.get("local_grid_num_evals", ""),
+        "wls_enabled": diagnostics.get("wls_enabled", ""),
+        "wls_final_cost": diagnostics.get("wls_final_cost", ""),
+        "subris_mode": diagnostics.get("subris_mode", ""),
+        "subris_shape": json.dumps(_jsonable(diagnostics.get("subris_shape", "")), separators=(",", ":")),
+        "subris_fallback_used": diagnostics.get("subris_fallback_used", ""),
+        "adaptation_note": diagnostics.get("adaptation_note", ""),
         "warning": row_warning,
     }
 
@@ -377,18 +408,38 @@ def group_projection_score(
         matrix = matrix[:, None]
     if matrix.shape[0] != residual.size or matrix.shape[1] == 0:
         return float("-inf")
+    columns = []
+    for col in range(matrix.shape[1]):
+        atom = simple_atom_normalize(matrix[:, col])
+        if np.linalg.norm(atom) > 0.0:
+            columns.append(atom)
+    if not columns:
+        return float("-inf")
+    matrix = np.column_stack(columns)
     try:
         q, r = np.linalg.qr(matrix, mode="reduced")
+        diag = np.abs(np.diag(r)) if r.size else np.array([], dtype=float)
+        if diag.size:
+            threshold = float(rank_tol) * max(float(np.max(diag)), 1.0)
+            rank = int(np.sum(diag > threshold))
+            if rank > 0:
+                q = q[:, :rank]
+                return float(np.linalg.norm(q.conj().T @ residual) ** 2)
     except np.linalg.LinAlgError:
+        pass
+    try:
+        u, s, _ = np.linalg.svd(matrix, full_matrices=False)
+    except np.linalg.LinAlgError:
+        pinv_fit = matrix @ (np.linalg.pinv(matrix, rcond=float(rank_tol)) @ residual)
+        return float(np.linalg.norm(pinv_fit) ** 2)
+    if s.size == 0:
         return float("-inf")
-    diag = np.abs(np.diag(r)) if r.size else np.array([], dtype=float)
-    if diag.size == 0:
-        return float("-inf")
-    threshold = float(rank_tol) * max(float(np.max(diag)), 1.0)
-    rank = int(np.sum(diag > threshold))
+    threshold = float(rank_tol) * max(float(np.max(s)), 1.0)
+    rank = int(np.sum(s > threshold))
     if rank <= 0:
-        return float("-inf")
-    q = q[:, :rank]
+        pinv_fit = matrix @ (np.linalg.pinv(matrix, rcond=float(rank_tol)) @ residual)
+        return float(np.linalg.norm(pinv_fit) ** 2)
+    q = u[:, :rank]
     return float(np.linalg.norm(q.conj().T @ residual) ** 2)
 
 

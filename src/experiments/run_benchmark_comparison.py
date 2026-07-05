@@ -26,6 +26,7 @@ if __package__ in (None, ""):
     from src.baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
     from src.baselines.far_field_omp import run_far_field_omp_baseline
     from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
+    from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
     from src.config import default_config
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -52,6 +53,7 @@ else:
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
     from ..baselines.far_field_omp import run_far_field_omp_baseline
     from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
+    from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
     from ..config import default_config
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -128,6 +130,37 @@ FIELDNAMES = [
     "cache_estimated_bytes",
     "scoring_time_s",
     "backend_warning",
+    "selected_grid_index",
+    "momp_group_omp_enabled",
+    "momp_score_mode",
+    "momp_group_size",
+    "momp_max_groups",
+    "momp_selected_groups",
+    "momp_local_refinement_used",
+    "momp_refinement_levels",
+    "momp_refinement_num_evals",
+    "nf_mmpsr_cc_metric",
+    "nf_mmpsr_top_candidates",
+    "nf_mmpsr_local_refinement_used",
+    "nf_mmpsr_refinement_levels",
+    "nf_mmpsr_refinement_num_evals",
+    "nf_mmpsr_coarse_best_score",
+    "nf_mmpsr_refined_best_score",
+    "reference_algorithm",
+    "cpd_omp_adapted_used",
+    "near_field_l1_refinement_used",
+    "sage_enabled",
+    "sage_iterations",
+    "sage_num_evals",
+    "local_grid_enabled",
+    "local_grid_iterations",
+    "local_grid_num_evals",
+    "wls_enabled",
+    "wls_final_cost",
+    "subris_mode",
+    "subris_shape",
+    "subris_fallback_used",
+    "adaptation_note",
     "rss_mb_before",
     "rss_mb_after",
     "warning",
@@ -137,6 +170,7 @@ BASELINE_LABELS = {
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
+    "nf_ris_groupomp_localgrid_wls": "NF-RIS-GroupOMP-LocalGrid-WLS",
     "proposed": "Proposed",
     "peb": "PEB",
 }
@@ -206,8 +240,9 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
             {
                 "als_cpd": {"position_grid_shape": (3, 3, 2)},
                 "ff_omp": {"angle_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "ris_momp": {"direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "offgrid_refinement": True, "batch_size": 16, "max_batch_memory_mb": 64.0},
+                "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "local_refinement": False, "refinement_levels": 0, "refinement_shrink": 0.5, "offgrid_refinement": False, "batch_size": 64, "max_batch_memory_mb": 64.0},
+                "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "top_candidates": 2, "local_refinement": True, "refinement_levels": 1, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 3, "offgrid_refinement": True, "batch_size": 16, "max_batch_memory_mb": 64.0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 1, "local_grid_iterations": 1, "local_grid_refinement_levels": 1, "batch_size": 32, "max_batch_memory_mb": 64.0, "wls_enabled": True},
             }
         )
     elif profile == "medium":
@@ -215,8 +250,9 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
             {
                 "als_cpd": {"position_grid_shape": (5, 5, 3)},
                 "ff_omp": {"angle_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 2, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "top_candidates": 8, "local_refinement": True, "refinement_levels": 3, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 2, "local_grid_iterations": 5, "local_grid_refinement_levels": 2, "batch_size": 128, "max_batch_memory_mb": 256.0, "wls_enabled": True},
             }
         )
     elif profile == "fine":
@@ -224,8 +260,9 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
             {
                 "als_cpd": {"position_grid_shape": (7, 7, 5)},
                 "ff_omp": {"angle_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 3, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
+                "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "top_candidates": 16, "local_refinement": True, "refinement_levels": 4, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 3, "local_grid_iterations": 7, "local_grid_refinement_levels": 3, "batch_size": 128, "max_batch_memory_mb": 256.0, "wls_enabled": True},
             }
         )
     else:
@@ -338,6 +375,7 @@ BASELINE_RUNNERS = {
     "ff_omp": run_far_field_omp_baseline,
     "ris_momp": run_ris_momp_baseline,
     "nf_mmpsr": run_near_field_mmpsr_baseline,
+    "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
 }
 
 

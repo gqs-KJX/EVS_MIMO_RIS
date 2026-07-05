@@ -1,6 +1,13 @@
 import numpy as np
 
-from src.baselines import als_cpd, common, far_field_omp, near_field_mmpsr, ris_momp
+from src.baselines import (
+    als_cpd,
+    common,
+    far_field_omp,
+    near_field_mmpsr,
+    nf_ris_groupomp_localgrid_wls,
+    ris_momp,
+)
 from src.config import default_config
 from src.main_single_proposed import _make_data
 from src.experiments import run_benchmark_comparison as bench
@@ -37,6 +44,14 @@ def _tiny_config():
         "ff_omp": {"angle_grid_size": 3, "delay_grid_size": 3, "max_atoms": 1},
         "ris_momp": {"direction_grid_size": 3, "delay_grid_size": 3, "max_atoms": 1},
         "nf_mmpsr": {"grid_shape": (3, 3, 3), "clock_grid_size": 3},
+        "nf_ris_groupomp_localgrid_wls": {
+            "direction_grid_size": 3,
+            "delay_grid_size": 3,
+            "max_groups": 1,
+            "coarse_to_nf_refinement_levels": 0,
+            "local_grid_iterations": 0,
+            "wls_enabled": True,
+        },
     }
     return config
 
@@ -47,6 +62,7 @@ def test_import_all_benchmark_baseline_modules():
     assert far_field_omp.run_far_field_omp_baseline
     assert ris_momp.run_ris_momp_baseline
     assert near_field_mmpsr.run_near_field_mmpsr_baseline
+    assert nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline
 
 
 def test_linear_ls_fit_recovers_known_complex_coefficients():
@@ -142,10 +158,11 @@ def test_ris_momp_recovers_known_multidimensional_support():
     result = ris_momp.run_ris_momp_baseline(data, config)
     assert result.selected_support[0]["direction_index"] == support["direction_index"]
     assert result.selected_support[0]["tau_index"] == support["tau_index"]
-    assert result.diagnostics["dictionary_mode"] == "near_field_range_aware_momp"
+    assert result.diagnostics["dictionary_mode"] == "near_field_range_aware_group_momp"
     assert result.diagnostics["group_omp"] is True
     assert result.diagnostics["offgrid_refinement"] is True
     assert result.diagnostics["model_variant"] == "near_field_momp"
+    assert result.diagnostics["momp_group_omp_enabled"] is True
 
 
 def test_nf_mmpsr_grid_search_selects_known_grid_point():
@@ -155,10 +172,10 @@ def test_nf_mmpsr_grid_search_selects_known_grid_point():
     result = near_field_mmpsr.run_near_field_mmpsr_baseline(data, config)
     assert np.allclose(result.p_u, config["p_u_true"])
     assert abs(result.delta_t - config["delta_t_true"]) < 1.0e-15
-    assert result.diagnostics["dictionary_mode"] == "near_field_spherical_grid_mmpsr"
+    assert result.diagnostics["dictionary_mode"] == "near_field_spherical_grid_mmpsr_refined"
     assert "coarse_grid_position" in result.diagnostics
     assert "refined_position" in result.diagnostics
-    assert result.diagnostics["refinement_objective"] == "data_domain_ls"
+    assert result.diagnostics["refinement_objective"] == "cc_projection_local_grid"
 
 
 def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
@@ -176,6 +193,7 @@ def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
     far_field_omp.run_far_field_omp_baseline(data, config)
     ris_momp.run_ris_momp_baseline(data, config)
     near_field_mmpsr.run_near_field_mmpsr_baseline(data, config)
+    nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(data, config)
 
 
 def test_benchmark_plot_metric_mapping_uses_peb_for_peb():

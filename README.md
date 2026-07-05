@@ -94,8 +94,13 @@ The benchmark figure contains:
 - `FF-OMP`: a far-field angular-delay sparse baseline adapted to the current
   raw EVS-RIS-OFDM observation.
 - `RIS-MOMP`: a RIS-aided multidimensional OMP-style sparse baseline with
-  independent direction and delay grids.
-- `NF-MMPSR`: a near-field spherical-domain grid sparse baseline.
+  independent direction and delay group grids.
+- `NF-MMPSR`: a near-field spherical-domain grid sparse baseline with
+  top-candidate local CC refinement.
+- `NF-RIS-GroupOMP-LocalGrid-WLS`: an adapted near-field RIS
+  localization/synchronization baseline using group-OMP coarse estimation,
+  deterministic local-grid refinement, and geometry WLS:
+  `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb"`.
 - `Proposed`: the only curve using the current RG-JNPP-Adaptive-Jones-VP
   pipeline.
 - `PEB`: the data-only EFIM/CRB reference curve.
