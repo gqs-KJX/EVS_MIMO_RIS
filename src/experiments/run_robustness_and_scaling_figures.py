@@ -24,7 +24,7 @@ import numpy as np
 if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
-    from src.baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
+    from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from src.baselines.far_field_omp import run_far_field_omp_baseline
     from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
@@ -52,7 +52,7 @@ if __package__ in (None, ""):
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
-    from ..baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
+    from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from ..baselines.far_field_omp import run_far_field_omp_baseline
     from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
@@ -92,7 +92,7 @@ REFERENCE_BASELINES = (
     "trueK_peb_reference",
 )
 BASELINE_LABELS = {
-    "proposed": "Proposed",
+    "proposed": "NGC-Jones-VP",
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
@@ -183,6 +183,13 @@ FIELDNAMES = [
     "first_trueK_preserved",
     "rss_mb_before",
     "rss_mb_after",
+    "selected_branch",
+    "proposed_stage2_policy",
+    "ngc_policy_active",
+    "ngc_rescue_requested",
+    "rescue_requested",
+    "ngc_selected_by",
+    "ngc_final_unreliable",
 ]
 
 _PATH_ARRAY_KEYS = (
@@ -679,7 +686,10 @@ def _proposed_result_row(data: dict, config: dict, task: dict[str, Any]) -> dict
         raw_objective_final=float(final.get("raw_objective_final", final.get("raw_objective", np.nan))),
         components=final.get("components", {}),
         runtime_s=runtime_s,
-        diagnostics={"dictionary_mode": "proposed_ngc_assumed_K"},
+        diagnostics={
+            "dictionary_mode": "proposed_ngc_assumed_K",
+            **proposed_trace_diagnostics(result),
+        },
     )
     return make_baseline_row(
         baseline_result,

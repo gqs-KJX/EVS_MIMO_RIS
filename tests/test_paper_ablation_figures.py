@@ -230,6 +230,9 @@ def test_figure6_k_grid():
 
 def test_fig6_vp_family_proposed_uses_ngc():
     specs = figures._variant_specs("fig6")
+    adaptive_no_rescue = specs["adaptive_jones_no_rescue"]
+    assert adaptive_no_rescue["global_vp"]["mode"] == "adaptive_jones"
+    assert adaptive_no_rescue["_allow_stage2"] is False
     proposed = specs["adaptive_jones_vp_proposed"]
     assert proposed["global_vp"]["mode"] == "adaptive_jones"
     assert proposed["stage2_adaptive"] is True

@@ -11,6 +11,7 @@ from src.baselines import (
 from src.config import default_config
 from src.main_single_proposed import _make_data
 from src.experiments import run_benchmark_comparison as bench
+from src.experiments import run_robustness_and_scaling_figures as robust
 from src.experiments.run_paper_ablation_figures import (
     _peb_from_efim,
     peb_cache_key,
@@ -63,6 +64,66 @@ def test_import_all_benchmark_baseline_modules():
     assert ris_momp.run_ris_momp_baseline
     assert near_field_mmpsr.run_near_field_mmpsr_baseline
     assert nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline
+
+
+def test_benchmark_default_baselines_include_targeted_nf_and_constrained_peb():
+    baselines = bench.parse_baselines(bench.DEFAULT_BASELINES)
+    if "peb" in baselines and "constrained_jones_peb" not in baselines:
+        baselines.append("constrained_jones_peb")
+    assert baselines == [
+        "als_cpd",
+        "ff_omp",
+        "ris_momp",
+        "nf_mmpsr",
+        "nf_ris_groupomp_localgrid_wls",
+        "proposed",
+        "peb",
+        "constrained_jones_peb",
+    ]
+
+
+def test_proposed_trace_diagnostics_are_csv_visible():
+    config = _tiny_config()
+    data = _make_data(config)
+    trace = common.proposed_trace_diagnostics(
+        {
+            "final": {
+                "selected_branch": "ris_only_stage2_then_vp",
+                "reliability": {
+                    "proposed_stage2_policy": "ngc_certified_ris_only"
+                },
+            },
+            "ngc_policy_active": True,
+            "ngc_rescue_requested": True,
+            "ngc_selected_by": "ngc_certified_candidate",
+            "ngc_final_unreliable": False,
+        }
+    )
+    result = common.BaselineResult(
+        name="proposed",
+        p_u=np.asarray(data["scene"]["p_u_true"], dtype=float),
+        delta_t=float(data["scene"]["delta_t_true"]),
+        Y_hat=np.asarray(data["Y_true"]),
+        raw_objective_final=0.0,
+        diagnostics={"dictionary_mode": "proposed_ngc_adaptive_jones_vp", **trace},
+    )
+    row = common.make_baseline_row(result, data, config, baseline="proposed")
+    fields = (
+        "selected_branch",
+        "proposed_stage2_policy",
+        "ngc_policy_active",
+        "ngc_rescue_requested",
+        "rescue_requested",
+        "ngc_selected_by",
+        "ngc_final_unreliable",
+    )
+    for field in fields:
+        assert field in row
+        assert field in bench.FIELDNAMES
+        assert field in robust.FIELDNAMES
+    assert row["selected_branch"] == "ris_only_stage2_then_vp"
+    assert row["proposed_stage2_policy"] == "ngc_certified_ris_only"
+    assert row["ngc_rescue_requested"] is True
 
 
 def test_linear_ls_fit_recovers_known_complex_coefficients():

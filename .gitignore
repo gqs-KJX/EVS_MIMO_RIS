@@ -32,6 +32,12 @@ tmp/
 # Logs
 *.log
 
+# Documents / manuscript artifacts
+*.pdf
+*.md
+*.markdown
+*.tex
+
 # OS/editor
 .DS_Store
 .vscode/

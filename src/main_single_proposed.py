@@ -1984,6 +1984,15 @@ def _ngc_certificate(
     final = branch_result["final"]
     if "p_u" not in final:
         return base
+    if clock_dof <= 0:
+        base.update(
+            {
+                f"ngc_{prefix}_clock_dof": int(clock_dof),
+                f"ngc_{prefix}_cert_status": "not_applicable",
+                f"ngc_{prefix}_cert_reason": "clock_not_applicable_k_lt_2",
+            }
+        )
+        return base
 
     p_u = np.asarray(final["p_u"], dtype=float).reshape(3)
     tau_stage1, _, _, _ = _stage1_clock_panel_order(stage1_estimate, scene)

@@ -10,9 +10,9 @@ python -m src.main_single_proposed
 
 The single diagnostic run generates one synthetic RIS-EVS-OFDM channel sample,
 builds the Hankelized tensor for Stage-I initialization, applies the current
-reliability-gated RIS/JNPP basin-recovery policy when triggered, and runs the
-current proposed final refinement: adaptive Stage-I-regularized Jones-VP in the
-raw OFDM domain.
+NGC-certified RIS-only rescue policy when triggered, and runs the current
+proposed final refinement: adaptive Stage-I-regularized Jones-VP in the raw
+OFDM domain.
 
 Run the current proposed ablation entry point with one ablation group at a time:
 
@@ -36,22 +36,27 @@ figures with:
 ```bash
 python -m src.experiments.run_paper_ablation_figures \
   --figures all \
-  --n-trials 50 \
+  --n-trials 100 \
   --paper-k 3 \
-  --jobs 10 \
-  --process-workers 4 \
-  --blas-threads auto \
-  --out-dir results/ablation_paper_k3 \
+  --snr-grid "-10,-5,0,5,10,15,20" \
+  --jobs 1 \
+  --process-workers 1 \
+  --blas-threads 4 \
+  --global-vp-backend cupy \
+  --include-constrained-jones-peb \
+  --out-dir results/ablation_paper_final_n100_gpu \
   --force-rerun
 ```
 
 The paper figure runner targets the revised pipeline: Stage-I initialization,
-reliability-gated RIS/JNPP basin recovery, and adaptive Stage-I-regularized
+NGC-certified conditional RIS-only rescue, and adaptive Stage-I-regularized
 Jones-VP. Figures 1--5 use `K=3` by default through the actual simulation
-configuration. Figure 6 ignores `--paper-k` and sweeps `K=1,2,3,4` at 0 dB.
-Figure 6 should be interpreted as the complete NGC proposed system versus
-reduced polarization-model variants; the proposed curve also includes the
-Stage-II rescue policy, while the fixed/free Jones VP variants are VP-only.
+configuration. Figure 5 is the final NGC rescue ablation and plots both
+outlier probability and rescue trigger rate. Figure 6 ignores `--paper-k` and
+sweeps `K=1,2,3,4` at 0 dB. Figure 6 should be interpreted as the complete NGC
+proposed system versus reduced polarization-model variants. It also includes
+an adaptive-Jones VP without rescue arm to separate polarization modeling from
+the NGC rescue mechanism.
 PEB curves include the existing data-only Free-Jones EFIM/CRB reference and,
 by default, a Constrained-Jones oracle polarimetric-anchor reference. The older
 `run_stage2_ablation.py` entry point remains available only for legacy
@@ -67,7 +72,7 @@ the convention used for the EFIM information-ordering comparison.
 The paper runner defaults to `--jobs 10`, `--task-grouping grouped`, and
 `--blas-threads auto`. Grouped execution reuses data generation and Stage-I
 initialization within each Monte Carlo trial before evaluating the requested
-VP/JNPP variants; it does not change the estimator or physical channel model.
+VP/NGC variants; it does not change the estimator or physical channel model.
 
 `--jobs` is the total CPU-slot budget. `--process-workers` controls the number
 of memory-heavy worker processes, and `--blas-threads` controls native compute
@@ -84,10 +89,16 @@ python -m src.experiments.run_benchmark_comparison \
   --n-trials 50 \
   --paper-k 3 \
   --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" \
-  --out-dir results/benchmark_comparison \
-  --jobs 10 \
-  --process-workers 4 \
-  --blas-threads auto \
+  --baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb" \
+  --grid-profile medium \
+  --baseline-backend cupy \
+  --gpu-device 0 \
+  --gpu-batch-size 4096 \
+  --include-constrained-jones-peb \
+  --out-dir results/benchmark_comparison_gpu_k3_medium \
+  --jobs 1 \
+  --process-workers 1 \
+  --blas-threads 4 \
   --force-rerun
 ```
 
@@ -105,8 +116,8 @@ The benchmark figure contains:
   localization/synchronization baseline using group-OMP coarse estimation,
   deterministic local-grid refinement, and geometry WLS:
   `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb"`.
-- `Proposed`: the only curve using the current RG-JNPP-Adaptive-Jones-VP
-  pipeline.
+- `NGC-Jones-VP`: the only curve using the current NGC-certified adaptive
+  Jones-VP proposed pipeline.
 - `PEB`: the data-only Free-Jones EFIM/CRB reference curve. Plots that show
   this curve also include a Constrained-Jones PEB reference unless disabled.
 
@@ -129,10 +140,13 @@ python -m src.experiments.run_robustness_and_scaling_figures \
   --T-grid "64,128,256,512" \
   --ris-side-grid "16,24,32,48,64" \
   --baselines "proposed,ff_omp,ris_momp,nf_mmpsr,peb" \
-  --out-dir results/robustness_and_scaling \
-  --jobs 10 \
-  --process-workers 4 \
-  --blas-threads auto \
+  --baseline-backend cupy \
+  --gpu-device 0 \
+  --include-constrained-jones-peb \
+  --out-dir results/robustness_and_scaling_final_n50 \
+  --jobs 1 \
+  --process-workers 1 \
+  --blas-threads 4 \
   --force-rerun
 ```
 

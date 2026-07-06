@@ -23,7 +23,7 @@ if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
     from src.baselines.als_cpd import run_als_cpd_baseline
-    from src.baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
+    from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from src.baselines.far_field_omp import run_far_field_omp_baseline
     from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
@@ -50,7 +50,7 @@ if __package__ in (None, ""):
     )
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
-    from ..baselines.common import BaselineResult, data_hash, make_baseline_row, y_noisy_hash
+    from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from ..baselines.far_field_omp import run_far_field_omp_baseline
     from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
@@ -78,7 +78,10 @@ else:
 
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
-DEFAULT_BASELINES = "als_cpd,ff_omp,ris_momp,nf_mmpsr,proposed,peb"
+DEFAULT_BASELINES = (
+    "als_cpd,ff_omp,ris_momp,nf_mmpsr,"
+    "nf_ris_groupomp_localgrid_wls,proposed,peb"
+)
 TRIAL_CSV = "benchmark_trials.csv"
 SUMMARY_CSV = "benchmark_summary.csv"
 RMSE_PDF = "fig7_benchmark_rmse_vs_snr.pdf"
@@ -187,6 +190,13 @@ FIELDNAMES = [
     "rss_mb_before",
     "rss_mb_after",
     "warning",
+    "selected_branch",
+    "proposed_stage2_policy",
+    "ngc_policy_active",
+    "ngc_rescue_requested",
+    "rescue_requested",
+    "ngc_selected_by",
+    "ngc_final_unreliable",
 ]
 BASELINE_LABELS = {
     "als_cpd": "ALS-CPD",
@@ -194,7 +204,7 @@ BASELINE_LABELS = {
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS-GroupOMP-LocalGrid-WLS",
-    "proposed": "Proposed",
+    "proposed": "NGC-Jones-VP",
     "peb": "Data-only Free-Jones PEB",
     "constrained_jones_peb": "Constrained-Jones PEB",
 }
@@ -342,7 +352,10 @@ def _proposed_row(data: dict, config: dict, trial_id: int, baseline: str) -> dic
         components=final.get("components", {}),
         selected_support=[],
         runtime_s=runtime_s,
-        diagnostics={"dictionary_mode": "proposed_ngc_adaptive_jones_vp"},
+        diagnostics={
+            "dictionary_mode": "proposed_ngc_adaptive_jones_vp",
+            **proposed_trace_diagnostics(result),
+        },
     )
     return make_baseline_row(
         baseline_result,

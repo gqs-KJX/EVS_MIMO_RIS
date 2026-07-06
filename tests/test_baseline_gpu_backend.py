@@ -147,6 +147,46 @@ def test_benchmark_row_contains_backend_diagnostics():
         assert field in benchmark.FIELDNAMES
 
 
+def test_ff_omp_explicit_cupy_raises_when_cupy_import_fails(monkeypatch):
+    original_import = builtins.__import__
+
+    def rejecting_import(name, *args, **kwargs):
+        if name == "cupy":
+            raise ImportError("forced unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", rejecting_import)
+    config = _tiny_config()
+    config["baselines"]["ff_omp"]["offgrid_refinement"] = False
+    config["baselines"]["backend_config"] = {"backend": "cupy"}
+    data = _make_data(config)
+
+    with pytest.raises(RuntimeError, match="CuPy backend unavailable"):
+        far_field_omp.run_far_field_omp_baseline(data, config)
+
+
+def test_ff_omp_auto_backend_records_real_cpu_fallback(monkeypatch):
+    original_import = builtins.__import__
+
+    def rejecting_import(name, *args, **kwargs):
+        if name == "cupy":
+            raise ImportError("forced unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", rejecting_import)
+    config = _tiny_config()
+    config["baselines"]["ff_omp"]["offgrid_refinement"] = False
+    config["baselines"]["backend_config"] = {"backend": "auto"}
+    data = _make_data(config)
+
+    with pytest.warns(RuntimeWarning, match="falling back to CPU"):
+        result = far_field_omp.run_far_field_omp_baseline(data, config)
+
+    assert result.diagnostics["backend"] == "cpu"
+    assert result.diagnostics["gpu_used"] is False
+    assert "falling back to CPU" in result.diagnostics["backend_warning"]
+
+
 def test_ff_omp_cpu_gpu_selected_support_match():
     _cupy_backend_or_skip()
     cpu_config = _tiny_config()

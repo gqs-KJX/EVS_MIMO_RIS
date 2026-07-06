@@ -102,6 +102,48 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _nested_get(container: Any, path: tuple[str, ...], default: Any = "") -> Any:
+    current = container
+    for key in path:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+    return current
+
+
+def proposed_trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
+    """Return lightweight branch/NGC diagnostics for proposed-method CSV rows."""
+    final = result.get("final", {}) if isinstance(result, dict) else {}
+    reliability = (
+        result.get("reliability")
+        if isinstance(result.get("reliability"), dict)
+        else final.get("reliability") if isinstance(final.get("reliability"), dict) else {}
+    )
+    ngc_rescue_requested = result.get(
+        "ngc_rescue_requested", final.get("ngc_rescue_requested", "")
+    )
+    return {
+        "selected_branch": result.get(
+            "selected_branch", final.get("selected_branch", "")
+        ),
+        "proposed_stage2_policy": reliability.get(
+            "proposed_stage2_policy",
+            _nested_get(result, ("stage1_config", "proposed_stage2_policy"), ""),
+        ),
+        "ngc_policy_active": result.get(
+            "ngc_policy_active", final.get("ngc_policy_active", "")
+        ),
+        "ngc_rescue_requested": ngc_rescue_requested,
+        "rescue_requested": ngc_rescue_requested,
+        "ngc_selected_by": result.get(
+            "ngc_selected_by", final.get("ngc_selected_by", "")
+        ),
+        "ngc_final_unreliable": result.get(
+            "ngc_final_unreliable", final.get("ngc_final_unreliable", "")
+        ),
+    }
+
+
 def make_baseline_row(
     result: BaselineResult,
     data: dict,
@@ -215,6 +257,13 @@ def make_baseline_row(
         "subris_shape": json.dumps(_jsonable(diagnostics.get("subris_shape", "")), separators=(",", ":")),
         "subris_fallback_used": diagnostics.get("subris_fallback_used", ""),
         "adaptation_note": diagnostics.get("adaptation_note", ""),
+        "selected_branch": diagnostics.get("selected_branch", ""),
+        "proposed_stage2_policy": diagnostics.get("proposed_stage2_policy", ""),
+        "ngc_policy_active": diagnostics.get("ngc_policy_active", ""),
+        "ngc_rescue_requested": diagnostics.get("ngc_rescue_requested", ""),
+        "rescue_requested": diagnostics.get("rescue_requested", ""),
+        "ngc_selected_by": diagnostics.get("ngc_selected_by", ""),
+        "ngc_final_unreliable": diagnostics.get("ngc_final_unreliable", ""),
         "warning": row_warning,
     }
 

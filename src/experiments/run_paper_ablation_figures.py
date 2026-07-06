@@ -137,7 +137,7 @@ FIGURE_PDFS = {
     "fig2": "fig2_vp_family_nmse_vs_snr.pdf",
     "fig3": "fig3_evs_sensing_rmse_vs_snr.pdf",
     "fig4": "fig4_evs_peb_vs_snr.pdf",
-    "fig5": "fig5_stage2_gate_outlier_vs_snr.pdf",
+    "fig5": "fig5_ngc_rescue_outlier_trigger_vs_snr.pdf",
     "fig6": "fig6_rmse_vs_K_snr0.pdf",
 }
 FIGURE_METRICS = {
@@ -155,6 +155,7 @@ VARIANT_LABELS = {
     "force_rescue": "Always-run rescue",
     "oracle_init_vp": "Oracle init VP",
     "adaptive_jones_vp_proposed": "NGC proposed",
+    "adaptive_jones_no_rescue": "Adaptive-Jones VP (w/o rescue)",
     "PEB": "Data-only Free-Jones PEB",
     "proposed_peb": "Data-only Free-Jones PEB",
     "full_6d_evs_peb": "Full-6D Free-Jones PEB",
@@ -692,6 +693,11 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             },
             "free_jones_vp": {
                 "global_vp": {"mode": "jones_free"},
+                "proposed_stage2_policy": "reliability_gated",
+                "_allow_stage2": False,
+            },
+            "adaptive_jones_no_rescue": {
+                "global_vp": {"mode": "adaptive_jones"},
                 "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
@@ -3738,7 +3744,8 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
         "fig6_interpretation": (
-            "complete_ngc_proposed_system_vs_vp_only_polarization_variants"
+            "complete_ngc_proposed_system_vs_vp_only_polarization_variants;"
+            "adaptive_jones_no_rescue isolates adaptive Jones VP without rescue"
         ),
         "seed": int(args.seed),
         "include_diagnostic_variants": bool(

@@ -297,6 +297,30 @@ def test_ngc_certificate_uses_efim_tau_crb_and_marks_bad_clock_red():
     assert cert["ngc_direct_clock_score_norm"] >= cert["ngc_threshold_clock_red"]
 
 
+def test_ngc_certificate_marks_single_path_clock_not_applicable():
+    config = default_config()
+    scene = {
+        "K": 1,
+        "T": 4,
+        "delta_f": 5.0e6,
+        "c0": 299_792_458.0,
+        "ris_centers": np.array([[1.0, 0.0, 0.0]], dtype=float),
+        "d_RB": np.zeros(1, dtype=float),
+    }
+    stage1_estimate = {
+        "poles": np.array([pole_from_tau(0.0, scene["delta_f"])]),
+        "ris_eta": np.zeros((1, 3), dtype=float),
+        "columns_are_panel_ordered": True,
+    }
+    branch = {"final": {"p_u": np.zeros(3, dtype=float), "delta_t": 0.0}}
+
+    cert = _ngc_certificate("direct", branch, stage1_estimate, scene, config)
+
+    assert cert["ngc_direct_clock_dof"] == 0
+    assert cert["ngc_direct_cert_status"] == "not_applicable"
+    assert cert["ngc_direct_cert_reason"] == "clock_not_applicable_k_lt_2"
+
+
 def test_main_single_weak_reasonable_stage1_config():
     config = default_config()
     weak_config = _weak_reasonable_stage1_config(config)
