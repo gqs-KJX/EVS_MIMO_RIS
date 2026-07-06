@@ -108,6 +108,29 @@ FIELDNAMES = [
     "model_variant",
     "selected_support",
     "peb_position_m",
+    "peb_free_jones_m",
+    "peb_constrained_jones_m",
+    "peb_anchored_jones_m",
+    "peb_variant",
+    "jones_bound_type",
+    "constrained_jones_peb_m",
+    "anchored_jones_peb_m",
+    "free_jones_peb_m",
+    "peb_fim_rank_chi_free",
+    "peb_fim_rank_chi_constrained",
+    "peb_fim_rank_chi_anchored",
+    "peb_fim_cond_chi_free",
+    "peb_fim_cond_chi_constrained",
+    "peb_fim_cond_chi_anchored",
+    "peb_clock_schur_used",
+    "peb_rank_deficient",
+    "anchored_prior_scaling",
+    "anchored_prior_lambda",
+    "anchored_prior_precision_norm",
+    "peb_free_projection_schur_relerr",
+    "peb_con_minus_free_min_eig",
+    "peb_hyb_minus_free_min_eig",
+    "peb_ordering_ok",
     "peb_is_data_only",
     "peb_uses_regularization",
     "nuisance_model",
@@ -172,7 +195,8 @@ BASELINE_LABELS = {
     "nf_mmpsr": "NF-MMPSR",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS-GroupOMP-LocalGrid-WLS",
     "proposed": "Proposed",
-    "peb": "PEB",
+    "peb": "Data-only Free-Jones PEB",
+    "constrained_jones_peb": "Constrained-Jones PEB",
 }
 
 
@@ -331,12 +355,26 @@ def _proposed_row(data: dict, config: dict, trial_id: int, baseline: str) -> dic
     )
 
 
-def _peb_row(data: dict, config: dict, trial_id: int) -> dict[str, Any]:
+def _peb_row(
+    data: dict,
+    config: dict,
+    trial_id: int,
+    *,
+    baseline: str = "peb",
+) -> dict[str, Any]:
     start = time.perf_counter()
     metrics = _peb_from_efim(data, config)
+    if baseline == "constrained_jones_peb":
+        peb_value = metrics.get("peb_constrained_jones_m", float("nan"))
+        peb_variant = "constrained_jones_peb"
+        bound_type = "constrained"
+    else:
+        peb_value = metrics.get("peb_free_jones_m", metrics.get("peb_position_m", float("nan")))
+        peb_variant = "free_jones_peb"
+        bound_type = "free"
     runtime_s = time.perf_counter() - start
     return {
-        "baseline": "peb",
+        "baseline": baseline,
         "trial_id": int(trial_id),
         "seed": int(config["seed"]),
         "snr_db": float(config["SNR_dB"]),
@@ -353,9 +391,36 @@ def _peb_row(data: dict, config: dict, trial_id: int) -> dict[str, Any]:
         "raw_objective_final": float("nan"),
         "support_size": 0,
         "grid_size": "",
-        "dictionary_mode": "data_only_efim_peb",
+        "dictionary_mode": (
+            "constrained_jones_efim_peb"
+            if baseline == "constrained_jones_peb"
+            else "data_only_free_jones_efim_peb"
+        ),
         "selected_support": "",
-        "peb_position_m": metrics.get("peb_position_m", float("nan")),
+        "peb_position_m": peb_value,
+        "peb_free_jones_m": metrics.get("peb_free_jones_m", float("nan")),
+        "peb_constrained_jones_m": metrics.get("peb_constrained_jones_m", float("nan")),
+        "peb_anchored_jones_m": metrics.get("peb_anchored_jones_m", float("nan")),
+        "peb_variant": peb_variant,
+        "jones_bound_type": bound_type,
+        "constrained_jones_peb_m": metrics.get("constrained_jones_peb_m", float("nan")),
+        "anchored_jones_peb_m": metrics.get("anchored_jones_peb_m", float("nan")),
+        "free_jones_peb_m": metrics.get("free_jones_peb_m", float("nan")),
+        "peb_fim_rank_chi_free": metrics.get("peb_fim_rank_chi_free", ""),
+        "peb_fim_rank_chi_constrained": metrics.get("peb_fim_rank_chi_constrained", ""),
+        "peb_fim_rank_chi_anchored": metrics.get("peb_fim_rank_chi_anchored", ""),
+        "peb_fim_cond_chi_free": metrics.get("peb_fim_cond_chi_free", float("nan")),
+        "peb_fim_cond_chi_constrained": metrics.get("peb_fim_cond_chi_constrained", float("nan")),
+        "peb_fim_cond_chi_anchored": metrics.get("peb_fim_cond_chi_anchored", float("nan")),
+        "peb_clock_schur_used": metrics.get("peb_clock_schur_used", ""),
+        "peb_rank_deficient": metrics.get("peb_rank_deficient", ""),
+        "anchored_prior_scaling": metrics.get("anchored_prior_scaling", ""),
+        "anchored_prior_lambda": metrics.get("anchored_prior_lambda", float("nan")),
+        "anchored_prior_precision_norm": metrics.get("anchored_prior_precision_norm", float("nan")),
+        "peb_free_projection_schur_relerr": metrics.get("peb_free_projection_schur_relerr", float("nan")),
+        "peb_con_minus_free_min_eig": metrics.get("peb_con_minus_free_min_eig", float("nan")),
+        "peb_hyb_minus_free_min_eig": metrics.get("peb_hyb_minus_free_min_eig", float("nan")),
+        "peb_ordering_ok": metrics.get("peb_ordering_ok", ""),
         "peb_is_data_only": bool(metrics.get("peb_is_data_only", True)),
         "peb_uses_regularization": bool(metrics.get("peb_uses_regularization", False)),
         "nuisance_model": str(metrics.get("nuisance_model", "jones_linear")),
@@ -436,6 +501,7 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
         grid_profile=str(task["grid_profile"]),
         strict_ris_geometry=bool(task.get("strict_ris_geometry", False)),
     )
+    config["crb"] = dict(task.get("crb", {}))
     config["baselines"]["backend_config"] = dict(task.get("backend_config", {}))
     config["baselines"]["trim_memory"] = bool(
         task.get("trim_memory", _WORKER_TRIM_MEMORY)
@@ -466,8 +532,10 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
                     del result
                 elif baseline == "proposed":
                     row = _proposed_row(data, config, int(task["trial_id"]), baseline)
-                elif baseline == "peb":
-                    row = _peb_row(data, config, int(task["trial_id"]))
+                elif baseline in {"peb", "constrained_jones_peb"}:
+                    row = _peb_row(
+                        data, config, int(task["trial_id"]), baseline=baseline
+                    )
                 else:
                     raise ValueError(f"unknown baseline {baseline!r}")
         except Exception as exc:  # noqa: BLE001 - failed baseline becomes CSV row.
@@ -624,7 +692,7 @@ def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, f
 
 
 def get_plot_metric(baseline: str, plot_kind: str) -> str | None:
-    if baseline == "peb":
+    if baseline in {"peb", "constrained_jones_peb"}:
         return "peb_position_m" if plot_kind == "rmse" else None
     if plot_kind == "rmse":
         return "position_rmse_m"
@@ -696,7 +764,15 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
         xs = np.asarray([_to_float(row["snr_db"]) for row in rows], dtype=float)
         ys = np.asarray([_to_float(row[f"{metric}_mean"]) for row in rows], dtype=float)
         order = np.argsort(xs)
-        ax.plot(xs[order], ys[order], marker=markers[idx % len(markers)], linewidth=1.5, label=BASELINE_LABELS[baseline])
+        linestyle = "-." if baseline == "constrained_jones_peb" else ("--" if baseline == "peb" else "-")
+        ax.plot(
+            xs[order],
+            ys[order],
+            marker=markers[idx % len(markers)],
+            linestyle=linestyle,
+            linewidth=1.5,
+            label=BASELINE_LABELS[baseline],
+        )
     ax.set_xlabel("SNR (dB)")
     ax.set_ylabel("Position RMSE / PEB (m)" if plot_kind == "rmse" else "Channel NMSE")
     ax.set_yscale("log")
@@ -731,6 +807,10 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "cache_baseline_grids": bool(args.cache_baseline_grids),
         "cache_memory_budget_gb": args.cache_memory_budget_gb,
         "gpu_memory_fraction": args.gpu_memory_fraction,
+        "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
+        "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
+        "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
+        "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
     }
 
 
@@ -758,6 +838,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], baselines: list[s
         "cache_baseline_grids": bool(args.cache_baseline_grids),
         "cache_memory_budget_gb": args.cache_memory_budget_gb,
         "gpu_memory_fraction": args.gpu_memory_fraction,
+        "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
+        "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
+        "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
+        "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
     }
 
 
@@ -807,6 +891,20 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
                         "gpu_memory_fraction": args.gpu_memory_fraction,
                         "dtype": "complex128",
                     },
+                    "crb": {
+                        "include_constrained_jones_peb": bool(
+                            args.include_constrained_jones_peb
+                        ),
+                        "include_anchored_jones_peb": bool(
+                            args.include_anchored_jones_peb
+                        ),
+                        "jones_anchor_prior_mode": str(
+                            args.jones_anchor_prior_mode
+                        ),
+                        "jones_anchor_prior_scale": float(
+                            args.jones_anchor_prior_scale
+                        ),
+                    },
                 }
             )
     return tasks
@@ -838,6 +936,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--strict-ris-geometry", action="store_true")
     parser.add_argument("--grid-profile", choices=("coarse", "medium", "fine"), default="medium")
+    parser.add_argument(
+        "--include-constrained-jones-peb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--no-constrained-jones-peb",
+        dest="include_constrained_jones_peb",
+        action="store_false",
+    )
+    parser.add_argument("--include-anchored-jones-peb", action="store_true")
+    parser.add_argument(
+        "--jones-anchor-prior-mode",
+        choices=("disabled", "manual", "lambda_from_adaptive"),
+        default="disabled",
+    )
+    parser.add_argument("--jones-anchor-prior-scale", type=float, default=1.0)
     args = parser.parse_args(argv)
     normalize_blas_threads(args)
     return args
@@ -876,6 +991,12 @@ def main(argv: list[str] | None = None) -> None:
     summary_csv = out_dir / SUMMARY_CSV
     metadata_path = out_dir / "benchmark_metadata.json"
     baselines = parse_baselines(args.baselines)
+    if (
+        "peb" in baselines
+        and bool(args.include_constrained_jones_peb)
+        and "constrained_jones_peb" not in baselines
+    ):
+        baselines.append("constrained_jones_peb")
     snr_grid = parse_snr_grid(args.snr_grid)
     if "proposed" in baselines:
         preview_config = make_config(

@@ -31,12 +31,17 @@ if __package__ in (None, ""):
     from src.channel_model import channel_components, evs_component_selection
     from src.config import default_config
     from src.diagnostics import estimate_position_from_ris_eta
+    from src.geometry import polarization_vector
     from src.estimators import (
         reconstruct_raw_tensor_from_structured_estimate,
         estimate_position_from_local_ris,
         global_exact_spherical_vp_refinement,
     )
-    from src.global_vp import data_only_efim_diagnostic
+    from src.global_vp import (
+        _build_global_dictionary,
+        _solve_linear_vp_regularized,
+        data_only_efim_diagnostic,
+    )
     from src.main_single_proposed import (
         _apply_main_single_defaults,
         _make_data,
@@ -68,12 +73,17 @@ else:
     from ..channel_model import channel_components, evs_component_selection
     from ..config import default_config
     from ..diagnostics import estimate_position_from_ris_eta
+    from ..geometry import polarization_vector
     from ..estimators import (
         reconstruct_raw_tensor_from_structured_estimate,
         estimate_position_from_local_ris,
         global_exact_spherical_vp_refinement,
     )
-    from ..global_vp import data_only_efim_diagnostic
+    from ..global_vp import (
+        _build_global_dictionary,
+        _solve_linear_vp_regularized,
+        data_only_efim_diagnostic,
+    )
     from ..main_single_proposed import (
         _apply_main_single_defaults,
         _make_data,
@@ -140,7 +150,18 @@ FIGURE_METRICS = {
 }
 
 VARIANT_LABELS = {
-    "adaptive_jones_vp_proposed": "Proposed",
+    "direct_vp": "Direct VP (w/o rescue)",
+    "old_gated": "GoF-gated rescue",
+    "force_rescue": "Always-run rescue",
+    "oracle_init_vp": "Oracle init VP",
+    "adaptive_jones_vp_proposed": "NGC proposed",
+    "PEB": "Data-only Free-Jones PEB",
+    "proposed_peb": "Data-only Free-Jones PEB",
+    "full_6d_evs_peb": "Full-6D Free-Jones PEB",
+    "scalar_peb": "Scalar Free-Jones PEB",
+    "dual_pol_peb": "Dual-pol Free-Jones PEB",
+    "constrained_jones_peb": "Constrained-Jones PEB",
+    "full_6d_constrained_jones_peb": "Full-6D Constrained-Jones PEB",
     "adaptive_jones_vp_proposed_force_lower_raw": "Proposed w/ always-run rescue",
     "adaptive_jones_vp_proposed_old_gated": "Proposed w/ GoF-gated rescue",
 }
@@ -182,6 +203,35 @@ RAW_SUMMARY_METRICS = [
     "peb_scalar_m",
     "peb_dual_m",
     "peb_evs_m",
+    "peb_free_jones_m",
+    "peb_constrained_jones_m",
+    "peb_anchored_jones_m",
+]
+
+PEB_EXTRA_FIELDS = [
+    "peb_free_jones_m",
+    "peb_constrained_jones_m",
+    "peb_anchored_jones_m",
+    "peb_variant",
+    "jones_bound_type",
+    "constrained_jones_peb_m",
+    "anchored_jones_peb_m",
+    "free_jones_peb_m",
+    "peb_fim_rank_chi_free",
+    "peb_fim_rank_chi_constrained",
+    "peb_fim_rank_chi_anchored",
+    "peb_fim_cond_chi_free",
+    "peb_fim_cond_chi_constrained",
+    "peb_fim_cond_chi_anchored",
+    "peb_clock_schur_used",
+    "peb_rank_deficient",
+    "anchored_prior_scaling",
+    "anchored_prior_lambda",
+    "anchored_prior_precision_norm",
+    "peb_free_projection_schur_relerr",
+    "peb_con_minus_free_min_eig",
+    "peb_hyb_minus_free_min_eig",
+    "peb_ordering_ok",
 ]
 
 FIELDNAMES = [
@@ -256,6 +306,29 @@ FIELDNAMES = [
     "peb_scalar_m",
     "peb_dual_m",
     "peb_evs_m",
+    "peb_free_jones_m",
+    "peb_constrained_jones_m",
+    "peb_anchored_jones_m",
+    "peb_variant",
+    "jones_bound_type",
+    "constrained_jones_peb_m",
+    "anchored_jones_peb_m",
+    "free_jones_peb_m",
+    "peb_fim_rank_chi_free",
+    "peb_fim_rank_chi_constrained",
+    "peb_fim_rank_chi_anchored",
+    "peb_fim_cond_chi_free",
+    "peb_fim_cond_chi_constrained",
+    "peb_fim_cond_chi_anchored",
+    "peb_clock_schur_used",
+    "peb_rank_deficient",
+    "anchored_prior_scaling",
+    "anchored_prior_lambda",
+    "anchored_prior_precision_norm",
+    "peb_free_projection_schur_relerr",
+    "peb_con_minus_free_min_eig",
+    "peb_hyb_minus_free_min_eig",
+    "peb_ordering_ok",
     "efim_unscaled_cache_hit",
     "efim_unscaled_cache_key",
     "efim_sigma2",
@@ -440,6 +513,23 @@ def apply_global_vp_cli_overrides(
     return config
 
 
+def apply_peb_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
+    crb = config.setdefault("crb", {})
+    crb["include_constrained_jones_peb"] = bool(
+        getattr(args, "include_constrained_jones_peb", True)
+    )
+    crb["include_anchored_jones_peb"] = bool(
+        getattr(args, "include_anchored_jones_peb", False)
+    )
+    crb["jones_anchor_prior_mode"] = str(
+        getattr(args, "jones_anchor_prior_mode", "disabled")
+    )
+    crb["jones_anchor_prior_scale"] = float(
+        getattr(args, "jones_anchor_prior_scale", 1.0)
+    )
+    return config
+
+
 def set_number_of_ris_paths(config: dict, k_paths: int) -> dict:
     """Set the physical path/RIS count used by scene generation and estimators."""
     k_paths = int(k_paths)
@@ -563,27 +653,30 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             "scalar_peb": {"receiver_mode": "scalar", "_runner": "peb_only"},
             "dual_pol_peb": {"receiver_mode": "dual_pol", "_runner": "peb_only"},
             "full_6d_evs_peb": {"receiver_mode": "full_6d", "_runner": "peb_only"},
+            "full_6d_constrained_jones_peb": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
         }
     if figure == "fig5":
         return {
             "direct_vp": {
+                "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
                 "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
-            "jnpp_always": {
-                "global_vp": {"mode": "adaptive_jones"},
-                "proposed_stage2_policy": "force_ris_only",
-                "_allow_stage2": True,
+            "old_gated": {
+                **_proposed_old_gated_spec(),
             },
-            "reliability_gated_proposed": {
-                "global_vp": {"mode": "adaptive_jones"},
-                "proposed_stage2_policy": "reliability_gated_ris_only",
-                "rescue_accept_min_rel_improvement": 1.0e-3,
-                "rescue_accept_min_abs_improvement": 1.0e-8,
-                "_allow_stage2": True,
+            "adaptive_jones_vp_proposed": {
+                **_proposed_ngc_spec(allow_stage2=True),
+            },
+            "force_rescue": {
+                **_proposed_force_lower_raw_spec(),
             },
             "oracle_init_vp": {
+                "enable_global_vp": True,
                 "global_vp": {"mode": "adaptive_jones"},
                 "_runner": "oracle_init_vp",
                 "proposed_stage2_policy": "reliability_gated",
@@ -603,13 +696,13 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "_allow_stage2": False,
             },
             "adaptive_jones_vp_proposed": {
-                "enable_global_vp": True,
-                "global_vp": {"mode": "adaptive_jones"},
-                "stage2_adaptive": False,
-                "proposed_stage2_policy": "reliability_gated",
-                "_allow_stage2": False,
+                **_proposed_ngc_spec(allow_stage2=True),
             },
             "proposed_peb": {"global_vp": {"mode": "adaptive_jones"}, "_runner": "peb_only"},
+            "constrained_jones_peb": {
+                "global_vp": {"mode": "adaptive_jones"},
+                "_runner": "peb_only",
+            },
         }
     raise ValueError(f"unknown figure {figure!r}")
 
@@ -666,13 +759,23 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 
 def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
-        return {"PEB": {"receiver_mode": "full_6d", "_runner": "peb_only"}}
+        return {
+            "PEB": {"receiver_mode": "full_6d", "_runner": "peb_only"},
+            "constrained_jones_peb": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
+        }
     if figure == "fig3":
         return {
             "full_6d_evs_peb": {
                 "receiver_mode": "full_6d",
                 "_runner": "peb_only",
-            }
+            },
+            "full_6d_constrained_jones_peb": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
         }
     return {}
 
@@ -687,6 +790,8 @@ def _variant_filter_aliases(
         aliases.add(runner)
     if variant == "PEB" and runner == "peb_only":
         aliases.update({"peb", "peb_only", "data_only_peb"})
+    if "constrained_jones_peb" in str(variant).lower() and runner == "peb_only":
+        aliases.update({"peb", "constrained_peb", "constrained_jones_peb"})
     return aliases
 
 
@@ -740,6 +845,19 @@ def _variants_for_figure(
         **_extra_peb_specs(canonical),
     }
     return _filter_variants(canonical, variants, variant_filter)
+
+
+def _apply_peb_cli_variant_filter(
+    variants: dict[str, dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, dict[str, Any]]:
+    if bool(getattr(args, "include_constrained_jones_peb", True)):
+        return variants
+    return {
+        name: spec
+        for name, spec in variants.items()
+        if "constrained_jones_peb" not in str(name).lower()
+    }
 
 
 def _trial_seed(seed_sequence: np.random.SeedSequence) -> int:
@@ -838,6 +956,23 @@ def _empty_row() -> dict[str, Any]:
         "peb_scalar_m",
         "peb_dual_m",
         "peb_evs_m",
+        "peb_free_jones_m",
+        "peb_constrained_jones_m",
+        "peb_anchored_jones_m",
+        "constrained_jones_peb_m",
+        "anchored_jones_peb_m",
+        "free_jones_peb_m",
+        "peb_fim_rank_chi_free",
+        "peb_fim_rank_chi_constrained",
+        "peb_fim_rank_chi_anchored",
+        "peb_fim_cond_chi_free",
+        "peb_fim_cond_chi_constrained",
+        "peb_fim_cond_chi_anchored",
+        "anchored_prior_lambda",
+        "anchored_prior_precision_norm",
+        "peb_free_projection_schur_relerr",
+        "peb_con_minus_free_min_eig",
+        "peb_hyb_minus_free_min_eig",
         "rss_mb_before",
         "rss_mb_after",
         "rss_mb_delta",
@@ -1006,6 +1141,7 @@ def peb_cache_key(config: dict) -> tuple[Any, ...]:
 def _hash_config_for_peb(config: dict) -> str:
     payload = {
         "global_vp": config.get("global_vp", {}),
+        "crb": config.get("crb", {}),
         "eps": config.get("eps", None),
         "delta_f": config.get("delta_f", None),
         "wavelength": config.get("wavelength", None),
@@ -1209,7 +1345,7 @@ def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> di
     if row is None:
         return None
     payload = json.loads(row[0])
-    return {
+    result = {
         "peb_position_m": _restore_cached_float(payload.get("peb_position_m")),
         "peb_scalar_m": _restore_cached_float(payload.get("peb_scalar_m")),
         "peb_dual_m": _restore_cached_float(payload.get("peb_dual_m")),
@@ -1241,6 +1377,20 @@ def _read_persistent_peb_cache(config: dict, out_dir: pathlib.Path | None) -> di
         "efim_reuse_mode": str(payload.get("efim_reuse_mode", "")),
         "peb_backend": str(payload.get("peb_backend", "cpu")),
     }
+    for field in PEB_EXTRA_FIELDS:
+        value = payload.get(field)
+        if field in {
+            "peb_variant",
+            "jones_bound_type",
+            "anchored_prior_scaling",
+            "peb_ordering_ok",
+        }:
+            result[field] = "" if value is None else value
+        elif field in {"peb_clock_schur_used", "peb_rank_deficient"}:
+            result[field] = bool(value) if value is not None else False
+        else:
+            result[field] = _restore_cached_float(value)
+    return result
 
 
 def _write_persistent_peb_cache(
@@ -1280,6 +1430,14 @@ def _write_persistent_peb_cache(
         "efim_reuse_mode": str(value.get("efim_reuse_mode", "")),
         "peb_backend": str(value.get("peb_backend", "cpu")),
     }
+    for field in PEB_EXTRA_FIELDS:
+        field_value = value.get(field)
+        if isinstance(field_value, (bool, np.bool_)):
+            payload[field] = bool(field_value)
+        elif isinstance(field_value, str):
+            payload[field] = field_value
+        else:
+            payload[field] = _json_safe_float(field_value)
     cache_key = _peb_cache_key_string(config)
     value_json = json.dumps(payload, sort_keys=True)
     last_error: sqlite3.OperationalError | None = None
@@ -1420,11 +1578,302 @@ def position_peb_from_global_efim(
     return peb
 
 
+def _symmetrize_fim(matrix: np.ndarray) -> np.ndarray:
+    arr = np.asarray(matrix, dtype=float)
+    return 0.5 * (arr + arr.T)
+
+
+def _fim_rank_condition(matrix: np.ndarray, *, rcond: float = 1.0e-10) -> tuple[int, float]:
+    arr = _symmetrize_fim(matrix)
+    singular = np.linalg.svd(arr, compute_uv=False)
+    if not singular.size:
+        return 0, float("inf")
+    tol = float(rcond) * max(float(singular[0]), 1.0)
+    rank = int(np.sum(singular > tol))
+    positive = singular[singular > tol]
+    condition = (
+        float(singular[0] / positive[-1])
+        if positive.size
+        else float("inf")
+    )
+    return rank, condition
+
+
+def _scale_seconds_clock_efim_to_range_clock(efim: np.ndarray, scene: dict) -> np.ndarray:
+    scale = np.diag([1.0, 1.0, 1.0, 1.0 / float(scene["c0"])])
+    return _symmetrize_fim(scale.T @ np.asarray(efim, dtype=float) @ scale)
+
+
+def _projection_efim_from_design(
+    design: np.ndarray,
+    d_model: np.ndarray,
+    sigma2: float,
+) -> np.ndarray:
+    try:
+        nuisance_coeff = np.linalg.lstsq(design, d_model, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        nuisance_coeff = np.linalg.pinv(design, rcond=1.0e-10) @ d_model
+    projected = d_model - design @ nuisance_coeff
+    return _symmetrize_fim((2.0 / float(sigma2)) * np.real(projected.conj().T @ projected))
+
+
+def _real_schur_efim_from_design(
+    design: np.ndarray,
+    d_model: np.ndarray,
+    sigma2: float,
+    *,
+    prior_precision: np.ndarray | None = None,
+) -> np.ndarray:
+    nuisance = np.column_stack([design, 1j * design])
+    scale = 2.0 / float(sigma2)
+    j_chichi = scale * np.real(d_model.conj().T @ d_model)
+    j_chixi = scale * np.real(d_model.conj().T @ nuisance)
+    j_xixi = scale * np.real(nuisance.conj().T @ nuisance)
+    if prior_precision is not None:
+        j_xixi = j_xixi + np.asarray(prior_precision, dtype=float)
+    try:
+        schur = j_chichi - j_chixi @ np.linalg.solve(j_xixi, j_chixi.T)
+    except np.linalg.LinAlgError:
+        schur = j_chichi - j_chixi @ np.linalg.pinv(j_xixi, rcond=1.0e-10) @ j_chixi.T
+    return _symmetrize_fim(schur)
+
+
+def _true_jones_coefficients(scene: dict) -> np.ndarray:
+    k_paths = int(scene["K"])
+    beta_true = np.asarray(scene.get("beta_true"), dtype=complex).reshape(-1)
+    gamma = np.asarray(scene.get("gamma_true"), dtype=float).reshape(-1)
+    eta = np.asarray(scene.get("eta_true"), dtype=float).reshape(-1)
+    if beta_true.size < k_paths or gamma.size < k_paths or eta.size < k_paths:
+        raise KeyError("missing beta_true/gamma_true/eta_true for Jones PEB")
+    coeff = np.empty(2 * k_paths, dtype=complex)
+    for k in range(k_paths):
+        coeff[2 * k : 2 * k + 2] = beta_true[k] * polarization_vector(
+            float(gamma[k]), float(eta[k])
+        )
+    return coeff
+
+
+def _constrained_jones_design(
+    phi: np.ndarray,
+    dphi_dx: list[np.ndarray],
+    x_true: np.ndarray,
+    k_paths: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    eps = 1.0e-12
+    block = np.zeros((2 * k_paths, k_paths), dtype=complex)
+    beta = np.empty(k_paths, dtype=complex)
+    for k in range(k_paths):
+        x_k = np.asarray(x_true[2 * k : 2 * k + 2], dtype=complex)
+        norm = float(np.linalg.norm(x_k))
+        if not np.isfinite(norm) or norm <= eps:
+            block[2 * k, k] = 1.0
+            beta[k] = 0.0
+        else:
+            block[2 * k : 2 * k + 2, k] = x_k / norm
+            beta[k] = norm
+    design = phi @ block
+    d_model = np.column_stack([(dphi @ block) @ beta for dphi in dphi_dx])
+    return design, d_model, beta
+
+
+def _peb_value_and_diagnostics(
+    efim_scaled: np.ndarray,
+    parameter_order: list[str],
+    cond_threshold: float,
+) -> tuple[float, dict[str, Any]]:
+    peb, diag = position_peb_from_global_efim(
+        efim_scaled,
+        parameter_order,
+        already_clock_eliminated=False,
+        condition_threshold=cond_threshold,
+        return_diagnostics=True,
+    )
+    rank, cond = _fim_rank_condition(efim_scaled)
+    return peb, {
+        "rank_chi": rank,
+        "cond_chi": cond,
+        "rank_deficient": bool(rank < min(4, efim_scaled.shape[0])),
+        "clock_schur_used": bool(diag.get("clock_eliminated", False)),
+        "warning": str(diag.get("warning", "")),
+    }
+
+
+def _anchored_prior_from_config(
+    config: dict,
+    scene: dict,
+    sigma2: float,
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    crb = dict(config.get("crb", {}))
+    mode = str(crb.get("jones_anchor_prior_mode", "disabled"))
+    scale = float(crb.get("jones_anchor_prior_scale", 1.0))
+    k_paths = int(scene["K"])
+    if mode == "disabled":
+        return None, {
+            "anchored_prior_scaling": "disabled",
+            "anchored_prior_lambda": float("nan"),
+            "anchored_prior_precision_norm": float("nan"),
+        }
+    if mode == "manual":
+        lam = float(scale)
+        scaling = "manual_real_precision"
+        precision_value = lam
+    elif mode == "lambda_from_adaptive":
+        global_vp = dict(config.get("global_vp", {}))
+        lam = float(global_vp.get("jones_lambda0", 1.0)) * scale
+        scaling = "unnormalized_residual_lambda_over_sigma2"
+        precision_value = 2.0 * lam / max(float(sigma2), float(config.get("eps", 1.0e-10)))
+    else:
+        raise ValueError(f"unknown jones_anchor_prior_mode {mode!r}")
+    precision = precision_value * np.eye(4 * k_paths, dtype=float)
+    return precision, {
+        "anchored_prior_scaling": scaling,
+        "anchored_prior_lambda": lam,
+        "anchored_prior_precision_norm": float(np.linalg.norm(precision)),
+    }
+
+
+def _jones_bound_options(config: dict) -> dict[str, Any]:
+    crb = dict(config.get("crb", {}))
+    return {
+        "include_constrained": bool(crb.get("include_constrained_jones_peb", True)),
+        "include_anchored": bool(crb.get("include_anchored_jones_peb", False)),
+    }
+
+
+def compute_constrained_jones_peb(data: dict, config: dict) -> dict[str, Any]:
+    scene = data["scene"]
+    init = _truth_init_estimate(scene, data["true_components"])
+    efim_config = copy.deepcopy(config)
+    efim_config["global_vp"] = dict(efim_config.get("global_vp", {}))
+    efim_config["global_vp"]["mode"] = "jones_free"
+    xi = np.r_[
+        np.asarray(scene["p_u_true"], dtype=float).reshape(3),
+        float(scene["delta_t_true"]),
+    ]
+    phi, aux = _build_global_dictionary(xi, init, scene, efim_config, need_jacobian=True)
+    x_true = _true_jones_coefficients(scene)
+    design, d_model, _ = _constrained_jones_design(
+        phi, aux["dPhi_dx"], x_true, int(scene["K"])
+    )
+    sigma2 = max(float(data.get("noise_variance")), float(config.get("eps", 1.0e-10)))
+    efim_seconds = _projection_efim_from_design(design, d_model, sigma2)
+    efim_scaled = _scale_seconds_clock_efim_to_range_clock(efim_seconds, scene)
+    cond_threshold = float(
+        config.get("global_vp", {}).get(
+            "efim_cond_threshold", config.get("efim_cond_threshold", 1.0e12)
+        )
+    )
+    peb, diag = _peb_value_and_diagnostics(
+        efim_scaled,
+        ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
+        cond_threshold,
+    )
+    return {
+        "peb_constrained_jones_m": peb,
+        "constrained_jones_peb_m": peb,
+        "peb_fim_rank_chi_constrained": diag["rank_chi"],
+        "peb_fim_cond_chi_constrained": diag["cond_chi"],
+        "peb_constrained_rank_deficient": diag["rank_deficient"],
+        "peb_constrained_warning": diag["warning"],
+        "J_chi_constrained_scaled": efim_scaled,
+    }
+
+
+def compute_anchored_jones_peb(data: dict, config: dict) -> dict[str, Any]:
+    scene = data["scene"]
+    init = _truth_init_estimate(scene, data["true_components"])
+    efim_config = copy.deepcopy(config)
+    efim_config["global_vp"] = dict(efim_config.get("global_vp", {}))
+    efim_config["global_vp"]["mode"] = "jones_free"
+    xi = np.r_[
+        np.asarray(scene["p_u_true"], dtype=float).reshape(3),
+        float(scene["delta_t_true"]),
+    ]
+    phi, aux = _build_global_dictionary(xi, init, scene, efim_config, need_jacobian=True)
+    y_vec = np.asarray(data["Y_true"], dtype=complex).reshape(-1)
+    coeff, _ = _solve_linear_vp_regularized(phi, y_vec, None, 0.0)
+    d_model = np.column_stack([dphi @ coeff for dphi in aux["dPhi_dx"]])
+    sigma2 = max(float(data.get("noise_variance")), float(config.get("eps", 1.0e-10)))
+    prior, prior_diag = _anchored_prior_from_config(config, scene, sigma2)
+    if prior is None:
+        return {
+            "peb_anchored_jones_m": float("nan"),
+            "anchored_jones_peb_m": float("nan"),
+            "peb_fim_rank_chi_anchored": 0,
+            "peb_fim_cond_chi_anchored": float("inf"),
+            "peb_anchored_rank_deficient": True,
+            "peb_anchored_warning": "anchored_jones_peb_disabled",
+            "J_chi_anchored_scaled": None,
+            **prior_diag,
+        }
+    efim_seconds = _real_schur_efim_from_design(
+        phi, d_model, sigma2, prior_precision=prior
+    )
+    efim_scaled = _scale_seconds_clock_efim_to_range_clock(efim_seconds, scene)
+    cond_threshold = float(
+        config.get("global_vp", {}).get(
+            "efim_cond_threshold", config.get("efim_cond_threshold", 1.0e12)
+        )
+    )
+    peb, diag = _peb_value_and_diagnostics(
+        efim_scaled,
+        ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
+        cond_threshold,
+    )
+    return {
+        "peb_anchored_jones_m": peb,
+        "anchored_jones_peb_m": peb,
+        "peb_fim_rank_chi_anchored": diag["rank_chi"],
+        "peb_fim_cond_chi_anchored": diag["cond_chi"],
+        "peb_anchored_rank_deficient": diag["rank_deficient"],
+        "peb_anchored_warning": diag["warning"],
+        "J_chi_anchored_scaled": efim_scaled,
+        **prior_diag,
+    }
+
+
+def _free_schur_relerr_from_truth_dictionary(
+    data: dict,
+    config: dict,
+    free_efim_scaled: np.ndarray,
+) -> float:
+    scene = data["scene"]
+    init = _truth_init_estimate(scene, data["true_components"])
+    efim_config = copy.deepcopy(config)
+    efim_config["global_vp"] = dict(efim_config.get("global_vp", {}))
+    efim_config["global_vp"]["mode"] = "jones_free"
+    xi = np.r_[
+        np.asarray(scene["p_u_true"], dtype=float).reshape(3),
+        float(scene["delta_t_true"]),
+    ]
+    phi, aux = _build_global_dictionary(xi, init, scene, efim_config, need_jacobian=True)
+    y_vec = np.asarray(data["Y_true"], dtype=complex).reshape(-1)
+    coeff, _ = _solve_linear_vp_regularized(phi, y_vec, None, 0.0)
+    d_model = np.column_stack([dphi @ coeff for dphi in aux["dPhi_dx"]])
+    sigma2 = max(float(data.get("noise_variance")), float(config.get("eps", 1.0e-10)))
+    schur_seconds = _real_schur_efim_from_design(phi, d_model, sigma2)
+    schur_scaled = _scale_seconds_clock_efim_to_range_clock(schur_seconds, scene)
+    denom = max(1.0, float(np.linalg.norm(free_efim_scaled)))
+    return float(np.linalg.norm(np.asarray(free_efim_scaled) - schur_scaled) / denom)
+
+
+def _min_eig_difference(candidate: np.ndarray | None, free: np.ndarray | None) -> float:
+    if candidate is None or free is None:
+        return float("nan")
+    diff = _symmetrize_fim(np.asarray(candidate, dtype=float) - np.asarray(free, dtype=float))
+    eig = np.linalg.eigvalsh(diff)
+    return float(np.min(eig)) if eig.size else float("nan")
+
+
 def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
     scene = data["scene"]
     init = _truth_init_estimate(scene, data["true_components"])
     warning = ""
     condition = float("inf")
+    free_rank = 0
+    free_rank_deficient = True
+    free_efim_scaled = None
+    free_schur_relerr = float("nan")
     try:
         diag = data_only_efim_diagnostic(
             data["Y_true"],
@@ -1436,6 +1885,7 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
             sigma2=data.get("noise_variance"),
         )
         efim = np.asarray(diag["data_only_scaled_efim"], dtype=float)
+        free_efim_scaled = efim.copy()
         parameter_order = diag.get(
             "data_only_scaled_efim_parameter_order",
             ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
@@ -1454,17 +1904,127 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         )
         warning = str(peb_diag["warning"])
         condition = float(peb_diag["efim_condition_number"])
+        free_rank, free_condition_chi = _fim_rank_condition(efim)
+        free_rank_deficient = bool(free_rank < min(4, efim.shape[0]))
+        try:
+            free_schur_relerr = _free_schur_relerr_from_truth_dictionary(
+                data, config, efim
+            )
+        except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError):
+            free_schur_relerr = float("nan")
     except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
         peb = float("nan")
         warning = f"data_only_efim_peb_failed: {type(exc).__name__}: {exc}"
         parameter_order = ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"]
         diag = {}
+        free_condition_chi = float("inf")
+    options = _jones_bound_options(config)
+    constrained: dict[str, Any] = {
+        "peb_constrained_jones_m": float("nan"),
+        "constrained_jones_peb_m": float("nan"),
+        "peb_fim_rank_chi_constrained": 0,
+        "peb_fim_cond_chi_constrained": float("inf"),
+        "peb_constrained_rank_deficient": True,
+        "peb_constrained_warning": "constrained_jones_peb_disabled",
+        "J_chi_constrained_scaled": None,
+    }
+    if options["include_constrained"]:
+        try:
+            constrained = compute_constrained_jones_peb(data, config)
+        except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
+            constrained["peb_constrained_warning"] = (
+                f"constrained_jones_peb_failed: {type(exc).__name__}: {exc}"
+            )
+    anchored: dict[str, Any] = {
+        "peb_anchored_jones_m": float("nan"),
+        "anchored_jones_peb_m": float("nan"),
+        "peb_fim_rank_chi_anchored": 0,
+        "peb_fim_cond_chi_anchored": float("inf"),
+        "peb_anchored_rank_deficient": True,
+        "peb_anchored_warning": "anchored_jones_peb_disabled",
+        "J_chi_anchored_scaled": None,
+        "anchored_prior_scaling": "disabled",
+        "anchored_prior_lambda": float("nan"),
+        "anchored_prior_precision_norm": float("nan"),
+    }
+    if options["include_anchored"]:
+        try:
+            anchored = compute_anchored_jones_peb(data, config)
+        except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError) as exc:
+            anchored["peb_anchored_warning"] = (
+                f"anchored_jones_peb_failed: {type(exc).__name__}: {exc}"
+            )
+    con_minus_free = _min_eig_difference(
+        constrained.get("J_chi_constrained_scaled"), free_efim_scaled
+    )
+    hyb_minus_free = _min_eig_difference(
+        anchored.get("J_chi_anchored_scaled"), free_efim_scaled
+    )
+    constrained_peb = float(constrained.get("peb_constrained_jones_m", float("nan")))
+    anchored_peb = float(anchored.get("peb_anchored_jones_m", float("nan")))
+    ordering_checks = []
+    if np.isfinite(constrained_peb) and np.isfinite(peb):
+        ordering_checks.append(constrained_peb <= peb * (1.0 + 1.0e-7))
+    if options["include_anchored"] and np.isfinite(anchored_peb) and np.isfinite(peb):
+        ordering_checks.append(anchored_peb <= peb * (1.0 + 1.0e-7))
+    ordering_ok = bool(all(ordering_checks)) if ordering_checks else ""
+    extra_warnings = [
+        str(constrained.get("peb_constrained_warning", "")),
+        str(anchored.get("peb_anchored_warning", "")),
+    ]
+    extra_warnings = [item for item in extra_warnings if item and not item.endswith("_disabled")]
+    if extra_warnings:
+        warning = "; ".join([item for item in [warning, *extra_warnings] if item])
     mode = str(config.get("receiver_mode", "full_6d"))
     return {
         "peb_position_m": peb,
         "peb_scalar_m": peb if mode == "scalar" else float("nan"),
         "peb_dual_m": peb if mode == "dual_pol" else float("nan"),
         "peb_evs_m": peb if mode == "full_6d" else float("nan"),
+        "peb_free_jones_m": peb,
+        "peb_constrained_jones_m": constrained_peb,
+        "peb_anchored_jones_m": anchored_peb,
+        "peb_variant": "free_jones_peb",
+        "jones_bound_type": "free",
+        "constrained_jones_peb_m": constrained_peb,
+        "anchored_jones_peb_m": anchored_peb,
+        "free_jones_peb_m": peb,
+        "peb_fim_rank_chi_free": free_rank,
+        "peb_fim_rank_chi_constrained": int(
+            constrained.get("peb_fim_rank_chi_constrained", 0)
+        ),
+        "peb_fim_rank_chi_anchored": int(
+            anchored.get("peb_fim_rank_chi_anchored", 0)
+        ),
+        "peb_fim_cond_chi_free": free_condition_chi,
+        "peb_fim_cond_chi_constrained": float(
+            constrained.get("peb_fim_cond_chi_constrained", float("inf"))
+        ),
+        "peb_fim_cond_chi_anchored": float(
+            anchored.get("peb_fim_cond_chi_anchored", float("inf"))
+        ),
+        "peb_clock_schur_used": True,
+        "peb_rank_deficient": bool(
+            free_rank_deficient
+            or constrained.get("peb_constrained_rank_deficient", False)
+            or (
+                options["include_anchored"]
+                and anchored.get("peb_anchored_rank_deficient", False)
+            )
+        ),
+        "anchored_prior_scaling": str(
+            anchored.get("anchored_prior_scaling", "disabled")
+        ),
+        "anchored_prior_lambda": float(
+            anchored.get("anchored_prior_lambda", float("nan"))
+        ),
+        "anchored_prior_precision_norm": float(
+            anchored.get("anchored_prior_precision_norm", float("nan"))
+        ),
+        "peb_free_projection_schur_relerr": free_schur_relerr,
+        "peb_con_minus_free_min_eig": con_minus_free,
+        "peb_hyb_minus_free_min_eig": hyb_minus_free,
+        "peb_ordering_ok": ordering_ok,
         "warning": warning,
         "peb_is_data_only": True,
         "peb_uses_regularization": False,
@@ -1593,8 +2153,38 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
         "global_vp_runtime_s": _finite_float(timing.get("vp")),
         "total_runtime_s": _finite_float(timing.get("total", timing.get("diagnostic_total"))),
     }
-    for key in ("peb_position_m", "peb_scalar_m", "peb_dual_m", "peb_evs_m"):
+    for key in (
+        "peb_position_m",
+        "peb_scalar_m",
+        "peb_dual_m",
+        "peb_evs_m",
+        "peb_free_jones_m",
+        "peb_constrained_jones_m",
+        "peb_anchored_jones_m",
+        "constrained_jones_peb_m",
+        "anchored_jones_peb_m",
+        "free_jones_peb_m",
+        "peb_fim_rank_chi_free",
+        "peb_fim_rank_chi_constrained",
+        "peb_fim_rank_chi_anchored",
+        "peb_fim_cond_chi_free",
+        "peb_fim_cond_chi_constrained",
+        "peb_fim_cond_chi_anchored",
+        "anchored_prior_lambda",
+        "anchored_prior_precision_norm",
+        "peb_free_projection_schur_relerr",
+        "peb_con_minus_free_min_eig",
+        "peb_hyb_minus_free_min_eig",
+    ):
         metrics[key] = _finite_float(result.get(key))
+    metrics["peb_variant"] = str(result.get("peb_variant", ""))
+    metrics["jones_bound_type"] = str(result.get("jones_bound_type", ""))
+    metrics["peb_clock_schur_used"] = result.get("peb_clock_schur_used", "")
+    metrics["peb_rank_deficient"] = result.get("peb_rank_deficient", "")
+    metrics["anchored_prior_scaling"] = str(
+        result.get("anchored_prior_scaling", "")
+    )
+    metrics["peb_ordering_ok"] = result.get("peb_ordering_ok", "")
     metrics.update(
         {
             "efim_unscaled_cache_hit": bool(
@@ -2056,6 +2646,37 @@ def _peb_result(config: dict, out_dir: pathlib.Path | None = None) -> dict:
     return {**data, **peb_metrics, "final": {}, "timing": data.get("timing", {})}
 
 
+def _peb_bound_type_for_variant(variant: str) -> str:
+    name = str(variant).lower()
+    if "constrained" in name:
+        return "constrained"
+    if "anchored" in name:
+        return "anchored"
+    return "free"
+
+
+def _apply_peb_bound_variant(result: dict, variant: str) -> dict:
+    bound_type = _peb_bound_type_for_variant(variant)
+    if bound_type == "constrained":
+        peb = result.get("peb_constrained_jones_m", float("nan"))
+        variant_name = "constrained_jones_peb"
+    elif bound_type == "anchored":
+        peb = result.get("peb_anchored_jones_m", float("nan"))
+        variant_name = "anchored_jones_peb"
+    else:
+        peb = result.get("peb_free_jones_m", result.get("peb_position_m", float("nan")))
+        variant_name = "free_jones_peb"
+    result = copy.deepcopy(result)
+    result["peb_position_m"] = peb
+    mode = str(result.get("scene", {}).get("receiver_mode", "full_6d"))
+    result["peb_scalar_m"] = peb if mode == "scalar" else float("nan")
+    result["peb_dual_m"] = peb if mode == "dual_pol" else float("nan")
+    result["peb_evs_m"] = peb if mode == "full_6d" else float("nan")
+    result["peb_variant"] = variant_name
+    result["jones_bound_type"] = bound_type
+    return result
+
+
 def run_one_trial(
     config: dict,
     trial_seed: int,
@@ -2121,6 +2742,7 @@ def run_one_trial(
                 result = _oracle_result(config)
             elif runner == "peb_only":
                 result = _peb_result(config, out_dir)
+                result = _apply_peb_bound_variant(result, variant_name)
             else:
                 result = run_single_proposed_diagnostic(config, allow_stage2=allow_stage2)
         result = _annotate_variant_result(
@@ -2648,27 +3270,39 @@ def get_plot_metric(row_or_group: dict[str, Any] | list[dict[str, Any]], figure:
     """Return the source metric column to summarize and plot for a variant."""
     group = row_or_group if isinstance(row_or_group, list) else [row_or_group]
     if figure == "fig1":
-        return "peb_position_m" if variant == "PEB" else "position_rmse_m"
+        return "peb_position_m" if "peb" in variant.lower() else "position_rmse_m"
     if figure == "fig2":
         return None if "peb" in variant.lower() else "y_nmse"
     if figure == "fig3":
-        return "peb_position_m" if variant == "full_6d_evs_peb" else "position_rmse_m"
+        return "peb_position_m" if "peb" in variant.lower() else "position_rmse_m"
     if figure == "fig4":
         preferred = {
             "scalar_peb": "peb_scalar_m",
             "dual_pol_peb": "peb_dual_m",
             "full_6d_evs_peb": "peb_evs_m",
+            "full_6d_constrained_jones_peb": "peb_evs_m",
         }.get(variant, "peb_position_m")
         return preferred if _metric_available(group, preferred) else "peb_position_m"
     if figure == "fig5":
         return "outlier_flag"
     if figure == "fig6":
-        return "peb_position_m" if variant == "proposed_peb" else "position_rmse_m"
+        return "peb_position_m" if "peb" in variant.lower() else "position_rmse_m"
     raise ValueError(f"unknown figure {figure!r}")
 
 
 def _plot_metric_name(metric: str) -> str:
     return "outlier_flag_mean" if metric == "outlier_flag" else metric
+
+
+def _variant_linestyle(variant: str) -> str:
+    lower = str(variant).lower()
+    if "constrained_jones_peb" in lower:
+        return "-."
+    if "anchored_jones_peb" in lower:
+        return ":"
+    if "peb" in lower:
+        return "--"
+    return "-"
 
 
 def _summary_stats(values: np.ndarray) -> dict[str, float]:
@@ -2695,6 +3329,39 @@ def _ngc_rescue_run_rate(rows: list[dict[str, Any]]) -> float:
         _to_bool(row.get("ngc_rescue_requested")) is True for row in active_rows
     )
     return float(requested / len(active_rows))
+
+
+def _rescue_trigger_rate(rows: list[dict[str, Any]]) -> float:
+    valid_rows = [
+        row for row in rows if _to_bool(row.get("failed")) is not True
+    ]
+    if not valid_rows:
+        return float("nan")
+
+    rescue_branches = {
+        "ris_only_stage2_then_vp",
+        "multi_hypothesis_ris_reacquisition_then_vp",
+        "direct_vp_rollback",
+    }
+    triggered = 0
+    for row in valid_rows:
+        if _to_bool(row.get("ngc_policy_active")) is True:
+            was_triggered = _to_bool(row.get("ngc_rescue_requested")) is True
+        elif str(row.get("proposed_stage2_policy", "")) == "force_ris_only":
+            was_triggered = True
+        else:
+            candidate_available = _to_bool(row.get("rescue_candidate_available"))
+            if candidate_available is not None:
+                was_triggered = candidate_available
+            else:
+                selected_branch = str(row.get("selected_branch", ""))
+                was_triggered = (
+                    selected_branch in rescue_branches
+                    or "stage2" in selected_branch
+                    or "rescue" in selected_branch
+                )
+        triggered += int(was_triggered)
+    return float(triggered / len(valid_rows))
 
 
 def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, Any]]:
@@ -2726,6 +3393,7 @@ def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, An
             "success_rate": float((len(group) - failed_count) / max(len(group), 1)),
             "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
             "rescue_run_rate": _ngc_rescue_run_rate(group),
+            "rescue_trigger_rate": _rescue_trigger_rate(group),
             "n": len(group),
         }
         for metadata_field in ("K", "paper_k", "effective_K"):
@@ -2759,17 +3427,116 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     import matplotlib.pyplot as plt
 
     metric = FIGURE_METRICS[figure]
+    xlabel = "K" if figure == "fig6" else "SNR (dB)"
+    markers = ["o", "s", "^", "D", "v", "P"]
+    variants = list(dict.fromkeys(row["variant"] for row in summary_rows))
+    proposed_variant = "adaptive_jones_vp_proposed"
+    if figure == "fig5":
+        preferred = [
+            "direct_vp",
+            "old_gated",
+            proposed_variant,
+            "force_rescue",
+            "oracle_init_vp",
+        ]
+        variants = [
+            variant for variant in preferred if variant in variants
+        ] + [
+            variant for variant in variants if variant not in preferred
+        ]
+        fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.0), sharex=True)
+        panels = [
+            (axes[0], "plot_y_mean", "Outlier probability"),
+            (axes[1], "rescue_trigger_rate", "Rescue trigger rate"),
+        ]
+        for ax, field, ylabel in panels:
+            for idx, variant in enumerate(variants):
+                rows = [row for row in summary_rows if row["variant"] == variant]
+                xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
+                ys = np.asarray([_to_float(row.get(field)) for row in rows], dtype=float)
+                finite = np.isfinite(xs) & np.isfinite(ys)
+                if not np.any(finite):
+                    continue
+                order = np.argsort(xs[finite])
+                is_proposed = variant == proposed_variant
+                ax.plot(
+                    xs[finite][order],
+                    ys[finite][order],
+                    marker=markers[idx % len(markers)],
+                    linestyle=_variant_linestyle(variant),
+                    linewidth=2.5 if is_proposed else 1.5,
+                    label=VARIANT_LABELS.get(variant, variant),
+                    zorder=10 if is_proposed else 2,
+                )
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_ylim(-0.02, 1.02)
+            ax.grid(True, which="both", linestyle=":", linewidth=0.7)
+        handles, labels = axes[0].get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, fontsize=8, loc="upper center", ncol=3)
+            fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.88))
+        else:
+            fig.tight_layout()
+        fig.savefig(out_dir / FIGURE_PDFS[figure])
+        plt.close(fig)
+        return
+
+    if figure == "fig6":
+        if proposed_variant in variants:
+            variants = [
+                variant for variant in variants if variant != proposed_variant
+            ] + [proposed_variant]
+        fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.0), sharex=True)
+        panels = [
+            (axes[0], "plot_y_median", "Median position error / PEB (m)", True),
+            (axes[1], "outlier_rate", "Outlier probability", False),
+        ]
+        for ax, field, ylabel, log_y in panels:
+            for idx, variant in enumerate(variants):
+                if field == "outlier_rate" and variant == "proposed_peb":
+                    continue
+                rows = [row for row in summary_rows if row["variant"] == variant]
+                xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
+                ys = np.asarray([_to_float(row.get(field)) for row in rows], dtype=float)
+                finite = np.isfinite(xs) & np.isfinite(ys)
+                if not np.any(finite):
+                    continue
+                order = np.argsort(xs[finite])
+                is_proposed = variant == proposed_variant
+                ax.plot(
+                    xs[finite][order],
+                    ys[finite][order],
+                    marker=markers[idx % len(markers)],
+                    linestyle=_variant_linestyle(variant),
+                    linewidth=2.5 if is_proposed else 1.5,
+                    label=VARIANT_LABELS.get(variant, variant),
+                    zorder=10 if is_proposed else 2,
+                )
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            if log_y:
+                ax.set_yscale("log")
+            else:
+                ax.set_ylim(-0.02, 1.02)
+            ax.grid(True, which="both", linestyle=":", linewidth=0.7)
+        handles, labels = axes[0].get_legend_handles_labels()
+        if handles:
+            fig.legend(handles, labels, fontsize=8, loc="upper center", ncol=3)
+            fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.88))
+        else:
+            fig.tight_layout()
+        fig.savefig(out_dir / FIGURE_PDFS[figure])
+        plt.close(fig)
+        return
+
     ylabel = {
         "position_rmse_m": "Position RMSE (m)",
         "y_nmse": "Channel NMSE",
         "peb_position_m": "PEB (m)",
         "outlier_flag": "Outlier probability",
     }[metric]
-    xlabel = "K" if figure == "fig6" else "SNR (dB)"
     fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    markers = ["o", "s", "^", "D", "v", "P"]
-    variants = list(dict.fromkeys(row["variant"] for row in summary_rows))
-    proposed_variant = "adaptive_jones_vp_proposed"
     if proposed_variant in variants:
         variants = [
             variant for variant in variants if variant != proposed_variant
@@ -2784,6 +3551,7 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
             xs[order],
             ys[order],
             marker=markers[idx % len(markers)],
+            linestyle=_variant_linestyle(variant),
             linewidth=2.5 if is_proposed else 1.5,
             label=VARIANT_LABELS.get(variant, variant),
             zorder=10 if is_proposed else 2,
@@ -2911,6 +3679,18 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
             global_vp_overrides.get("validate_gpu_against_cpu", False)
         ),
         "fig1_proposed_dispatch_version": 2,
+        "include_constrained_jones_peb": bool(
+            getattr(args, "include_constrained_jones_peb", True)
+        ),
+        "include_anchored_jones_peb": bool(
+            getattr(args, "include_anchored_jones_peb", False)
+        ),
+        "jones_anchor_prior_mode": str(
+            getattr(args, "jones_anchor_prior_mode", "disabled")
+        ),
+        "jones_anchor_prior_scale": float(
+            getattr(args, "jones_anchor_prior_scale", 1.0)
+        ),
     }
     if global_vp_overrides:
         signature["global_vp_overrides"] = global_vp_overrides
@@ -2957,6 +3737,9 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "paper_k": int(args.paper_k),
         "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
+        "fig6_interpretation": (
+            "complete_ngc_proposed_system_vs_vp_only_polarization_variants"
+        ),
         "seed": int(args.seed),
         "include_diagnostic_variants": bool(
             getattr(args, "include_diagnostic_variants", False)
@@ -2975,6 +3758,20 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
             "paper_k_for_fig1_to_fig5": int(args.paper_k),
             "k_grid_for_fig6": [int(value) for value in args.k_grid_values],
             "global_vp": global_vp_overrides,
+            "crb": {
+                "include_constrained_jones_peb": bool(
+                    getattr(args, "include_constrained_jones_peb", True)
+                ),
+                "include_anchored_jones_peb": bool(
+                    getattr(args, "include_anchored_jones_peb", False)
+                ),
+                "jones_anchor_prior_mode": str(
+                    getattr(args, "jones_anchor_prior_mode", "disabled")
+                ),
+                "jones_anchor_prior_scale": float(
+                    getattr(args, "jones_anchor_prior_scale", 1.0)
+                ),
+            },
         },
         "shared_cache_signatures": {
             FIG1_FIG2_SHARED_FIGURE: _cache_signature(
@@ -3538,6 +4335,16 @@ def _peb_metrics_result_for_config(
     }
 
 
+def _peb_bound_metrics_result_for_config(
+    config: dict,
+    out_dir: pathlib.Path | None,
+    data: dict | None,
+    variant: str,
+) -> dict:
+    result = _peb_metrics_result_for_config(config, out_dir, data)
+    return _apply_peb_bound_variant(result, variant)
+
+
 def _row_for_result_or_failure(
     *,
     result_factory,
@@ -3709,9 +4516,11 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     )
                 else:
                     factory = (
-                        lambda nested_data=nested_data, config=config: (
-                            _peb_metrics_result_for_config(
-                                config, out_dir, nested_data
+                        lambda nested_data=nested_data,
+                        config=config,
+                        variant=variant: (
+                            _peb_bound_metrics_result_for_config(
+                                config, out_dir, nested_data, variant
                             )
                         )
                     )
@@ -3736,36 +4545,42 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 if log:
                     logs.append(log)
             if figure == "fig3":
-                variant = "full_6d_evs_peb"
-                updates = _extra_peb_specs("fig3")[variant]
-                config = apply_nested_update(copy.deepcopy(base_config), updates)
-                nested_data = make_nested_receiver_mode_data(
-                    data, "full_6d", config
-                )
-                row, log = _row_for_result_or_failure(
-                    result_factory=lambda nested_data=nested_data, config=config: (
-                        _peb_metrics_result_for_config(
-                            config, out_dir, nested_data
-                        )
-                    ),
-                    figure=figure,
-                    variant=variant,
-                    trial_id=trial_id,
-                    trial_seed=trial_seed,
-                    snr_db=snr_db,
-                    x_name=x_name,
-                    x_value=x_value,
-                    k_paths=k_paths,
-                    paper_k=paper_k,
-                    num_ris_paths=num_ris_paths,
-                    receiver_mode="full_6d",
-                    outlier_threshold_m=outlier_threshold_m,
-                    store_large_arrays=store_large_arrays,
-                    profile_memory=profile_memory,
-                )
-                rows.append(row)
-                if log:
-                    logs.append(log)
+                for variant, updates in _extra_peb_specs("fig3").items():
+                    if (
+                        "constrained_jones_peb" in variant
+                        and not bool(_jones_bound_options(base_config)["include_constrained"])
+                    ):
+                        continue
+                    config = apply_nested_update(copy.deepcopy(base_config), updates)
+                    nested_data = make_nested_receiver_mode_data(
+                        data, "full_6d", config
+                    )
+                    row, log = _row_for_result_or_failure(
+                        result_factory=lambda nested_data=nested_data,
+                        config=config,
+                        variant=variant: (
+                            _peb_bound_metrics_result_for_config(
+                                config, out_dir, nested_data, variant
+                            )
+                        ),
+                        figure=figure,
+                        variant=variant,
+                        trial_id=trial_id,
+                        trial_seed=trial_seed,
+                        snr_db=snr_db,
+                        x_name=x_name,
+                        x_value=x_value,
+                        k_paths=k_paths,
+                        paper_k=paper_k,
+                        num_ris_paths=num_ris_paths,
+                        receiver_mode="full_6d",
+                        outlier_threshold_m=outlier_threshold_m,
+                        store_large_arrays=store_large_arrays,
+                        profile_memory=profile_memory,
+                    )
+                    rows.append(row)
+                    if log:
+                        logs.append(log)
         elif group == "fig1_fig2":
             variants = {
                 **_variant_specs(FIG1_FIG2_SHARED_FIGURE),
@@ -3879,7 +4694,19 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 rows.append(row)
                 if log:
                     logs.append(log)
+            peb_variants = []
             if not selected_variants or "PEB" in selected_variants:
+                peb_variants.append("PEB")
+            if (
+                bool(_jones_bound_options(base_config)["include_constrained"])
+                and (
+                    not selected_variants
+                    or "constrained_jones_peb" in selected_variants
+                    or "PEB" in selected_variants
+                )
+            ):
+                peb_variants.append("constrained_jones_peb")
+            for peb_variant in peb_variants:
                 peb_config = apply_nested_update(
                     copy.deepcopy(base_config),
                     _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"],
@@ -3887,14 +4714,16 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 row, log = _row_for_result_or_failure(
                     result_factory=lambda config=peb_config, data=data: (
                         _annotate_variant_result(
-                            _peb_metrics_result_for_config(config, out_dir, data),
+                            _peb_bound_metrics_result_for_config(
+                                config, out_dir, data, peb_variant
+                            ),
                             config,
                             final_runner_name="peb_only",
                             used_main_single_proposed_path=False,
                         )
                     ),
                     figure=figure,
-                    variant="PEB",
+                    variant=peb_variant,
                     trial_id=trial_id,
                     trial_seed=trial_seed,
                     snr_db=snr_db,
@@ -3970,27 +4799,39 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 rows.append(row)
                 if log:
                     logs.append(log)
-            peb_config = apply_nested_update(copy.deepcopy(base_config), _variant_specs("fig6")["proposed_peb"])
-            row, log = _row_for_result_or_failure(
-                result_factory=lambda config=peb_config, data=data: _peb_metrics_result_for_config(config, out_dir, data),
-                figure=figure,
-                variant="proposed_peb",
-                trial_id=trial_id,
-                trial_seed=trial_seed,
-                snr_db=0.0,
-                x_name=x_name,
-                x_value=x_value,
-                k_paths=k_paths,
-                paper_k=paper_k,
-                num_ris_paths=num_ris_paths,
-                receiver_mode=receiver_mode,
-                outlier_threshold_m=outlier_threshold_m,
-                store_large_arrays=store_large_arrays,
-                profile_memory=profile_memory,
-            )
-            rows.append(row)
-            if log:
-                logs.append(log)
+            for variant, updates in _variant_specs("fig6").items():
+                if str(updates.get("_runner", "proposed")) != "peb_only":
+                    continue
+                if (
+                    "constrained_jones_peb" in variant
+                    and not bool(_jones_bound_options(base_config)["include_constrained"])
+                ):
+                    continue
+                peb_config = apply_nested_update(copy.deepcopy(base_config), updates)
+                row, log = _row_for_result_or_failure(
+                    result_factory=lambda config=peb_config,
+                    data=data,
+                    variant=variant: _peb_bound_metrics_result_for_config(
+                        config, out_dir, data, variant
+                    ),
+                    figure=figure,
+                    variant=variant,
+                    trial_id=trial_id,
+                    trial_seed=trial_seed,
+                    snr_db=0.0,
+                    x_name=x_name,
+                    x_value=x_value,
+                    k_paths=k_paths,
+                    paper_k=paper_k,
+                    num_ris_paths=num_ris_paths,
+                    receiver_mode=receiver_mode,
+                    outlier_threshold_m=outlier_threshold_m,
+                    store_large_arrays=store_large_arrays,
+                    profile_memory=profile_memory,
+                )
+                rows.append(row)
+                if log:
+                    logs.append(log)
         else:
             raise ValueError(f"unsupported grouped task group {group!r}")
     finally:
@@ -4067,6 +4908,7 @@ def _write_trial_results(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     base_config = default_config()
     apply_global_vp_cli_overrides(base_config, args)
+    apply_peb_cli_overrides(base_config, args)
     out_dir = pathlib.Path(args.out_dir)
     writer_context = (
         StreamingCsvWriter(
@@ -4321,6 +5163,7 @@ def _run_fig1_fig2_shared_trials(
                 getattr(args, "include_diagnostic_variants", False)
             ),
         )
+        variants = _apply_peb_cli_variant_filter(variants, args)
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
             figure=FIG1_FIG2_SHARED_FIGURE,
@@ -4379,6 +5222,7 @@ def _ensure_fig1_fig2_shared_outputs(
                 getattr(args, "include_diagnostic_variants", False)
             ),
         )
+        variants = _apply_peb_cli_variant_filter(variants, args)
         out_dir.mkdir(parents=True, exist_ok=True)
         tasks = _tasks_for_figure(
             figure=FIG1_FIG2_SHARED_FIGURE,
@@ -4523,6 +5367,7 @@ def _run_figure(
             getattr(args, "include_diagnostic_variants", False)
         ),
     )
+    variants = _apply_peb_cli_variant_filter(variants, args)
     out_dir.mkdir(parents=True, exist_ok=True)
     grouped_group = {
         "fig3": "nested_receiver",
@@ -4602,6 +5447,7 @@ def _validation_rows_for_grouping(
     rows: list[dict[str, Any]] = []
     validation_base_config = default_config()
     apply_global_vp_cli_overrides(validation_base_config, validation_args)
+    apply_peb_cli_overrides(validation_base_config, validation_args)
     for row_batch, log_text in _iter_task_results(
         tasks,
         process_workers=min(
@@ -4763,6 +5609,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--global-vp-gpu-keep-arrays-on-device",
         action="store_true",
     )
+    parser.add_argument(
+        "--include-constrained-jones-peb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--no-constrained-jones-peb",
+        dest="include_constrained_jones_peb",
+        action="store_false",
+    )
+    parser.add_argument("--include-anchored-jones-peb", action="store_true")
+    parser.add_argument(
+        "--jones-anchor-prior-mode",
+        choices=("disabled", "manual", "lambda_from_adaptive"),
+        default="disabled",
+    )
+    parser.add_argument("--jones-anchor-prior-scale", type=float, default=1.0)
     parser.add_argument("--csv-flush-every", type=int, default=10)
     parser.add_argument("--validate-grouped-equivalence", action="store_true")
     add_progress_args(parser)

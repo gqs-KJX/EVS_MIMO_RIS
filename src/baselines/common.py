@@ -453,10 +453,14 @@ def group_omp_select(
     batch_size: int = 256,
     ridge: float = 1.0e-10,
     trim_memory_enabled: bool = True,
+    backend_config: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], np.ndarray, np.ndarray, dict[str, Any]]:
     """Select geometry groups by group projection energy and refit all Jones columns."""
+    from .backend import BackendConfig, get_backend
     from ..experiments.resource_control import trim_memory
 
+    backend_cfg = BackendConfig.from_value(backend_config)
+    backend = get_backend(backend_cfg)
     y_vec = np.asarray(y_vec, dtype=complex).reshape(-1)
     residual = y_vec.copy()
     selected_groups: list[dict[str, Any]] = []
@@ -467,11 +471,50 @@ def group_omp_select(
     last_best_score = float("nan")
     num_batches = 0
     scoring_start = time.perf_counter()
-    effective_batch_size = max(1, int(batch_size))
+    requested_batch_size = (
+        backend_cfg.gpu_batch_size
+        if backend.name == "cupy" and backend_cfg.gpu_batch_size is not None
+        else backend_cfg.cpu_batch_size
+        if backend.name == "cpu" and backend_cfg.cpu_batch_size is not None
+        else batch_size
+    )
+    effective_batch_size = max(1, int(requested_batch_size))
+
+    def score_group(group: dict[str, Any], residual_vec: np.ndarray, residual_device: Any) -> float:
+        design = group_design(scene, config, group)
+        if backend.name != "cupy":
+            return group_projection_score(design, residual_vec)
+        xp = backend.xp
+        linalg_error = getattr(xp.linalg, "LinAlgError", np.linalg.LinAlgError)
+        try:
+            matrix = backend.asarray(design, dtype=xp.complex128)
+            norms = xp.linalg.norm(matrix, axis=0)
+            keep = norms > 0.0
+            if not bool(backend.to_host(xp.any(keep))):
+                return float("-inf")
+            matrix = matrix[:, keep] / norms[keep]
+            q, r = xp.linalg.qr(matrix, mode="reduced")
+            diag = xp.abs(xp.diag(r)) if r.size else xp.asarray([], dtype=xp.float64)
+            if diag.size == 0:
+                return float("-inf")
+            max_diag = float(backend.to_host(xp.max(diag)))
+            threshold = 1.0e-10 * max(max_diag, 1.0)
+            rank = int(backend.to_host(xp.sum(diag > threshold)))
+            if rank <= 0:
+                return float("-inf")
+            projection = q[:, :rank].conj().T @ residual_device
+            return float(backend.to_host(xp.linalg.norm(projection) ** 2))
+        except linalg_error:
+            return group_projection_score(design, residual_vec)
 
     for _ in range(max(0, int(max_groups))):
         best_group = None
         best_score = float("-inf")
+        residual_device = (
+            backend.asarray(residual, dtype=backend.xp.complex128)
+            if backend.name == "cupy"
+            else None
+        )
         for batch_start in range(0, len(groups), effective_batch_size):
             batch = groups[batch_start : batch_start + effective_batch_size]
             num_batches += 1
@@ -479,7 +522,7 @@ def group_omp_select(
                 key = geometry_group_key(group)
                 if key in selected_keys:
                     continue
-                score = group_projection_score(group_design(scene, config, group), residual)
+                score = score_group(group, residual, residual_device)
                 if score > best_score:
                     best_score = score
                     best_group = group
@@ -498,6 +541,7 @@ def group_omp_select(
         Phi = supports_to_design(scene, config, expanded_supports)
         coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
         last_best_score = float(best_score)
+    backend.synchronize()
 
     diagnostics = {
         "group_omp": True,
@@ -510,6 +554,12 @@ def group_omp_select(
         "num_batches": num_batches,
         "batch_size": effective_batch_size,
         "scoring_time_s": time.perf_counter() - scoring_start,
+        "backend": backend.name,
+        "gpu_used": backend.name == "cupy",
+        "gpu_num_batches": num_batches if backend.name == "cupy" else 0,
+        "gpu_batch_size": effective_batch_size if backend.name == "cupy" else "",
+        "gpu_device": backend.device if backend.name == "cupy" else "",
+        "backend_warning": backend.warning,
     }
     return selected_groups, expanded_supports, coeffs, y_hat, diagnostics
 

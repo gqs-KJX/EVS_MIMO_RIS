@@ -93,7 +93,7 @@ def test_variant_filter_keeps_named_variant_and_peb_alias():
         "fig1",
         figures.parse_variant_filter("free_jones_vp,peb_only"),
     )
-    assert list(variants) == ["free_jones_vp", "PEB"]
+    assert list(variants) == ["free_jones_vp", "PEB", "constrained_jones_peb"]
 
 
 def test_variant_filter_does_not_apply_outside_fig1_fig2():
@@ -105,6 +105,7 @@ def test_variant_filter_does_not_apply_outside_fig1_fig2():
         "scalar_peb",
         "dual_pol_peb",
         "full_6d_evs_peb",
+        "full_6d_constrained_jones_peb",
     ]
 
 
@@ -203,23 +204,40 @@ def test_nested_receiver_peb_rows_share_reference_sigma2(monkeypatch):
 
 def test_fig5_variant_specs_include_gate_variants():
     specs = figures._variant_specs("fig5")
-    assert "direct_vp" in specs
-    assert "jnpp_always" in specs
-    assert "reliability_gated_proposed" in specs
-    assert "oracle_init_vp" in specs
+    assert list(specs) == [
+        "direct_vp",
+        "old_gated",
+        "adaptive_jones_vp_proposed",
+        "force_rescue",
+        "oracle_init_vp",
+    ]
+    assert specs["direct_vp"]["_allow_stage2"] is False
+    assert (
+        specs["old_gated"]["proposed_stage2_policy"]
+        == "reliability_gated_ris_only"
+    )
+    assert (
+        specs["adaptive_jones_vp_proposed"]["proposed_stage2_policy"]
+        == "ngc_certified_ris_only"
+    )
+    assert specs["force_rescue"]["proposed_stage2_policy"] == "force_ris_only"
+    assert specs["oracle_init_vp"]["_runner"] == "oracle_init_vp"
 
 
 def test_figure6_k_grid():
     assert figures.FIGURE6_K_GRID == [1, 2, 3, 4]
 
 
-def test_fig6_vp_family_proposed_keeps_stage2_off():
+def test_fig6_vp_family_proposed_uses_ngc():
     specs = figures._variant_specs("fig6")
     proposed = specs["adaptive_jones_vp_proposed"]
     assert proposed["global_vp"]["mode"] == "adaptive_jones"
-    assert proposed["stage2_adaptive"] is False
-    assert proposed["proposed_stage2_policy"] == "reliability_gated"
-    assert proposed["_allow_stage2"] is False
+    assert proposed["stage2_adaptive"] is True
+    assert proposed["stage2_rescue_type"] == "ris_only"
+    assert proposed["proposed_stage2_policy"] == "ngc_certified_ris_only"
+    assert proposed["_allow_stage2"] is True
+    assert proposed["rescue_accept_min_rel_improvement"] == 0.0
+    assert proposed["rescue_accept_min_abs_improvement"] == 1.0e-8
 
 
 def test_default_paper_k_is_three():
@@ -430,6 +448,69 @@ def test_summary_carries_ngc_rescue_run_rate():
     by_variant = {row["variant"]: row for row in summary}
     assert by_variant["adaptive_jones_vp_proposed"]["rescue_run_rate"] == 0.5
     assert np.isnan(by_variant["fixed_pol_vp"]["rescue_run_rate"])
+
+
+def test_summary_carries_fig5_rescue_trigger_rate():
+    rows = [
+        {
+            "figure": "fig5",
+            "variant": "adaptive_jones_vp_proposed",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "ngc_policy_active": "True",
+            "ngc_rescue_requested": "True",
+        },
+        {
+            "figure": "fig5",
+            "variant": "adaptive_jones_vp_proposed",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "ngc_policy_active": "True",
+            "ngc_rescue_requested": "False",
+        },
+        {
+            "figure": "fig5",
+            "variant": "old_gated",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "proposed_stage2_policy": "reliability_gated_ris_only",
+            "rescue_candidate_available": "True",
+        },
+        {
+            "figure": "fig5",
+            "variant": "old_gated",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "proposed_stage2_policy": "reliability_gated_ris_only",
+            "rescue_candidate_available": "False",
+        },
+        {
+            "figure": "fig5",
+            "variant": "force_rescue",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "proposed_stage2_policy": "force_ris_only",
+        },
+        {
+            "figure": "fig5",
+            "variant": "direct_vp",
+            "x_value": "0",
+            "failed": "False",
+            "outlier_flag": "False",
+            "selected_branch": "direct_vp",
+        },
+    ]
+    summary = figures.summarize_rows(rows, "fig5")
+    by_variant = {row["variant"]: row for row in summary}
+    assert by_variant["adaptive_jones_vp_proposed"]["rescue_trigger_rate"] == 0.5
+    assert by_variant["old_gated"]["rescue_trigger_rate"] == 0.5
+    assert by_variant["force_rescue"]["rescue_trigger_rate"] == 1.0
+    assert by_variant["direct_vp"]["rescue_trigger_rate"] == 0.0
 
 
 def test_cache_reuse_refuses_ten_trial_csv_when_requesting_fifty():

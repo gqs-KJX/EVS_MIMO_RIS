@@ -247,6 +247,7 @@ def run_far_field_omp_baseline(data: dict, config: dict) -> BaselineResult:
         trim_memory_enabled=bool(
             config.get("baselines", {}).get("trim_memory", True)
         ),
+        backend_config=backend_cfg,
     )
     residual = y_vec - y_hat_vec
     p_hat, delta_t, geom_diag = geometric_support_to_position_ls(scene, selected, config)
@@ -286,12 +287,6 @@ def run_far_field_omp_baseline(data: dict, config: dict) -> BaselineResult:
     diagnostics["delay_grid_size"] = int(cfg.get("delay_grid_size", 41))
     diagnostics["max_groups"] = max_groups
     diagnostics["selected_support"] = selected
-    diagnostics["backend"] = backend_cfg.backend
-    diagnostics["gpu_used"] = False
-    diagnostics["gpu_num_batches"] = 0
-    diagnostics["gpu_batch_size"] = ""
-    diagnostics["gpu_device"] = ""
-    diagnostics["backend_warning"] = ""
     diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     raw_objective = float(np.linalg.norm(residual) ** 2 / y_vec.size)
     return BaselineResult(

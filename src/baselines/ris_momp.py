@@ -287,6 +287,7 @@ def run_ris_momp_baseline(data: dict, config: dict) -> BaselineResult:
         max_groups=max_groups,
         batch_size=batch_size,
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
+        backend_config=backend_cfg,
     )
     residual = y_vec - y_hat
     coarse_residual_norm = float(np.linalg.norm(residual))
@@ -338,7 +339,7 @@ def run_ris_momp_baseline(data: dict, config: dict) -> BaselineResult:
         "max_batch_memory_mb": max_batch_memory_mb,
         "backend": backend.name,
         "gpu_used": backend.name == "cupy",
-        "gpu_num_batches": 0,
+        "gpu_num_batches": diagnostics.get("gpu_num_batches", 0),
         "gpu_batch_size": batch_size if backend.name == "cupy" else "",
         "gpu_device": backend.device if backend.name == "cupy" else "",
         "backend_warning": backend.warning,

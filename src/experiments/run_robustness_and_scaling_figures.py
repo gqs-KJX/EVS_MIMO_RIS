@@ -85,13 +85,19 @@ FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c"]
 DEFAULT_FIGURES = ",".join(FIGURE_ORDER)
 DEFAULT_BASELINES = "proposed,ff_omp,ris_momp,nf_mmpsr,peb"
 ESTIMATOR_BASELINES = ("proposed", "ff_omp", "ris_momp", "nf_mmpsr")
-REFERENCE_BASELINES = ("peb", "oracle_calibrated_peb", "trueK_peb_reference")
+REFERENCE_BASELINES = (
+    "peb",
+    "constrained_jones_peb",
+    "oracle_calibrated_peb",
+    "trueK_peb_reference",
+)
 BASELINE_LABELS = {
     "proposed": "Proposed",
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
-    "peb": "PEB",
+    "peb": "Data-only Free-Jones PEB",
+    "constrained_jones_peb": "Constrained-Jones PEB",
     "oracle_calibrated_peb": "Oracle-calibrated PEB (reference)",
     "trueK_peb_reference": "True-K PEB (reference only)",
 }
@@ -140,6 +146,29 @@ FIELDNAMES = [
     "data_hash",
     "warning",
     "peb_position_m",
+    "peb_free_jones_m",
+    "peb_constrained_jones_m",
+    "peb_anchored_jones_m",
+    "peb_variant",
+    "jones_bound_type",
+    "constrained_jones_peb_m",
+    "anchored_jones_peb_m",
+    "free_jones_peb_m",
+    "peb_fim_rank_chi_free",
+    "peb_fim_rank_chi_constrained",
+    "peb_fim_rank_chi_anchored",
+    "peb_fim_cond_chi_free",
+    "peb_fim_cond_chi_constrained",
+    "peb_fim_cond_chi_anchored",
+    "peb_clock_schur_used",
+    "peb_rank_deficient",
+    "anchored_prior_scaling",
+    "anchored_prior_lambda",
+    "anchored_prior_precision_norm",
+    "peb_free_projection_schur_relerr",
+    "peb_con_minus_free_min_eig",
+    "peb_hyb_minus_free_min_eig",
+    "peb_ordering_ok",
     "peb_is_data_only",
     "peb_uses_regularization",
     "nuisance_model",
@@ -210,7 +239,9 @@ def parse_figures(value: str) -> list[str]:
 
 def parse_baselines(value: str) -> list[str]:
     baselines = [item.strip() for item in value.split(",") if item.strip()]
-    unknown = sorted(set(baselines) - set(ESTIMATOR_BASELINES) - {"peb"})
+    unknown = sorted(
+        set(baselines) - set(ESTIMATOR_BASELINES) - {"peb", "constrained_jones_peb"}
+    )
     if unknown:
         raise ValueError(f"unknown baselines: {unknown}")
     return list(dict.fromkeys(baselines))
@@ -222,6 +253,7 @@ def baselines_for_figure(
     *,
     include_calibration_oracle_peb: bool = False,
     include_trueK_peb_reference: bool = False,
+    include_constrained_jones_peb: bool = True,
 ) -> list[str]:
     selected = [name for name in requested if name in ESTIMATOR_BASELINES]
     if figure == "fig8":
@@ -232,6 +264,8 @@ def baselines_for_figure(
             selected.append("trueK_peb_reference")
     elif "peb" in requested:
         selected.append("peb")
+        if include_constrained_jones_peb or "constrained_jones_peb" in requested:
+            selected.append("constrained_jones_peb")
     return selected
 
 
@@ -677,6 +711,22 @@ def _peb_result_row(
 ) -> dict[str, Any]:
     start = time.perf_counter()
     metrics = _peb_from_efim(data, config)
+    if baseline == "constrained_jones_peb":
+        metrics = {
+            **metrics,
+            "peb_position_m": metrics.get("peb_constrained_jones_m", float("nan")),
+            "peb_variant": "constrained_jones_peb",
+            "jones_bound_type": "constrained",
+        }
+    elif baseline == "peb":
+        metrics = {
+            **metrics,
+            "peb_position_m": metrics.get(
+                "peb_free_jones_m", metrics.get("peb_position_m", float("nan"))
+            ),
+            "peb_variant": "free_jones_peb",
+            "jones_bound_type": "free",
+        }
     warning = str(metrics.get("warning", ""))
     if reference_warning:
         warning = reference_warning + (f"; {warning}" if warning else "")
@@ -725,6 +775,10 @@ def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
         r_ue_m=task.get("r_ue_m"),
         strict_ris_geometry=bool(task.get("strict_ris_geometry", False)),
     )
+    config["crb"] = dict(task.get("crb", {}))
+    baselines = copy.deepcopy(config.get("baselines", {}))
+    baselines["backend_config"] = dict(task.get("backend_config", {}))
+    config["baselines"] = baselines
     figure = str(task["figure"])
     reference_data = None
     if figure == "fig8":
@@ -765,7 +819,7 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
                         seed=int(task["seed"]),
                         snr_db=float(task["snr_db"]),
                     )
-                elif baseline == "peb":
+                elif baseline in {"peb", "constrained_jones_peb"}:
                     row = _peb_result_row(
                         data,
                         config,
@@ -933,6 +987,7 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
         "ris_momp": ("^", "-"),
         "nf_mmpsr": ("D", "-"),
         "peb": ("v", "--"),
+        "constrained_jones_peb": ("h", "-."),
         "oracle_calibrated_peb": ("P", "--"),
         "trueK_peb_reference": ("X", "--"),
     }
@@ -994,6 +1049,15 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "baselines": list(baselines),
         "git_commit": _git_commit(),
         "seed": int(args.seed),
+        "baseline_backend": str(args.baseline_backend),
+        "gpu_device": args.gpu_device,
+        "gpu_batch_size": args.gpu_batch_size,
+        "cpu_batch_size": args.cpu_batch_size,
+        "gpu_memory_fraction": args.gpu_memory_fraction,
+        "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
+        "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
+        "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
+        "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
     }
 
 
@@ -1014,7 +1078,9 @@ def _metadata(args: argparse.Namespace, figure: str, baselines: list[str]) -> di
             else "true-K reference only; not a K-mismatch bound"
             if figure == "fig9" and "trueK_peb_reference" in baselines
             else "ordinary matched-model data-only PEB"
-            if figure.startswith("fig10")
+            if figure.startswith("fig10") and "constrained_jones_peb" not in baselines
+            else "ordinary matched-model data-only Free-Jones PEB plus Constrained-Jones PEB"
+            if figure.startswith("fig10") and "constrained_jones_peb" in baselines
             else "no PEB"
         ),
     }
@@ -1056,6 +1122,27 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
                 "profile_memory": args.profile_memory,
                 "trim_memory": True,
                 "strict_ris_geometry": args.strict_ris_geometry,
+                "backend_config": {
+                    "backend": str(args.baseline_backend),
+                    "gpu_device": args.gpu_device,
+                    "gpu_batch_size": args.gpu_batch_size,
+                    "cpu_batch_size": args.cpu_batch_size,
+                    "gpu_memory_fraction": args.gpu_memory_fraction,
+                },
+                "crb": {
+                    "include_constrained_jones_peb": bool(
+                        args.include_constrained_jones_peb
+                    ),
+                    "include_anchored_jones_peb": bool(
+                        args.include_anchored_jones_peb
+                    ),
+                    "jones_anchor_prior_mode": str(
+                        args.jones_anchor_prior_mode
+                    ),
+                    "jones_anchor_prior_scale": float(
+                        args.jones_anchor_prior_scale
+                    ),
+                },
                 name: value,
             }
             tasks.append(task)
@@ -1074,8 +1161,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ris-side-grid", default="16,24,32,48,64")
     parser.add_argument("--rue-grid", default="")
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
+    parser.add_argument(
+        "--baseline-backend",
+        choices=("cpu", "cupy", "auto"),
+        default="cpu",
+    )
+    parser.add_argument("--gpu-device", type=int, default=0)
+    parser.add_argument("--gpu-batch-size", type=int, default=None)
+    parser.add_argument("--cpu-batch-size", type=int, default=None)
+    parser.add_argument("--gpu-memory-fraction", type=float, default=None)
     parser.add_argument("--include-calibration-oracle-peb", action="store_true")
     parser.add_argument("--include-trueK-peb-reference", action="store_true")
+    parser.add_argument(
+        "--include-constrained-jones-peb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--no-constrained-jones-peb",
+        dest="include_constrained_jones_peb",
+        action="store_false",
+    )
+    parser.add_argument("--include-anchored-jones-peb", action="store_true")
+    parser.add_argument(
+        "--jones-anchor-prior-mode",
+        choices=("disabled", "manual", "lambda_from_adaptive"),
+        default="disabled",
+    )
+    parser.add_argument("--jones-anchor-prior-scale", type=float, default=1.0)
     add_io_args(parser, default_out_dir="results/robustness_and_scaling")
     add_resource_args(
         parser,
@@ -1096,6 +1209,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     rue_config = default_config()
     set_number_of_ris_paths(rue_config, args.true_k)
     args.rue_grid = parse_float_grid(args.rue_grid) if args.rue_grid.strip() else default_rue_grid(rue_config)
+    if args.baseline_backend in {"cupy", "auto"} and args.process_workers is None:
+        args.process_workers = 1
     normalize_blas_threads(args)
     return args
 
@@ -1131,6 +1246,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args.process_workers = args.resource_plan["process_workers"]
     args.blas_threads = args.resource_plan["blas_threads"]
+    if args.baseline_backend in {"cupy", "auto"} and args.process_workers > 2:
+        print(
+            "Multiple worker processes may contend for one GPU; prefer "
+            "--process-workers 1 or 2."
+        )
     apply_thread_limits(args.blas_threads)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     progress_path = (
@@ -1161,6 +1281,7 @@ def main(argv: list[str] | None = None) -> None:
             args.baselines,
             include_calibration_oracle_peb=args.include_calibration_oracle_peb,
             include_trueK_peb_reference=args.include_trueK_peb_reference,
+            include_constrained_jones_peb=args.include_constrained_jones_peb,
         )
         if "proposed" in baselines:
             preview_config = make_config(

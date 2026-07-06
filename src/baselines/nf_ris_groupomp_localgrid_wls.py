@@ -313,6 +313,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
     y_vec = vectorize_raw_observation(data["Y_noisy"])
     baseline_cfg = config.get("baselines", {})
     cfg = dict(baseline_cfg.get("nf_ris_groupomp_localgrid_wls", {}))
+    backend_cfg = baseline_cfg.get("backend_config")
     groups = _coarse_groups(scene, config)
     max_groups = int(cfg.get("max_groups", scene["K"]))
     selected, expanded_supports, coeffs_coarse, y_hat_coarse, omp_diag = group_omp_select(
@@ -323,6 +324,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
         max_groups=max_groups,
         batch_size=int(cfg.get("batch_size", 64)),
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
+        backend_config=backend_cfg,
     )
     coarse_p, coarse_dt, ray_diag = _ray_position_clock(scene, config, selected)
     bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)

@@ -147,8 +147,9 @@ def test_grouped_fig5_task_returns_all_variants(monkeypatch):
     rows, _ = figures._run_grouped_task(_group_task("fig5"))
     assert {row["variant"] for row in rows} == {
         "direct_vp",
-        "jnpp_always",
-        "reliability_gated_proposed",
+        "old_gated",
+        "adaptive_jones_vp_proposed",
+        "force_rescue",
         "oracle_init_vp",
     }
 

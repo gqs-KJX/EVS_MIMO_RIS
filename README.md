@@ -49,7 +49,11 @@ The paper figure runner targets the revised pipeline: Stage-I initialization,
 reliability-gated RIS/JNPP basin recovery, and adaptive Stage-I-regularized
 Jones-VP. Figures 1--5 use `K=3` by default through the actual simulation
 configuration. Figure 6 ignores `--paper-k` and sweeps `K=1,2,3,4` at 0 dB.
-PEB curves are plotted from the data-only EFIM/CRB calculation. The older
+Figure 6 should be interpreted as the complete NGC proposed system versus
+reduced polarization-model variants; the proposed curve also includes the
+Stage-II rescue policy, while the fixed/free Jones VP variants are VP-only.
+PEB curves include the existing data-only Free-Jones EFIM/CRB reference and,
+by default, a Constrained-Jones oracle polarimetric-anchor reference. The older
 `run_stage2_ablation.py` entry point remains available only for legacy
 structured-refinement module ablations.
 
@@ -103,7 +107,8 @@ The benchmark figure contains:
   `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb"`.
 - `Proposed`: the only curve using the current RG-JNPP-Adaptive-Jones-VP
   pipeline.
-- `PEB`: the data-only EFIM/CRB reference curve.
+- `PEB`: the data-only Free-Jones EFIM/CRB reference curve. Plots that show
+  this curve also include a Constrained-Jones PEB reference unless disabled.
 
 All non-proposed baselines use the same generated noisy data for each
 seed/SNR/K and are restricted to discrete dictionaries, CP factorization,
@@ -144,6 +149,6 @@ mismatch. The optional `--include-trueK-peb-reference` curve is labeled
 `True-K PEB (reference only)`.
 
 Figures 10(a)--10(c) are matched-model scaling studies and include the ordinary
-matched-model, data-only PEB by default. All PEB calculations eliminate the
-linear Jones nuisance and explicitly Schur-eliminate clock before computing
-the position PEB; estimator regularization is not included.
+matched-model, data-only Free-Jones PEB by default. All PEB calculations
+explicitly Schur-eliminate clock before computing the position PEB. The optional
+Anchored-Jones PEB path is disabled by default.

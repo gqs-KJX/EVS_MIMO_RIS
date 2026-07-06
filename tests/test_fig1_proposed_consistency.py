@@ -208,4 +208,4 @@ def test_proposed_plotted_last(tmp_path, monkeypatch):
         ],
         tmp_path,
     )
-    assert labels[-1] == "Proposed"
+    assert labels[-1] == "NGC proposed"
