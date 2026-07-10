@@ -66,6 +66,8 @@ if __package__ in (None, ""):
         add_mc_args,
         add_progress_args,
         add_resource_args,
+        add_stage2_rescue_args,
+        apply_stage2_rescue_cli_overrides,
         normalize_blas_threads,
     )
     from src.utils import scipy_is_available
@@ -108,6 +110,8 @@ else:
         add_mc_args,
         add_progress_args,
         add_resource_args,
+        add_stage2_rescue_args,
+        apply_stage2_rescue_cli_overrides,
         normalize_blas_threads,
     )
     from ..utils import scipy_is_available
@@ -165,6 +169,8 @@ VARIANT_LABELS = {
     "full_6d_constrained_jones_peb": "Full-6D Constrained-Jones PEB",
     "adaptive_jones_vp_proposed_force_lower_raw": "Proposed w/ always-run rescue",
     "adaptive_jones_vp_proposed_old_gated": "Proposed w/ GoF-gated rescue",
+    "stage2_legacy_multistart": "Stage-II legacy multistart",
+    "stage2_pllg": "Stage-II PLLG",
 }
 
 
@@ -274,6 +280,21 @@ FIELDNAMES = [
     "global_vp_gpu_device",
     "global_vp_objective_backend",
     "global_vp_linear_solve_backend",
+    "vp_dictionary_mode",
+    "vp_dictionary_mode_requested",
+    "vp_jacobian_mode",
+    "vp_matrix_free_enabled",
+    "vp_matrix_free_fallback_reason",
+    "vp_precontract_static_modes",
+    "vp_factor_cache_hits",
+    "vp_factor_cache_misses",
+    "vp_matrix_free_num_objective_calls",
+    "vp_matrix_free_debug_num_compares",
+    "vp_matrix_free_debug_rel_G_diff",
+    "vp_matrix_free_debug_rel_b_diff",
+    "vp_matrix_free_debug_rel_x_hat_diff",
+    "vp_matrix_free_debug_rel_regularized_objective_diff",
+    "vp_matrix_free_debug_rel_gradient_diff",
     "jones_mode",
     "adaptive_enabled",
     "adaptive_policy_name",
@@ -486,18 +507,29 @@ def apply_nested_update(config: dict, update_dict: dict) -> dict:
 
 def global_vp_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
     """Return global-VP backend overrides requested by the ablation CLI."""
-    if getattr(args, "global_vp_backend", None) is None:
+    has_backend_override = getattr(args, "global_vp_backend", None) is not None
+    has_dictionary_override = getattr(args, "vp_dictionary_mode", None) is not None
+    has_debug_compare = bool(getattr(args, "vp_debug_compare_explicit", False))
+    if not (has_backend_override or has_dictionary_override or has_debug_compare):
         return {}
-    overrides: dict[str, Any] = {
-        "backend": str(args.global_vp_backend),
-        "gpu_device": int(getattr(args, "global_vp_gpu_device", 0)),
-        "validate_gpu_against_cpu": bool(
-            getattr(args, "global_vp_validate_gpu_against_cpu", False)
-        ),
-        "gpu_dtype": str(getattr(args, "global_vp_gpu_dtype", "complex128")),
-    }
-    if bool(getattr(args, "global_vp_gpu_keep_arrays_on_device", False)):
-        overrides["gpu_keep_arrays_on_device"] = True
+    overrides: dict[str, Any] = {}
+    if has_backend_override:
+        overrides.update(
+            {
+                "backend": str(args.global_vp_backend),
+                "gpu_device": int(getattr(args, "global_vp_gpu_device", 0)),
+                "validate_gpu_against_cpu": bool(
+                    getattr(args, "global_vp_validate_gpu_against_cpu", False)
+                ),
+                "gpu_dtype": str(getattr(args, "global_vp_gpu_dtype", "complex128")),
+            }
+        )
+        if bool(getattr(args, "global_vp_gpu_keep_arrays_on_device", False)):
+            overrides["gpu_keep_arrays_on_device"] = True
+    if has_dictionary_override:
+        overrides["vp_dictionary_mode"] = str(args.vp_dictionary_mode)
+    if has_debug_compare:
+        overrides["vp_debug_compare_explicit"] = True
     return overrides
 
 
@@ -759,6 +791,16 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             },
             "adaptive_jones_vp_proposed_old_gated": _proposed_old_gated_spec(),
             "adaptive_jones_vp_proposed_force_lower_raw": _proposed_force_lower_raw_spec(),
+            "stage2_legacy_multistart": {
+                **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_rescue_impl": "legacy_multistart",
+                "stage2_force_run_for_diagnostics": True,
+            },
+            "stage2_pllg": {
+                **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_rescue_impl": "pllg",
+                "stage2_force_run_for_diagnostics": True,
+            },
         }
     return {}
 
@@ -2110,6 +2152,47 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             ["final.global_vp_linear_solve_backend", "final.global_vp_lstsq_backend"],
             "",
         ),
+        "vp_dictionary_mode": get_nested(result, ["final.vp_dictionary_mode"], ""),
+        "vp_dictionary_mode_requested": get_nested(
+            result, ["final.vp_dictionary_mode_requested"], ""
+        ),
+        "vp_jacobian_mode": get_nested(result, ["final.vp_jacobian_mode"], ""),
+        "vp_matrix_free_enabled": get_nested(
+            result, ["final.vp_matrix_free_enabled"], ""
+        ),
+        "vp_matrix_free_fallback_reason": get_nested(
+            result, ["final.vp_matrix_free_fallback_reason"], ""
+        ),
+        "vp_precontract_static_modes": get_nested(
+            result, ["final.vp_precontract_static_modes"], ""
+        ),
+        "vp_factor_cache_hits": get_nested(result, ["final.vp_factor_cache_hits"], ""),
+        "vp_factor_cache_misses": get_nested(
+            result, ["final.vp_factor_cache_misses"], ""
+        ),
+        "vp_matrix_free_num_objective_calls": get_nested(
+            result, ["final.vp_matrix_free_num_objective_calls"], ""
+        ),
+        "vp_matrix_free_debug_num_compares": get_nested(
+            result, ["final.vp_matrix_free_debug_num_compares"], ""
+        ),
+        "vp_matrix_free_debug_rel_G_diff": get_nested(
+            result, ["final.vp_matrix_free_debug_rel_G_diff"], ""
+        ),
+        "vp_matrix_free_debug_rel_b_diff": get_nested(
+            result, ["final.vp_matrix_free_debug_rel_b_diff"], ""
+        ),
+        "vp_matrix_free_debug_rel_x_hat_diff": get_nested(
+            result, ["final.vp_matrix_free_debug_rel_x_hat_diff"], ""
+        ),
+        "vp_matrix_free_debug_rel_regularized_objective_diff": get_nested(
+            result,
+            ["final.vp_matrix_free_debug_rel_regularized_objective_diff"],
+            "",
+        ),
+        "vp_matrix_free_debug_rel_gradient_diff": get_nested(
+            result, ["final.vp_matrix_free_debug_rel_gradient_diff"], ""
+        ),
         "jones_mode": variant_diagnostics.get(
             "jones_mode",
             get_nested(result, ["final.selected_vp_family_branch", "final.global_vp_mode"], ""),
@@ -2355,6 +2438,179 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             ),
         }
     )
+    stage2_diag = dict(result.get("stage2_diagnostics", {}))
+    stage2_impl = str(
+        result.get(
+            "stage2_rescue_impl",
+            result.get("stage1_config", {}).get("stage2_rescue_impl", "legacy_multistart"),
+        )
+    )
+    scene_centers = np.asarray(scene.get("ris_centers", []), dtype=float)
+    local_rows = []
+    stage1_estimate = result.get("estimate_initial", {})
+    tau_true = np.asarray(true_components.get("taus", []), dtype=float).reshape(-1)
+    tau_stage1 = np.asarray(
+        [
+            _to_float(tau_from_pole(pole, scene.get("delta_f")))
+            for pole in np.asarray(stage1_estimate.get("poles", []), dtype=complex).reshape(-1)
+        ],
+        dtype=float,
+    )
+    local_records = stage2_diag.get("local_fix_records", [])
+    for record in local_records:
+        panel = int(record.get("panel_index", -1))
+        assigned_column = record.get("assigned_column_index", "")
+        local_position = np.asarray(record.get("position", [np.nan] * 3), dtype=float).reshape(-1)
+        eta = np.asarray(record.get("eta", [np.nan] * 3), dtype=float).reshape(-1)
+        truth_position = np.asarray(scene.get("p_u_true", [np.nan] * 3), dtype=float).reshape(-1)
+        local_error = local_position - truth_position if local_position.size == 3 and truth_position.size == 3 else np.full(3, np.nan)
+        assigned_correct = ""
+        if (
+            tau_true.size == int(scene.get("K", 0))
+            and tau_stage1.size == int(scene.get("K", 0))
+            and panel >= 0
+            and panel < tau_true.size
+            and assigned_column != ""
+        ):
+            try:
+                column = int(assigned_column)
+                physical_tau = tau_stage1[panel] if panel < tau_stage1.size else tau_stage1[column]
+                assigned_correct = bool(
+                    np.isfinite(physical_tau)
+                    and abs(physical_tau - tau_true[panel])
+                    <= np.min(np.abs(tau_stage1 - tau_true[panel])) + 1.0e-15
+                )
+            except (IndexError, TypeError, ValueError):
+                assigned_correct = ""
+        if panel >= 0 and panel < scene_centers.shape[0] and local_position.size == 3:
+            _ = scene_centers[panel]
+        local_rows.append(
+            {
+                "trial_id": result.get("trial_id", ""),
+                "seed": result.get("seed", ""),
+                "snr_db": result.get("snr_db", ""),
+                "panel_index": panel,
+                "assigned_panel_index": panel if assigned_column != "" else "",
+                "panel_match_correct": assigned_correct,
+                "local_fix_valid": bool(record.get("valid", False)),
+                "local_fix_reject_reason": str(record.get("reject_reason", "")),
+                "local_fix_x_m": local_position[0] if local_position.size == 3 else np.nan,
+                "local_fix_y_m": local_position[1] if local_position.size == 3 else np.nan,
+                "local_fix_z_m": local_position[2] if local_position.size == 3 else np.nan,
+                "true_x_m": truth_position[0] if truth_position.size == 3 else "",
+                "true_y_m": truth_position[1] if truth_position.size == 3 else "",
+                "true_z_m": truth_position[2] if truth_position.size == 3 else "",
+                "local_error_x_m": local_error[0],
+                "local_error_y_m": local_error[1],
+                "local_error_z_m": local_error[2],
+                "local_error_norm_m": float(np.linalg.norm(local_error)) if np.all(np.isfinite(local_error)) else np.nan,
+                "range_hat_m": eta[0] if eta.size == 3 else np.nan,
+                "theta_hat_rad": eta[1] if eta.size == 3 else np.nan,
+                "phi_hat_rad": eta[2] if eta.size == 3 else np.nan,
+                "projection_residual_before": "",
+                "projection_residual_after": record.get("residual_after", np.nan),
+                "assignment_margin": _finite_float(reliability.get("assignment_margin")),
+                "local_weight_source": str(record.get("weight_source", stage2_diag.get("local_weight_source", ""))),
+                "local_weight_scalar": record.get("weight_scalar", np.nan),
+            }
+        )
+    linear_position = np.asarray(stage2_diag.get("pllg_linear_x_m", [np.nan] * 3), dtype=float).reshape(-1)
+    projected_position = np.asarray(stage2_diag.get("pllg_projected_x_m", [np.nan] * 3), dtype=float).reshape(-1)
+    metrics["_stage2_sidecar"] = {
+        "trial_id": result.get("trial_id", ""),
+        "seed": result.get("seed", ""),
+        "snr_db": result.get("snr_db", ""),
+        "true_k": scene.get("K", ""),
+        "stage2_rescue_impl": stage2_impl,
+        "ngc_direct_status": result.get("ngc_direct_cert_status", ""),
+        "ngc_direct_score": _finite_float(result.get("ngc_direct_total_score")),
+        "rescue_triggered": bool(result.get("stage2_rescue_triggered", False)),
+        "stage2_force_run_for_diagnostics": bool(result.get("stage2_force_run_for_diagnostics", False)),
+        "rescue_available": bool(result.get("stage2_rescue_available", False)),
+        "pllg_success": bool(stage2_diag.get("pllg_success", False)),
+        "pllg_failure_reason": str(stage2_diag.get("pllg_failure_reason", "")),
+        "legacy_fallback_used": bool(stage2_diag.get("legacy_fallback_used", False)),
+        "legacy_fallback_reason": str(stage2_diag.get("legacy_fallback_reason", "")),
+        "num_valid_local_fixes": int(stage2_diag.get("num_valid_local_fixes", 0)),
+        "local_weight_source": str(stage2_diag.get("local_weight_source", "")),
+        "delay_variance_source": str(stage2_diag.get("delay_variance_source", "")),
+        "pllg_rank": stage2_diag.get("pllg_rank", ""),
+        "pllg_condition_number": _finite_float(stage2_diag.get("pllg_condition_number")),
+        "pllg_reweight_steps": stage2_diag.get("pllg_reweight_steps", ""),
+        "pllg_linear_x_m": linear_position[0] if linear_position.size == 3 else np.nan,
+        "pllg_linear_y_m": linear_position[1] if linear_position.size == 3 else np.nan,
+        "pllg_linear_z_m": linear_position[2] if linear_position.size == 3 else np.nan,
+        "pllg_linear_s_m": stage2_diag.get("pllg_linear_s_m", np.nan),
+        "pllg_linear_clock_s": stage2_diag.get("pllg_linear_clock_s", np.nan),
+        "pllg_projected_x_m": projected_position[0] if projected_position.size == 3 else np.nan,
+        "pllg_projected_y_m": projected_position[1] if projected_position.size == 3 else np.nan,
+        "pllg_projected_z_m": projected_position[2] if projected_position.size == 3 else np.nan,
+        "pllg_projection_distance_m": stage2_diag.get("pllg_projection_distance_m", np.nan),
+        "pllg_phi_before_polish": stage2_diag.get("pllg_phi_before_polish", np.nan),
+        "pllg_phi_after_polish": stage2_diag.get("pllg_phi_after_polish", np.nan),
+        "pllg_polish_success": bool(stage2_diag.get("pllg_polish_success", False)),
+        "pllg_linear_runtime_s": stage2_diag.get("pllg_linear_runtime_s", np.nan),
+        "pllg_polish_runtime_s": stage2_diag.get("pllg_polish_runtime_s", np.nan),
+        "legacy_fallback_runtime_s": stage2_diag.get("legacy_fallback_runtime_s", np.nan),
+        "stage2_total_runtime_s": stage2_diag.get("stage2_total_runtime_s", stage2_diag.get("structured_refinement_total", timing.get("stage2", np.nan))),
+        "seed_position_error_m": _finite_float(stage2_diag.get("seed_position_error_m")),
+        "seed_z_error_m": _finite_float(stage2_diag.get("seed_z_error_m")),
+        "seed_clock_error_s": _finite_float(stage2_diag.get("seed_clock_error_s")),
+        "final_position_error_m": pos_rmse,
+        "final_clock_error_s": _finite_float(
+            float(final.get("delta_t", np.nan)) - float(scene.get("delta_t_true", np.nan))
+        ),
+        "z_boundary_hit": bool(final.get("z_boundary_hit", final.get("boundary_hit", False))),
+    }
+    sigma_values = np.asarray(stage2_diag.get("delay_sigma_values", []), dtype=float).reshape(-1)
+    metrics["_stage2_sidecar"].update(
+        {
+            "common_ris_refinement_success": bool(stage2_diag.get("common_ris_refinement_success", False)),
+            "common_ris_refinement_impl": str(stage2_diag.get("common_ris_refinement_impl", "")),
+            "common_ris_refinement_runtime_s": stage2_diag.get("common_ris_refinement_runtime_s", np.nan),
+            "common_ris_refinement_num_valid_local_fixes": stage2_diag.get("common_ris_refinement_num_valid_local_fixes", ""),
+            "geometry_seed_impl": str(stage2_diag.get("geometry_seed_impl", "")),
+            "pllg_pseudorange_block_weight": stage2_diag.get("pllg_pseudorange_block_weight", ""),
+            "delay_sigma_source": str(stage2_diag.get("delay_sigma_source", stage2_diag.get("sigma_tau_source", ""))),
+            "delay_sigma_used_floor": bool(stage2_diag.get("delay_sigma_used_floor", stage2_diag.get("sigma_tau_used_floor", False))),
+            "delay_sigma_min_s": float(np.min(sigma_values)) if sigma_values.size else "",
+            "delay_sigma_max_s": float(np.max(sigma_values)) if sigma_values.size else "",
+            "delay_sigma_values_json": json.dumps(sigma_values.tolist()),
+            "stage2_clock_term_raw_s2_before": stage2_diag.get("before_clock_term_raw_s2", ""),
+            "stage2_clock_term_normalized_before": stage2_diag.get("before_clock_term_normalized", ""),
+            "stage2_ris_term_raw_before": stage2_diag.get("before_ris_term_raw", ""),
+            "stage2_ris_term_mean_before": stage2_diag.get("before_ris_term_mean", ""),
+            "stage2_ris_term_normalized_before": stage2_diag.get("before_ris_term_normalized", ""),
+            "stage2_phi_normalized_before": stage2_diag.get("before_phi_stage2_normalized", ""),
+            "stage2_clock_term_raw_s2_after": stage2_diag.get("after_clock_term_raw_s2", ""),
+            "stage2_clock_term_normalized_after": stage2_diag.get("after_clock_term_normalized", ""),
+            "stage2_ris_term_raw_after": stage2_diag.get("after_ris_term_raw", ""),
+            "stage2_ris_term_mean_after": stage2_diag.get("after_ris_term_mean", ""),
+            "stage2_ris_term_normalized_after": stage2_diag.get("after_ris_term_normalized", ""),
+            "stage2_phi_normalized_after": stage2_diag.get("after_phi_stage2_normalized", ""),
+            "stage2_ris_normalization_scale": result.get("stage1_config", {}).get("stage2_ris_normalization_scale", 1.0e-4),
+            "stage2_lambda_ris_normalized": result.get("stage1_config", {}).get("stage2_lambda_ris_normalized", 1.0),
+            "polish_accepted": bool(stage2_diag.get("polish_accepted", False)),
+            "rescue_candidate_admissible": result.get("rescue_candidate_admissible", ""),
+            "selector_guard_reject_reason": str(result.get("selector_guard_reject_reason", "")),
+            "selector_raw_degradation": result.get("selector_raw_degradation", ""),
+            "selector_raw_relative_improvement": result.get("selector_raw_relative_improvement", ""),
+            "selector_boundary_guard_used": result.get("selector_boundary_guard_used", ""),
+            "selector_boundary_override_used": result.get("selector_boundary_override_used", ""),
+        }
+    )
+    for local_row in local_rows:
+        local_row.update(
+            {
+                "local_fix_source_stage": "refined",
+                "common_refinement_impl": str(stage2_diag.get("common_ris_refinement_impl", "")),
+                "stage1_local_fix_x_m": "", "stage1_local_fix_y_m": "", "stage1_local_fix_z_m": "",
+                "refined_local_fix_x_m": local_row.get("local_fix_x_m", ""),
+                "refined_local_fix_y_m": local_row.get("local_fix_y_m", ""),
+                "refined_local_fix_z_m": local_row.get("local_fix_z_m", ""),
+            }
+        )
+    metrics["_stage2_local_fix_sidecar"] = local_rows
     return metrics
 
 
@@ -2516,6 +2772,23 @@ def _result_to_row(
         }
     )
     row.update(extract_metrics(result, outlier_threshold_m))
+    sidecar = row.get("_stage2_sidecar")
+    if isinstance(sidecar, dict):
+        sidecar.update(
+            {
+                "trial_id": int(trial_id),
+                "seed": int(trial_seed),
+                "snr_db": float(snr_db),
+            }
+        )
+    for local_row in row.get("_stage2_local_fix_sidecar", []):
+        local_row.update(
+            {
+                "trial_id": int(trial_id),
+                "seed": int(trial_seed),
+                "snr_db": float(snr_db),
+            }
+        )
     if compact_result:
         compact_experiment_result(result, keep_large_arrays=store_large_arrays)
     rss_after = _rss_mb() if profile_memory else float("nan")
@@ -3684,6 +3957,10 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "global_vp_validate_gpu_against_cpu": bool(
             global_vp_overrides.get("validate_gpu_against_cpu", False)
         ),
+        "vp_dictionary_mode": global_vp_overrides.get("vp_dictionary_mode", "matrix_free"),
+        "vp_debug_compare_explicit": bool(
+            global_vp_overrides.get("vp_debug_compare_explicit", False)
+        ),
         "fig1_proposed_dispatch_version": 2,
         "include_constrained_jones_peb": bool(
             getattr(args, "include_constrained_jones_peb", True)
@@ -3756,6 +4033,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "global_vp_gpu_device": global_vp_overrides.get("gpu_device", 0),
         "global_vp_validate_gpu_against_cpu": bool(
             global_vp_overrides.get("validate_gpu_against_cpu", False)
+        ),
+        "vp_dictionary_mode": global_vp_overrides.get("vp_dictionary_mode", "matrix_free"),
+        "vp_debug_compare_explicit": bool(
+            global_vp_overrides.get("vp_debug_compare_explicit", False)
         ),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
@@ -4916,6 +5197,7 @@ def _write_trial_results(
     base_config = default_config()
     apply_global_vp_cli_overrides(base_config, args)
     apply_peb_cli_overrides(base_config, args)
+    apply_stage2_rescue_cli_overrides(base_config, args)
     out_dir = pathlib.Path(args.out_dir)
     writer_context = (
         StreamingCsvWriter(
@@ -4927,7 +5209,37 @@ def _write_trial_results(
         else contextlib.nullcontext()
     )
     buffered_rows: list[dict[str, Any]] = []
-    with log_path.open("w") as log_handle, writer_context as csv_writer:
+    diagnostic_variants = {"stage2_legacy_multistart", "stage2_pllg"}
+    selected_task_variants = {
+        str(name)
+        for task in tasks
+        for name in task.get("selected_variants", [task.get("variant")])
+    }
+    write_stage2_sidecars = bool(diagnostic_variants & selected_task_variants)
+    stage2_writer_context = (
+        StreamingCsvWriter(
+            out_dir / "stage2_diagnostics.csv",
+            STAGE2_DIAGNOSTIC_FIELDS,
+            flush_every=int(args.csv_flush_every),
+        )
+        if write_stage2_sidecars
+        else contextlib.nullcontext()
+    )
+    local_fix_writer_context = (
+        StreamingCsvWriter(
+            out_dir / "stage2_local_fix_diagnostics.csv",
+            STAGE2_LOCAL_FIX_DIAGNOSTIC_FIELDS,
+            flush_every=int(args.csv_flush_every),
+        )
+        if write_stage2_sidecars
+        else contextlib.nullcontext()
+    )
+    with (
+        log_path.open("w") as log_handle,
+        writer_context as csv_writer,
+        stage2_writer_context as stage2_writer,
+        local_fix_writer_context as local_fix_writer,
+    ):
         log_handle.write(f"jobs={int(resource_plan['jobs'])}\n")
         log_handle.write(f"process_workers={process_workers}\n")
         log_handle.write(f"blas_threads={int(resource_plan['blas_threads'])}\n")
@@ -4954,6 +5266,14 @@ def _write_trial_results(
                 if str(row.get("failed")).lower() == "true"
             ]
             if progress_logger is not None:
+                stage2_progress = representative.get("_stage2_sidecar", {})
+                if isinstance(stage2_progress, str):
+                    try:
+                        stage2_progress = json.loads(stage2_progress)
+                    except json.JSONDecodeError:
+                        stage2_progress = {}
+                if not isinstance(stage2_progress, dict):
+                    stage2_progress = {}
                 progress_logger.log(
                     "task_failed" if failed_rows else "task_done",
                     "failed" if failed_rows else "completed",
@@ -4969,12 +5289,55 @@ def _write_trial_results(
                     error="; ".join(
                         str(row.get("error", "")) for row in failed_rows
                     ),
+                    stage2_rescue_impl=stage2_progress.get("stage2_rescue_impl", ""),
+                    stage2_pllg_success=stage2_progress.get("pllg_success", ""),
+                    stage2_pllg_rank=stage2_progress.get("pllg_rank", ""),
+                    stage2_pllg_condition_number=stage2_progress.get(
+                        "pllg_condition_number", ""
+                    ),
+                    stage2_pllg_num_valid_local_fixes=stage2_progress.get(
+                        "num_valid_local_fixes", ""
+                    ),
+                    stage2_pllg_fallback_used=stage2_progress.get(
+                        "legacy_fallback_used", ""
+                    ),
+                    stage2_pllg_runtime_s=stage2_progress.get(
+                        "stage2_total_runtime_s", ""
+                    ),
+                    stage2_pllg_phi_before_polish=stage2_progress.get(
+                        "pllg_phi_before_polish", ""
+                    ),
+                    stage2_pllg_phi_after_polish=stage2_progress.get(
+                        "pllg_phi_after_polish", ""
+                    ),
                 )
             for row in row_batch:
                 if args.streaming_csv:
                     csv_writer.writerow(row)
                 else:
                     buffered_rows.append(row)
+                if write_stage2_sidecars:
+                    payload = row.get("_stage2_sidecar")
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except json.JSONDecodeError:
+                            payload = None
+                    if isinstance(payload, dict):
+                        stage2_writer.writerow(payload)
+                    local_payload = (
+                        row.get("_stage2_local_fix_sidecar", [])
+                        if str(row.get("variant", "")) == "stage2_pllg"
+                        else []
+                    )
+                    if isinstance(local_payload, str):
+                        try:
+                            local_payload = json.loads(local_payload)
+                        except json.JSONDecodeError:
+                            local_payload = []
+                    if isinstance(local_payload, list):
+                        for local_row in local_payload:
+                            local_fix_writer.writerow(local_row)
                 log_handle.write(
                     f"figure={row['figure']} variant={row['variant']} trial={row['trial_id']} "
                     f"seed={row['seed']} x={row['x_value']} failed={row['failed']}\n"
@@ -5024,6 +5387,96 @@ def _figure_summary_csv(out_dir: pathlib.Path, figure: str) -> pathlib.Path:
     return out_dir / f"{figure}_summary.csv"
 
 
+STAGE2_DIAGNOSTIC_FIELDS = [
+    "trial_id", "seed", "snr_db", "true_k", "stage2_rescue_impl",
+    "ngc_direct_status", "ngc_direct_score", "rescue_triggered",
+    "stage2_force_run_for_diagnostics", "rescue_available", "pllg_success",
+    "pllg_failure_reason", "legacy_fallback_used", "legacy_fallback_reason",
+    "num_valid_local_fixes", "local_weight_source", "delay_variance_source",
+    "pllg_rank", "pllg_condition_number", "pllg_reweight_steps",
+    "pllg_linear_x_m", "pllg_linear_y_m", "pllg_linear_z_m", "pllg_linear_s_m",
+    "pllg_linear_clock_s", "pllg_projected_x_m", "pllg_projected_y_m",
+    "pllg_projected_z_m", "pllg_projection_distance_m", "pllg_phi_before_polish",
+    "pllg_phi_after_polish", "pllg_polish_success", "pllg_linear_runtime_s",
+    "pllg_polish_runtime_s", "legacy_fallback_runtime_s", "stage2_total_runtime_s",
+    "seed_position_error_m", "seed_z_error_m", "seed_clock_error_s",
+    "final_position_error_m", "final_clock_error_s", "z_boundary_hit",
+    "common_ris_refinement_success", "common_ris_refinement_impl",
+    "common_ris_refinement_runtime_s", "common_ris_refinement_num_valid_local_fixes",
+    "geometry_seed_impl", "pllg_pseudorange_block_weight", "delay_sigma_source",
+    "delay_sigma_used_floor", "delay_sigma_min_s", "delay_sigma_max_s",
+    "delay_sigma_values_json", "stage2_clock_term_raw_s2_before",
+    "stage2_clock_term_normalized_before", "stage2_ris_term_raw_before",
+    "stage2_ris_term_mean_before", "stage2_ris_term_normalized_before",
+    "stage2_phi_normalized_before", "stage2_clock_term_raw_s2_after",
+    "stage2_clock_term_normalized_after", "stage2_ris_term_raw_after",
+    "stage2_ris_term_mean_after", "stage2_ris_term_normalized_after",
+    "stage2_phi_normalized_after", "stage2_ris_normalization_scale",
+    "stage2_lambda_ris_normalized", "polish_accepted",
+    "rescue_candidate_admissible", "selector_guard_reject_reason",
+    "selector_raw_degradation", "selector_raw_relative_improvement",
+    "selector_boundary_guard_used", "selector_boundary_override_used",
+]
+
+STAGE2_LOCAL_FIX_DIAGNOSTIC_FIELDS = [
+    "trial_id", "seed", "snr_db", "panel_index", "assigned_panel_index",
+    "panel_match_correct", "local_fix_valid", "local_fix_reject_reason",
+    "local_fix_x_m", "local_fix_y_m", "local_fix_z_m", "true_x_m", "true_y_m",
+    "true_z_m", "local_error_x_m", "local_error_y_m", "local_error_z_m",
+    "local_error_norm_m", "range_hat_m", "theta_hat_rad", "phi_hat_rad",
+    "projection_residual_before", "projection_residual_after", "assignment_margin",
+    "local_weight_source", "local_weight_scalar",
+    "local_fix_source_stage", "common_refinement_impl",
+    "stage1_local_fix_x_m", "stage1_local_fix_y_m", "stage1_local_fix_z_m",
+    "refined_local_fix_x_m", "refined_local_fix_y_m", "refined_local_fix_z_m",
+]
+
+
+def _write_stage2_diagnostic_sidecars(
+    out_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+) -> None:
+    selected = {
+        "stage2_legacy_multistart",
+        "stage2_pllg",
+    }
+    stage2_rows = []
+    local_rows = []
+    has_payload = False
+    for row in rows:
+        if str(row.get("variant", "")) not in selected:
+            continue
+        payload = row.get("_stage2_sidecar")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = None
+        if isinstance(payload, dict):
+            has_payload = True
+            stage2_rows.append(payload)
+        payload_rows = (
+            row.get("_stage2_local_fix_sidecar", [])
+            if str(row.get("variant", "")) == "stage2_pllg"
+            else []
+        )
+        if isinstance(payload_rows, str):
+            try:
+                payload_rows = json.loads(payload_rows)
+            except json.JSONDecodeError:
+                payload_rows = []
+        if isinstance(payload_rows, list):
+            local_rows.extend(payload_rows)
+    if not has_payload and (out_dir / "stage2_diagnostics.csv").exists():
+        return
+    _write_csv(out_dir / "stage2_diagnostics.csv", stage2_rows, STAGE2_DIAGNOSTIC_FIELDS)
+    _write_csv(
+        out_dir / "stage2_local_fix_diagnostics.csv",
+        local_rows,
+        STAGE2_LOCAL_FIX_DIAGNOSTIC_FIELDS,
+    )
+
+
 def _summarize_trial_csv(trial_csv: pathlib.Path, figure: str) -> list[dict[str, Any]]:
     return summarize_rows(_read_csv(trial_csv), figure)
 
@@ -5038,6 +5491,7 @@ def _write_fig1_fig2_derived_outputs(
     *,
     include_diagnostic_variants: bool = False,
 ) -> None:
+    _write_stage2_diagnostic_sidecars(out_dir, rows)
     fig1_rows = [{**row, "figure": "fig1"} for row in rows]
     fig2_rows = [{**row, "figure": "fig2"} for row in rows]
     _write_rows_atomic_csv(_figure_trial_csv(out_dir, "fig1"), fig1_rows, FIELDNAMES)
@@ -5455,6 +5909,7 @@ def _validation_rows_for_grouping(
     validation_base_config = default_config()
     apply_global_vp_cli_overrides(validation_base_config, validation_args)
     apply_peb_cli_overrides(validation_base_config, validation_args)
+    apply_stage2_rescue_cli_overrides(validation_base_config, validation_args)
     for row_batch, log_text in _iter_task_results(
         tasks,
         process_workers=min(
@@ -5581,6 +6036,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_mc_args(parser, n_trials_default=50, paper_k_default=DEFAULT_PAPER_K, outlier_threshold_default=0.1)
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
     parser.add_argument("--k-grid", default="1,2,3,4")
+    add_stage2_rescue_args(parser)
     add_io_args(parser, default_out_dir="results/ablation_paper")
     parser.add_argument("--reuse-existing", action="store_true")
     add_resource_args(parser, jobs_default=10, blas_threads_default=DEFAULT_BLAS_THREADS)
@@ -5616,6 +6072,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--global-vp-gpu-keep-arrays-on-device",
         action="store_true",
     )
+    parser.add_argument(
+        "--vp-dictionary-mode",
+        choices=("explicit", "matrix_free"),
+        default=None,
+    )
+    parser.add_argument("--vp-debug-compare-explicit", action="store_true")
     parser.add_argument(
         "--include-constrained-jones-peb",
         action=argparse.BooleanOptionalAction,

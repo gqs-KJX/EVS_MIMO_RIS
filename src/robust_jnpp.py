@@ -236,6 +236,7 @@ def robust_jnpp_geometry_consistency_score(
             "reason": "nonfinite_ris_mismatch",
             "weight_mode": weight_mode,
             "weight_warning": weight_warning,
+            "weights": weights.copy(),
             "per_path": per_path,
         }
     return {
@@ -245,6 +246,7 @@ def robust_jnpp_geometry_consistency_score(
         "reason": "",
         "weight_mode": weight_mode,
         "weight_warning": weight_warning,
+        "weights": weights.copy(),
         "per_path": per_path,
     }
 

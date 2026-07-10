@@ -12,6 +12,21 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+def _json_safe(value: Any) -> Any:
+    """Map non-finite floats to None so strict JSON encoding never fails.
+
+    NaN and inf are legitimate values for optional metrics (an unavailable PEB,
+    an uninitialized condition number), but ``allow_nan=False`` rejects them.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def memory_snapshot_mb() -> float:
     """Return current-process RSS in MiB when available."""
     try:
@@ -99,7 +114,9 @@ class ProgressLogger:
             "error": kwargs.pop("error", ""),
         }
         event.update(kwargs)
-        self.handle.write(json.dumps(event, default=str, allow_nan=False) + "\n")
+        self.handle.write(
+            json.dumps(_json_safe(event), default=str, allow_nan=False) + "\n"
+        )
         self.handle.flush()
         return event
 

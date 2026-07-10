@@ -73,6 +73,9 @@ def _global_vp_config(config: dict) -> dict:
         "finite_difference_check": False,
         "use_analytic_jacobian": True,
         "matrix_free_beta": False,
+        "vp_dictionary_mode": "matrix_free",
+        "vp_debug_compare_explicit": False,
+        "vp_debug_compare_max_evals": 3,
         "enable_z_rescue_multistart": True,
         "z_rescue_num_starts": 7,
         "z_rescue_trigger": "boundary_or_unreliable",
@@ -518,6 +521,8 @@ def _build_global_dictionary(
     phi = np.empty((i_dim * n_dim * t_dim, num_atoms), dtype=complex)
     d_mat = np.empty((n_dim, k_paths), dtype=complex)
     c_mat = np.empty((t_dim, k_paths), dtype=complex)
+    dd_dx = np.empty((4, n_dim, k_paths), dtype=complex)
+    dc_dx = np.zeros((4, t_dim, k_paths), dtype=complex)
     poles = np.empty(k_paths, dtype=complex)
     ranges = np.empty(k_paths, dtype=float)
     elevations = np.empty(k_paths, dtype=float)
@@ -1120,6 +1125,642 @@ def _solve_linear_vp_regularized(
         "gram_singular_values": singular,
         "linear_solve_backend": "numpy.linalg.solve",
     }
+
+
+def _vp_dictionary_mode(config: dict) -> str:
+    options = _global_vp_config(config)
+    mode = str(options.get("vp_dictionary_mode", "matrix_free"))
+    if mode not in {"explicit", "matrix_free"}:
+        raise ValueError("global_vp.vp_dictionary_mode must be 'explicit' or 'matrix_free'")
+    return mode
+
+
+def _build_vp_matrix_free_cache(
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Precontract chi-independent EVS/BS modes for matrix-free Jones VP.
+
+    The explicit reference dictionary is built by ``_build_global_dictionary``.
+    The reduced Jones scalar objective is evaluated by
+    ``_vp_objective_parts_and_grad``; for ``vp_dictionary_mode='matrix_free'``
+    this cache lets each objective evaluation form only sufficient statistics
+    ``G=A^H A`` and ``b=A^H y`` from exact Kronecker factors.
+    """
+    evs_bases, evs_mode = _evs_atom_bases(init_estimate, scene, config)
+    y_tensor = np.asarray(y_vec, dtype=complex).reshape(scene["I"], scene["N"], scene["T"])
+    slices: list[slice] = []
+    start = 0
+    for basis in evs_bases:
+        width = int(np.asarray(basis).shape[1])
+        slices.append(slice(start, start + width))
+        start += width
+    evs_gram = [
+        [
+            np.asarray(left, dtype=complex).conj().T @ np.asarray(right, dtype=complex)
+            for right in evs_bases
+        ]
+        for left in evs_bases
+    ]
+    # y_evs[k][b,n,t] = sum_i conj(E_k[i,b]) Y[i,n,t].
+    y_evs = [
+        np.einsum(
+            "ib,int->bnt",
+            np.asarray(basis, dtype=complex).conj(),
+            y_tensor,
+            optimize=True,
+        )
+        for basis in evs_bases
+    ]
+    return {
+        "evs_bases": [np.asarray(basis, dtype=complex) for basis in evs_bases],
+        "evs_mode": evs_mode,
+        "evs_gram": evs_gram,
+        "y_evs": y_evs,
+        "column_slices": slices,
+        "num_atoms": int(start),
+        "y_norm": float(np.vdot(y_tensor.reshape(-1), y_tensor.reshape(-1)).real),
+        "y_size": int(y_tensor.size),
+        "cache_hits": 0,
+        "cache_misses": 1,
+    }
+
+
+def _dynamic_vp_factors(
+    xi: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Return chi-dependent delay/RIS-training factors without dense atoms."""
+    xi = np.asarray(xi, dtype=float).reshape(4)
+    p_u = xi[:3]
+    delta_t = float(xi[3])
+    k_paths = int(scene["K"])
+    n_dim = int(scene["N"])
+    t_dim = int(scene["T"])
+    kappa = 2.0 * np.pi / float(scene["wavelength"])
+    n_power = np.arange(n_dim)
+    d_mat = np.empty((n_dim, k_paths), dtype=complex)
+    c_mat = np.empty((t_dim, k_paths), dtype=complex)
+    poles = np.empty(k_paths, dtype=complex)
+    ranges = np.empty(k_paths, dtype=float)
+    elevations = np.empty(k_paths, dtype=float)
+    azimuths = np.empty(k_paths, dtype=float)
+    tau = np.empty(k_paths, dtype=float)
+    q_local = np.empty((k_paths, 3), dtype=float)
+    dtau_dx = np.empty((k_paths, 4), dtype=float)
+    dd_dx = np.empty((4, n_dim, k_paths), dtype=complex)
+    dc_dx = np.zeros((4, t_dim, k_paths), dtype=complex)
+    eps = float(config.get("eps", 1.0e-10))
+
+    for k in range(k_paths):
+        rotation = scene["rotations"][k]
+        q_vec = rotation @ (p_u - scene["ris_centers"][k])
+        range_m = float(np.linalg.norm(q_vec))
+        if range_m <= eps:
+            range_m = eps
+        q_local[k] = q_vec
+        ranges[k] = range_m
+        elev, az = elev_az_from_unit_vector(q_vec / range_m)
+        elevations[k] = elev
+        azimuths[k] = az
+
+        tau_k = (range_m + scene["d_RB"][k]) / scene["c0"] + delta_t
+        tau[k] = tau_k
+        pole = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau_k)
+        poles[k] = pole
+        d_mat[:, k] = pole ** n_power
+
+        rho = scene["ris_grid"]
+        diff = q_vec[None, :] - rho
+        dist_elem = np.linalg.norm(diff, axis=1)
+        safe_dist = np.maximum(dist_elem, eps)
+        delta = dist_elem - range_m
+        u_vec = np.exp(-1j * kappa * delta)
+        c_mat[:, k] = scene["Omega"][k] @ (scene["a_RB"][k] * u_vec)
+
+        dr_dp = (q_vec / range_m) @ rotation / scene["c0"]
+        dtau_dx[k] = np.concatenate([dr_dp, np.array([1.0])])
+        for dim in range(4):
+            dd_dx[dim, :, k] = (
+                -1j
+                * 2.0
+                * np.pi
+                * scene["delta_f"]
+                * n_power
+                * d_mat[:, k]
+                * dtau_dx[k, dim]
+            )
+        geom_grad = diff / safe_dist[:, None] - q_vec[None, :] / range_m
+        ddelta_dp = geom_grad @ rotation
+        du_dp = -1j * kappa * u_vec[:, None] * ddelta_dp
+        for dim in range(3):
+            dc_dx[dim, :, k] = scene["Omega"][k] @ (
+                scene["a_RB"][k] * du_dp[:, dim]
+            )
+
+    return {
+        "q_local": q_local,
+        "ranges": ranges,
+        "elevations": elevations,
+        "azimuths": azimuths,
+        "tau": tau,
+        "D": d_mat,
+        "C": c_mat,
+        "dD_dx": dd_dx,
+        "dC_dx": dc_dx,
+        "poles": poles,
+        "dtau_dx": dtau_dx,
+    }
+
+
+def build_vp_sufficient_statistics_matrix_free(
+    xi: np.ndarray,
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    cache: dict | None = None,
+) -> dict:
+    """Compute exact ``G=A^H A`` and ``b=A^H y`` without materializing ``A``."""
+    if cache is None:
+        cache = _build_vp_matrix_free_cache(y_vec, init_estimate, scene, config)
+    else:
+        cache["cache_hits"] = int(cache.get("cache_hits", 0)) + 1
+    dynamic = _dynamic_vp_factors(xi, scene, config)
+    d_mat = dynamic["D"]
+    c_mat = dynamic["C"]
+    slices = cache["column_slices"]
+    num_atoms = int(cache["num_atoms"])
+    g_mat = np.empty((num_atoms, num_atoms), dtype=complex)
+    b_vec = np.empty(num_atoms, dtype=complex)
+
+    for k in range(int(scene["K"])):
+        sl_k = slices[k]
+        d_k = d_mat[:, k]
+        c_k = c_mat[:, k]
+        b_vec[sl_k] = np.einsum(
+            "n,t,bnt->b",
+            d_k.conj(),
+            c_k.conj(),
+            cache["y_evs"][k],
+            optimize=True,
+        )
+        for j in range(int(scene["K"])):
+            sl_j = slices[j]
+            block = (
+                cache["evs_gram"][k][j]
+                * np.vdot(d_k, d_mat[:, j])
+                * np.vdot(c_k, c_mat[:, j])
+            )
+            g_mat[sl_k, sl_j] = block
+
+    diagnostics = {
+        "vp_matrix_free_enabled": True,
+        "vp_precontract_static_modes": "evs_bs_to_y_evs",
+        "vp_factor_cache_hits": int(cache.get("cache_hits", 0)),
+        "vp_factor_cache_misses": int(cache.get("cache_misses", 0)),
+        "vp_one_time_precontraction_cost": "sum_k B_k^H Y over EVS/BS axis",
+        "vp_per_eval_dynamic_cost": "factorized Gram plus reduced delay/training contractions",
+    }
+    aux = {
+        **dynamic,
+        "path_for_atom": np.repeat(
+            np.arange(int(scene["K"]), dtype=int),
+            [sl.stop - sl.start for sl in slices],
+        ),
+        "basis_for_atom": np.concatenate(
+            [np.arange(sl.stop - sl.start, dtype=int) for sl in slices]
+        ),
+        "evs_mode": cache["evs_mode"],
+        "evs_bases": cache["evs_bases"],
+    }
+    return {
+        "G": g_mat,
+        "b": b_vec,
+        "y_norm": float(cache["y_norm"]),
+        "y_size": int(cache["y_size"]),
+        "aux": aux,
+        "diagnostics": diagnostics,
+        "cache": cache,
+    }
+
+
+def _jones_regularizer_from_gram(
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    gram_data: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], float]:
+    """Matrix-free equivalent of ``_jones_regularizer(..., phi=Phi)``."""
+    options = _global_vp_config(config)
+    k_paths = int(scene["K"])
+    e0 = extract_stage1_jones_directions(init_estimate, scene)
+    status = list(getattr(extract_stage1_jones_directions, "last_status", []))
+    if len(status) != k_paths:
+        status = ["unknown"] * k_paths
+    mode = _global_vp_mode(config)
+    lambda_path = np.zeros(k_paths, dtype=float)
+    if mode in {"adaptive_jones", "jones_regularized"}:
+        if "jones_lambda_per_path" in init_estimate:
+            lambda_path = _as_path_vector(
+                init_estimate["jones_lambda_per_path"],
+                k_paths,
+                name="jones_lambda_per_path",
+            )
+        else:
+            lambda_path = _as_path_vector(
+                options.get("jones_lambda0", 1.0),
+                k_paths,
+                name="jones_lambda0",
+                default=1.0,
+            )
+    if mode == "jones_regularized" and "jones_lambda_per_path" not in init_estimate:
+        tau = _as_path_vector(
+            init_estimate.get("stage1_jones_tau", None),
+            k_paths,
+            name="stage1_jones_tau",
+            default=options.get("jones_tau", 0.25),
+        )
+        tau = np.clip(
+            tau,
+            float(options.get("jones_tau_min", 1.0e-3)),
+            float(options.get("jones_tau_max", 10.0)),
+        )
+        tau_ref = float(options.get("jones_tau", 0.25))
+        lambda_path *= (tau_ref**2) / (
+            tau**2 + float(options.get("jones_snr_eps", 1.0e-12))
+        )
+    elif mode == "jones_free":
+        lambda_path[:] = 0.0
+
+    lambda_path = np.clip(
+        lambda_path,
+        float(options.get("jones_lambda_min", 1.0e-4)),
+        float(options.get("jones_lambda_max", 1.0e8)),
+    )
+    if mode == "jones_free":
+        lambda_path[:] = 0.0
+
+    gram_scale = np.ones(k_paths, dtype=float)
+    for k in range(k_paths):
+        block = gram_data[2 * k : 2 * k + 2, 2 * k : 2 * k + 2]
+        gram_scale[k] = 0.5 * float(np.trace(block).real)
+    rho = lambda_path * gram_scale
+
+    lam = np.zeros((2 * k_paths, 2 * k_paths), dtype=complex)
+    eye2 = np.eye(2, dtype=complex)
+    for k in range(k_paths):
+        e = e0[k].reshape(2, 1)
+        denom = np.vdot(e[:, 0], e[:, 0]).real
+        if denom <= 0.0:
+            p_perp = np.diag([0.0, 1.0]).astype(complex)
+        else:
+            p_perp = eye2 - (e @ e.conj().T) / denom
+        lam[2 * k : 2 * k + 2, 2 * k : 2 * k + 2] = rho[k] * p_perp
+    loading = float(options.get("jones_diagonal_loading", 1.0e-10))
+    return lam, rho, lambda_path, status, loading
+
+
+def _solve_linear_vp_regularized_from_stats(
+    gram_data: np.ndarray,
+    rhs: np.ndarray,
+    regularizer: np.ndarray | None,
+    diagonal_loading: float,
+) -> tuple[np.ndarray, dict]:
+    """Solve the same anchored Jones normal equations from sufficient stats."""
+    gram = np.asarray(gram_data, dtype=complex).copy()
+    if regularizer is not None:
+        gram += np.asarray(regularizer, dtype=complex)
+    if diagonal_loading > 0.0:
+        gram += float(diagonal_loading) * np.eye(gram.shape[0], dtype=complex)
+    try:
+        coeff = np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        coeff = np.linalg.pinv(gram) @ rhs
+    try:
+        trace_h = float(np.trace(np.linalg.solve(gram, gram_data)).real)
+    except np.linalg.LinAlgError:
+        trace_h = float(np.trace(np.linalg.pinv(gram) @ gram_data).real)
+    singular = np.linalg.svd(gram_data, compute_uv=False)
+    rank = (
+        int(np.sum(singular > max(gram_data.shape) * np.finfo(float).eps * singular[0]))
+        if singular.size
+        else 0
+    )
+    cond = (
+        float(singular[0] / singular[-1])
+        if singular.size and singular[-1] > 0.0
+        else float("inf")
+    )
+    return coeff, {
+        "condition_number_gram": cond,
+        "rank_gram": rank,
+        "trace_H": trace_h,
+        "gram_singular_values": singular,
+        "linear_solve_backend": "numpy.linalg.solve:matrix_free_stats",
+    }
+
+
+def _raw_residual_from_stats(
+    y_norm: float,
+    gram_data: np.ndarray,
+    rhs: np.ndarray,
+    coeff: np.ndarray,
+) -> float:
+    return float(
+        np.real(y_norm - 2.0 * np.vdot(coeff, rhs) + np.vdot(coeff, gram_data @ coeff))
+    )
+
+
+def _vp_gradient_from_matrix_free_stats(
+    stats: dict,
+    coeff: np.ndarray,
+    scene: dict,
+    config: dict,
+    init_estimate: dict,
+) -> np.ndarray:
+    """Matrix-free equivalent of the existing reduced VP gradient formula.
+
+    The explicit path computes ``-2/M Re{residual^H (dA/dchi beta)}``.
+    With sufficient statistics this is
+    ``-2/M Re{(dA^H y)^H beta - beta^H (A^H dA) beta}``.
+    """
+    dynamic = stats["aux"]
+    d_mat = dynamic["D"]
+    c_mat = dynamic["C"]
+    dd_dx = dynamic["dD_dx"]
+    dc_dx = dynamic["dC_dx"]
+    slices = stats["cache"]["column_slices"] if "cache" in stats else None
+    if slices is None:
+        raise ValueError("matrix-free gradient requires column slices in stats cache")
+    beta = np.asarray(coeff, dtype=complex)
+    grad = np.empty(4, dtype=float)
+    objective_scale = 1.0 / float(
+        stats.get("y_size", scene["I"] * scene["N"] * scene["T"])
+    )
+
+    for dim in range(4):
+        h_vec = np.empty_like(beta)
+        h_mat = np.empty((beta.size, beta.size), dtype=complex)
+        for k in range(int(scene["K"])):
+            sl_k = slices[k]
+            d_k = d_mat[:, k]
+            c_k = c_mat[:, k]
+            dd_k = dd_dx[dim, :, k]
+            dc_k = dc_dx[dim, :, k]
+            h_vec[sl_k] = (
+                np.einsum(
+                    "n,t,bnt->b",
+                    dd_k.conj(),
+                    c_k.conj(),
+                    stats["cache"]["y_evs"][k],
+                    optimize=True,
+                )
+                + np.einsum(
+                    "n,t,bnt->b",
+                    d_k.conj(),
+                    dc_k.conj(),
+                    stats["cache"]["y_evs"][k],
+                    optimize=True,
+                )
+            )
+        for k in range(int(scene["K"])):
+            sl_k = slices[k]
+            d_k = d_mat[:, k]
+            c_k = c_mat[:, k]
+            for j in range(int(scene["K"])):
+                sl_j = slices[j]
+                block = stats["cache"]["evs_gram"][k][j] * (
+                    np.vdot(d_k, dd_dx[dim, :, j]) * np.vdot(c_k, c_mat[:, j])
+                    + np.vdot(d_k, d_mat[:, j]) * np.vdot(c_k, dc_dx[dim, :, j])
+                )
+                h_mat[sl_k, sl_j] = block
+        residual_d_model_inner = np.vdot(h_vec, beta) - np.vdot(
+            beta, h_mat @ beta
+        )
+        grad[dim] = -2.0 * objective_scale * float(
+            np.real(residual_d_model_inner)
+        )
+
+    if _delay_prior_enabled(config):
+        options = _global_vp_config(config)
+        stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+        tau_stage1 = np.asarray(stage1_factors["tau_phys"], dtype=float)
+        sigma_tau = float(options.get("delay_prior_sigma_s", 2.0e-11))
+        lambda_tau = float(options.get("delay_prior_weight", 1.0))
+        tau_err = np.asarray(dynamic["tau"], dtype=float) - tau_stage1
+        grad += 2.0 * lambda_tau * (
+            (tau_err / (sigma_tau**2))[:, None]
+            * np.asarray(dynamic["dtau_dx"], dtype=float)
+        ).sum(axis=0)
+    return grad
+
+
+def explicit_vp_sufficient_statistics_reference(
+    xi: np.ndarray,
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+) -> dict:
+    """Dense reference sufficient statistics for equality/debug checks only."""
+    phi, aux = _build_global_dictionary(
+        xi, init_estimate, scene, config, need_jacobian=False
+    )
+    gram_data = phi.conj().T @ phi
+    rhs = phi.conj().T @ y_vec
+    y_norm = float(np.vdot(y_vec, y_vec).real)
+    regularizer, rho, lambda_path, status, loading = _jones_regularizer(
+        init_estimate, scene, config, y_vec, phi
+    )
+    coeff, linear_diag = _solve_linear_vp_regularized(
+        phi, y_vec, regularizer, loading
+    )
+    raw_residual = _raw_residual_from_stats(y_norm, gram_data, rhs, coeff)
+    objective_scale = 1.0 / float(y_vec.size)
+    jones_obj = float(objective_scale * np.real(np.vdot(coeff, regularizer @ coeff)))
+    return {
+        "G": gram_data,
+        "b": rhs,
+        "y_norm": y_norm,
+        "x_hat": coeff,
+        "raw_residual": raw_residual,
+        "raw_objective": float(objective_scale * raw_residual),
+        "regularized_objective": float(objective_scale * raw_residual + jones_obj),
+        "jones_regularizer_objective": jones_obj,
+        "regularizer": regularizer,
+        "jones_rho": rho,
+        "lambda_jones_per_path": lambda_path,
+        "jones_prior_status": status,
+        "linear_diagnostics": linear_diag,
+        "aux": aux,
+    }
+
+
+def _vp_objective_parts_matrix_free(
+    xi: np.ndarray,
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    cache: dict | None = None,
+) -> tuple[dict, dict]:
+    """Reduced Jones-VP scalar objective from matrix-free sufficient stats."""
+    options = _global_vp_config(config)
+    vp_mode = _global_vp_mode(config)
+    if vp_mode not in {"adaptive_jones", "jones_regularized", "jones_free"}:
+        raise ValueError("matrix-free VP statistics are implemented for Jones VP modes")
+    weight = _objective_weight_from_config(config, np.asarray(y_vec).size)
+    if weight is not None:
+        raise ValueError("matrix-free VP statistics currently require unweighted raw objective")
+    stats = build_vp_sufficient_statistics_matrix_free(
+        xi, y_vec, init_estimate, scene, config, cache=cache
+    )
+    gram_data = stats["G"]
+    rhs = stats["b"]
+    regularizer, rho, lambda_path, status, loading = _jones_regularizer_from_gram(
+        init_estimate, scene, config, gram_data
+    )
+    coeff, linear_diag = _solve_linear_vp_regularized_from_stats(
+        gram_data, rhs, regularizer, loading
+    )
+    raw_residual = _raw_residual_from_stats(stats["y_norm"], gram_data, rhs, coeff)
+    objective_scale = 1.0 / float(np.asarray(y_vec).size)
+    raw_objective = float(objective_scale * raw_residual)
+    jones_objective = float(objective_scale * np.real(np.vdot(coeff, regularizer @ coeff)))
+
+    delay_prior_objective = 0.0
+    if _delay_prior_enabled(config):
+        stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
+        tau_stage1 = np.asarray(stage1_factors["tau_phys"], dtype=float)
+        sigma_tau = float(options.get("delay_prior_sigma_s", 2.0e-11))
+        lambda_tau = float(options.get("delay_prior_weight", 1.0))
+        tau_err = np.asarray(stats["aux"]["tau"], dtype=float) - tau_stage1
+        delay_prior_objective = float(
+            lambda_tau * np.sum((tau_err / sigma_tau) ** 2)
+        )
+
+    total_objective = raw_objective + jones_objective + delay_prior_objective
+    grad = _vp_gradient_from_matrix_free_stats(stats, coeff, scene, config, init_estimate)
+    parts = {
+        "raw_objective": raw_objective,
+        "beta_reg_objective": 0.0,
+        "jones_regularizer_objective": jones_objective,
+        "delay_prior_objective": delay_prior_objective,
+        "total_objective": float(total_objective),
+        "beta": coeff,
+        "residual": None,
+        "aux": stats["aux"],
+        "vp_mode": vp_mode,
+        "jones_rho": rho,
+        "lambda_jones_per_path": lambda_path,
+        "jones_prior_status": status,
+        "linear_diagnostics": linear_diag,
+        "matrix_free_diagnostics": stats["diagnostics"],
+        "raw_residual_unscaled": raw_residual,
+        "grad": grad,
+    }
+    return parts, stats
+
+
+def _compare_matrix_free_to_explicit(
+    xi: np.ndarray,
+    y_vec: np.ndarray,
+    init_estimate: dict,
+    scene: dict,
+    config: dict,
+    matrix_free_parts: dict,
+    matrix_free_stats: dict,
+) -> dict:
+    explicit = explicit_vp_sufficient_statistics_reference(
+        xi, y_vec, init_estimate, scene, config
+    )
+    _, explicit_grad = _vp_objective_parts_and_grad(
+        xi, y_vec, init_estimate, scene, config
+    )
+    mf_beta = np.asarray(matrix_free_parts["beta"], dtype=complex)
+    diagnostics = {
+        "max_abs_G_diff": float(np.max(np.abs(matrix_free_stats["G"] - explicit["G"]))),
+        "rel_G_diff": _relative_difference(matrix_free_stats["G"], explicit["G"]),
+        "max_abs_b_diff": float(np.max(np.abs(matrix_free_stats["b"] - explicit["b"]))),
+        "rel_b_diff": _relative_difference(matrix_free_stats["b"], explicit["b"]),
+        "abs_y_norm_diff": float(abs(matrix_free_stats["y_norm"] - explicit["y_norm"])),
+        "rel_x_hat_diff": _relative_difference(mf_beta, explicit["x_hat"]),
+        "abs_raw_residual_diff": float(
+            abs(matrix_free_parts["raw_residual_unscaled"] - explicit["raw_residual"])
+        ),
+        "rel_regularized_objective_diff": _relative_difference(
+            matrix_free_parts["raw_objective"]
+            + matrix_free_parts["jones_regularizer_objective"],
+            explicit["regularized_objective"],
+        ),
+        "rel_gradient_diff": _relative_difference(
+            matrix_free_parts.get("grad", np.zeros(4)),
+            explicit_grad,
+        ),
+    }
+    if (
+        diagnostics["rel_G_diff"] > 1.0e-9
+        or diagnostics["rel_b_diff"] > 1.0e-9
+        or diagnostics["rel_x_hat_diff"] > 1.0e-8
+        or diagnostics["rel_regularized_objective_diff"] > 1.0e-8
+        or diagnostics["rel_gradient_diff"] > 1.0e-8
+    ):
+        raise RuntimeError(
+            "matrix-free VP debug comparison failed: "
+            + json.dumps(diagnostics, sort_keys=True)
+        )
+    return diagnostics
+
+
+class _MatrixFreeReducedVPEvaluator:
+    def __init__(self, y_vec: np.ndarray, init_estimate: dict, scene: dict, config: dict):
+        self.y_vec = np.asarray(y_vec, dtype=complex)
+        self.init_estimate = init_estimate
+        self.scene = scene
+        self.config = config
+        self.cache = _build_vp_matrix_free_cache(
+            self.y_vec, init_estimate, scene, config
+        )
+        self.num_calls = 0
+        self.debug_count = 0
+        self.debug_diagnostics: dict = {}
+        self._last_xi: np.ndarray | None = None
+        self._last_parts: dict | None = None
+
+    def evaluate(self, xi: np.ndarray) -> dict:
+        xi_arr = np.asarray(xi, dtype=float).reshape(4)
+        if self._last_xi is not None and np.array_equal(xi_arr, self._last_xi):
+            return self._last_parts
+        parts, stats = _vp_objective_parts_matrix_free(
+            xi_arr,
+            self.y_vec,
+            self.init_estimate,
+            self.scene,
+            self.config,
+            cache=self.cache,
+        )
+        self.num_calls += 1
+        options = _global_vp_config(self.config)
+        if bool(options.get("vp_debug_compare_explicit", False)) and self.debug_count < int(
+            options.get("vp_debug_compare_max_evals", 3)
+        ):
+            self.debug_diagnostics = _compare_matrix_free_to_explicit(
+                xi_arr,
+                self.y_vec,
+                self.init_estimate,
+                self.scene,
+                self.config,
+                parts,
+                stats,
+            )
+            self.debug_count += 1
+        self._last_xi = xi_arr.copy()
+        self._last_parts = parts
+        return parts
 
 
 def _efim_hash_array(value) -> str:
@@ -1804,6 +2445,29 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     y_vec = y_raw.reshape(-1)
     backend = _global_vp_backend(config)
     gpu_used = backend.name == "cupy"
+    requested_dictionary_mode = _vp_dictionary_mode(config)
+    matrix_free_fallback_reason = ""
+    if requested_dictionary_mode == "matrix_free" and gpu_used:
+        matrix_free_fallback_reason = "matrix_free_cpu_only_gpu_backend"
+    elif (
+        requested_dictionary_mode == "matrix_free"
+        and _global_vp_mode(config)
+        not in {"adaptive_jones", "jones_regularized", "jones_free"}
+    ):
+        matrix_free_fallback_reason = "matrix_free_requires_jones_vp_mode"
+    elif (
+        requested_dictionary_mode == "matrix_free"
+        and _objective_weight_from_config(config, y_vec.size) is not None
+    ):
+        matrix_free_fallback_reason = "matrix_free_requires_unweighted_raw_objective"
+    matrix_free_evaluator = (
+        _MatrixFreeReducedVPEvaluator(y_vec, init_estimate, scene, config)
+        if requested_dictionary_mode == "matrix_free"
+        and not matrix_free_fallback_reason
+        and _global_vp_mode(config) in {"adaptive_jones", "jones_regularized", "jones_free"}
+        and _objective_weight_from_config(config, y_vec.size) is None
+        else None
+    )
     gpu_evaluator = (
         _CuPyReducedVPEvaluator(
             y_vec, init_estimate, scene, config, backend
@@ -1829,6 +2493,9 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
         if gpu_evaluator is not None:
             parts, _ = gpu_evaluator.evaluate(xi)
             value = float(parts["total_objective"])
+        elif matrix_free_evaluator is not None:
+            parts = matrix_free_evaluator.evaluate(xi)
+            value = float(parts["total_objective"])
         else:
             value, _ = _vp_objective_and_grad(
                 xi, y_vec, init_estimate, scene, config
@@ -1839,6 +2506,8 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     def jac(xi: np.ndarray) -> np.ndarray:
         if gpu_evaluator is not None:
             _, grad = gpu_evaluator.evaluate(xi)
+        elif matrix_free_evaluator is not None:
+            grad = np.asarray(matrix_free_evaluator.evaluate(xi)["grad"], dtype=float)
         else:
             _, grad = _vp_objective_and_grad(
                 xi, y_vec, init_estimate, scene, config
@@ -1850,6 +2519,8 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     initial_parts = (
         gpu_evaluator.evaluate(best_x)[0]
         if gpu_evaluator is not None
+        else matrix_free_evaluator.evaluate(best_x)
+        if matrix_free_evaluator is not None
         else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
     )
     initial_objective = float(initial_parts["total_objective"])
@@ -1912,6 +2583,8 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     initial_parts = (
         gpu_evaluator.evaluate(xi0)[0]
         if gpu_evaluator is not None
+        else matrix_free_evaluator.evaluate(xi0)
+        if matrix_free_evaluator is not None
         else _vp_objective_parts(xi0, y_vec, init_estimate, scene, config)
     )
     if gpu_used:
@@ -1932,6 +2605,8 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
     final_parts = (
         gpu_evaluator.evaluate(best_x)[0]
         if gpu_evaluator is not None
+        else matrix_free_evaluator.evaluate(best_x)
+        if matrix_free_evaluator is not None
         else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
     )
     if gpu_used:
@@ -1965,6 +2640,8 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
         final_parts = (
             gpu_evaluator.evaluate(best_x)[0]
             if gpu_evaluator is not None
+            else matrix_free_evaluator.evaluate(best_x)
+            if matrix_free_evaluator is not None
             else _vp_objective_parts(best_x, y_vec, init_estimate, scene, config)
         )
         if gpu_used:
@@ -2111,7 +2788,13 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "global_vp_backend": backend.name,
             "global_vp_gpu_used": gpu_used,
             "global_vp_gpu_device": backend.device if gpu_used else "",
-            "global_vp_objective_backend": "cupy" if gpu_used else "numpy",
+            "global_vp_objective_backend": (
+                "cupy"
+                if gpu_used
+                else "matrix_free_numpy"
+                if matrix_free_evaluator is not None
+                else "numpy"
+            ),
             "global_vp_linear_solve_backend": str(
                 final_parts.get("linear_diagnostics", {}).get(
                     "linear_solve_backend", ""
@@ -2128,6 +2811,51 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
             "global_vp_backend_warning": str(getattr(backend, "warning", "")),
             "global_vp_lstsq_backend": "cpu",
             "global_vp_least_squares_gpu_partial": False,
+            "vp_dictionary_mode": (
+                "matrix_free" if matrix_free_evaluator is not None else "explicit"
+            ),
+            "vp_dictionary_mode_requested": requested_dictionary_mode,
+            "vp_matrix_free_fallback_reason": matrix_free_fallback_reason,
+            "vp_jacobian_mode": (
+                "analytic_reduced_vp_matrix_free_gradient"
+                if bool(options.get("use_analytic_jacobian", True))
+                and matrix_free_evaluator is not None
+                else "analytic_reduced_vp_explicit_gradient"
+                if bool(options.get("use_analytic_jacobian", True))
+                else "finite_difference"
+            ),
+            "vp_matrix_free_enabled": bool(matrix_free_evaluator is not None),
+            "vp_precontract_static_modes": (
+                "evs_bs_to_y_evs" if matrix_free_evaluator is not None else ""
+            ),
+            "vp_factor_cache_hits": (
+                int(matrix_free_evaluator.cache.get("cache_hits", 0))
+                if matrix_free_evaluator is not None
+                else 0
+            ),
+            "vp_factor_cache_misses": (
+                int(matrix_free_evaluator.cache.get("cache_misses", 0))
+                if matrix_free_evaluator is not None
+                else 0
+            ),
+            "vp_matrix_free_num_objective_calls": (
+                int(matrix_free_evaluator.num_calls)
+                if matrix_free_evaluator is not None
+                else 0
+            ),
+            "vp_matrix_free_debug_num_compares": (
+                int(matrix_free_evaluator.debug_count)
+                if matrix_free_evaluator is not None
+                else 0
+            ),
+            **(
+                {
+                    f"vp_matrix_free_debug_{key}": value
+                    for key, value in matrix_free_evaluator.debug_diagnostics.items()
+                }
+                if matrix_free_evaluator is not None
+                else {}
+            ),
             **(
                 gpu_evaluator.validation_diagnostics
                 if gpu_evaluator is not None
@@ -2362,6 +3090,12 @@ def _global_exact_spherical_vp_refinement_least_squares(
         if bool(options.get("use_analytic_jacobian", True))
         else "numerical"
     )
+    result["vp_dictionary_mode"] = "explicit"
+    result["vp_jacobian_mode"] = result["global_vp_jacobian_mode"]
+    result["vp_matrix_free_enabled"] = False
+    result["vp_factor_cache_hits"] = 0
+    result["vp_factor_cache_misses"] = 0
+    result["vp_precontract_static_modes"] = ""
     result["global_vp_matrix_free_beta"] = bool(options.get("matrix_free_beta", False))
     return result
 
@@ -2534,6 +3268,25 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
         "global_vp_gpu_residual_norm_validation",
         "global_vp_cpu_yhat_norm_validation",
         "global_vp_gpu_yhat_norm_validation",
+        "vp_dictionary_mode",
+        "vp_dictionary_mode_requested",
+        "vp_jacobian_mode",
+        "vp_matrix_free_enabled",
+        "vp_matrix_free_fallback_reason",
+        "vp_precontract_static_modes",
+        "vp_factor_cache_hits",
+        "vp_factor_cache_misses",
+        "vp_matrix_free_num_objective_calls",
+        "vp_matrix_free_debug_num_compares",
+        "vp_matrix_free_debug_max_abs_G_diff",
+        "vp_matrix_free_debug_rel_G_diff",
+        "vp_matrix_free_debug_max_abs_b_diff",
+        "vp_matrix_free_debug_rel_b_diff",
+        "vp_matrix_free_debug_abs_y_norm_diff",
+        "vp_matrix_free_debug_rel_x_hat_diff",
+        "vp_matrix_free_debug_abs_raw_residual_diff",
+        "vp_matrix_free_debug_rel_regularized_objective_diff",
+        "vp_matrix_free_debug_rel_gradient_diff",
     ):
         if key in jones_result:
             diagnostics[key] = jones_result[key]

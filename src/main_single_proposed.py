@@ -106,6 +106,54 @@ REPEAT_NUMERIC_METRICS = [
     }
 ]
 
+STAGE2_DIAGNOSTIC_FIELDS = [
+    "trial_id", "seed", "snr_db", "true_k", "stage2_rescue_impl",
+    "ngc_direct_status", "ngc_direct_score", "rescue_triggered",
+    "stage2_force_run_for_diagnostics", "rescue_available", "pllg_success",
+    "pllg_failure_reason", "legacy_fallback_used", "legacy_fallback_reason",
+    "num_valid_local_fixes", "local_weight_source", "delay_variance_source",
+    "pllg_rank", "pllg_condition_number", "pllg_reweight_steps",
+    "pllg_linear_x_m", "pllg_linear_y_m", "pllg_linear_z_m", "pllg_linear_s_m",
+    "pllg_linear_clock_s", "pllg_projected_x_m", "pllg_projected_y_m",
+    "pllg_projected_z_m", "pllg_projection_distance_m", "pllg_phi_before_polish",
+    "pllg_phi_after_polish", "pllg_polish_success", "pllg_linear_runtime_s",
+    "pllg_polish_runtime_s", "legacy_fallback_runtime_s", "stage2_total_runtime_s",
+    "seed_position_error_m", "seed_z_error_m", "seed_clock_error_s",
+    "final_position_error_m", "final_clock_error_s", "z_boundary_hit",
+    "common_ris_refinement_success", "common_ris_refinement_impl",
+    "common_ris_refinement_runtime_s", "common_ris_refinement_num_valid_local_fixes",
+    "geometry_seed_impl", "pllg_pseudorange_block_weight", "delay_sigma_source",
+    "delay_sigma_used_floor", "delay_sigma_min_s", "delay_sigma_max_s",
+    "delay_sigma_values_json", "stage2_clock_term_raw_s2_before",
+    "stage2_clock_term_normalized_before", "stage2_ris_term_raw_before",
+    "stage2_ris_term_mean_before", "stage2_ris_term_normalized_before",
+    "stage2_phi_normalized_before", "stage2_clock_term_raw_s2_after",
+    "stage2_clock_term_normalized_after", "stage2_ris_term_raw_after",
+    "stage2_ris_term_mean_after", "stage2_ris_term_normalized_after",
+    "stage2_phi_normalized_after", "stage2_ris_normalization_scale",
+    "stage2_lambda_ris_normalized", "polish_accepted",
+    "stage2_clock_estimator", "stage2_clock_weighted_mean_s",
+    "stage2_clock_decoupled_s", "stage2_clock_decoupled_available",
+    "stage2_clock_decoupled_reason", "stage2_clock_decoupled_num_inliers",
+    "stage2_clock_decoupled_scale_m",
+    "rescue_candidate_admissible", "selector_guard_reject_reason",
+    "selector_raw_degradation", "selector_raw_relative_improvement",
+    "selector_boundary_guard_used", "selector_boundary_override_used",
+]
+
+STAGE2_LOCAL_FIX_DIAGNOSTIC_FIELDS = [
+    "trial_id", "seed", "snr_db", "panel_index", "assigned_panel_index",
+    "panel_match_correct", "local_fix_valid", "local_fix_reject_reason",
+    "local_fix_x_m", "local_fix_y_m", "local_fix_z_m", "true_x_m", "true_y_m",
+    "true_z_m", "local_error_x_m", "local_error_y_m", "local_error_z_m",
+    "local_error_norm_m", "range_hat_m", "theta_hat_rad", "phi_hat_rad",
+    "projection_residual_before", "projection_residual_after", "assignment_margin",
+    "local_weight_source", "local_weight_scalar", "local_fix_source_stage",
+    "common_refinement_impl", "stage1_local_fix_x_m", "stage1_local_fix_y_m",
+    "stage1_local_fix_z_m", "refined_local_fix_x_m", "refined_local_fix_y_m",
+    "refined_local_fix_z_m",
+]
+
 if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(project_root))
@@ -148,6 +196,12 @@ if __package__ in (None, ""):
     from src.robust_jnpp import (
         robust_jnpp_basin_recovery,
         robust_jnpp_geometry_consistency_score,
+    )
+    from src.stage2_rescue import (
+        Stage2CommonState,
+        build_local_fix_records,
+        polish_stage2_seed,
+        solve_stage2_pllg as _solve_stage2_pllg_backend,
     )
     from src.global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from src.tensor_utils import hankelize_frequency
@@ -193,9 +247,20 @@ else:
         robust_jnpp_basin_recovery,
         robust_jnpp_geometry_consistency_score,
     )
+    from .stage2_rescue import (
+        Stage2CommonState,
+        build_local_fix_records,
+        polish_stage2_seed,
+        solve_stage2_pllg as _solve_stage2_pllg_backend,
+    )
     from .global_vp import data_only_efim_diagnostic, distance_to_box_boundary
     from .tensor_utils import hankelize_frequency
     from .utils import scipy_is_available
+
+
+FINAL_PROPOSED_STAGE2_POLICY = "ngc_certified_ris_only"
+FINAL_PROPOSED_STAGE2_RESCUE_TYPE = "ris_only"
+FINAL_PROPOSED_RIS_RESCUE_IMPL = "local_ris_projection"
 
 
 def _make_data(config: dict) -> dict:
@@ -454,8 +519,27 @@ def _apply_main_single_defaults(config: dict) -> dict:
             ris_search[key] = max(int(ris_search.get(key, floor)), floor)
         config["ris_search"] = ris_search
     config.setdefault("stage2_adaptive", True)
-    config.setdefault("stage2_rescue_type", "ris_only")
-    config.setdefault("proposed_stage2_policy", "ngc_certified_ris_only")
+    config.setdefault("stage2_rescue_type", FINAL_PROPOSED_STAGE2_RESCUE_TYPE)
+    config.setdefault("stage2_rescue_impl", "legacy_multistart")
+    config.setdefault("stage2_pllg_reweight_steps", 1)
+    config.setdefault("stage2_pllg_cond_max", 1.0e12)
+    config.setdefault("stage2_pllg_local_weight_mode", "auto")
+    config.setdefault("stage2_pllg_pseudorange_block_weight", 0.0)
+    config.setdefault("stage2_clock_estimator", "decoupled_robust")
+    config.setdefault("stage2_clock_sigma_range_m", 0.12)
+    config.setdefault("stage2_clock_outlier_kappa", 3.0)
+    config.setdefault("stage2_delay_sigma_floor_ns", 0.5)
+    config.setdefault("stage2_ris_normalization_scale", 1.0e-4)
+    config.setdefault("stage2_lambda_ris_normalized", 1.0)
+    config.setdefault("stage2_pllg_max_projection_distance_m", 0.05)
+    config.setdefault("stage2_pllg_legacy_fallback", True)
+    config.setdefault("stage2_force_run_for_diagnostics", False)
+    config.setdefault("stage2_selector_guard", True)
+    config.setdefault("stage2_selector_raw_degradation_abs_tol", 1.0e-8)
+    config.setdefault("stage2_selector_raw_degradation_rel_tol", 1.0e-4)
+    config.setdefault("stage2_selector_boundary_override_min_rel_improvement", 1.0e-3)
+    config.setdefault("proposed_stage2_policy", FINAL_PROPOSED_STAGE2_POLICY)
+    config.setdefault("stage2_ris_rescue_impl", FINAL_PROPOSED_RIS_RESCUE_IMPL)
     config.setdefault("rescue_accept_min_rel_improvement", 0.0)
     config.setdefault("rescue_accept_min_abs_improvement", 1.0e-8)
     config.setdefault("ngc_lambda_ris", 1.0)
@@ -770,7 +854,11 @@ def _print_run_configuration(config: dict, results: dict) -> None:
     print(f"configured_stage2_mode = {config.get('stage2_mode', 'none')}")
     print(
         "proposed_stage2_policy = "
-        f"{config.get('proposed_stage2_policy', 'ngc_certified_ris_only')}"
+        f"{config.get('proposed_stage2_policy', FINAL_PROPOSED_STAGE2_POLICY)}"
+    )
+    print(
+        "stage2_ris_rescue_impl = "
+        f"{config.get('stage2_ris_rescue_impl', FINAL_PROPOSED_RIS_RESCUE_IMPL)}"
     )
     print(f"ngc_lambda_ris = {config.get('ngc_lambda_ris', 1.0)}")
     print(
@@ -794,7 +882,7 @@ def _print_run_configuration(config: dict, results: dict) -> None:
             "ngc_clock_sigma_floor_ns = "
             f"{config.get('ngc_clock_sigma_floor_ns', 0.5)}"
         )
-        print("ngc_ris_availability_mode = robust_jnpp_geometry_score_if_C_available")
+        print("ngc_ris_availability_mode = ris_geometry_consistency_score_if_C_available")
     print(f"run_full_legacy_comparison = {config.get('run_full_legacy_comparison', False)}")
     print(f"num_structured_iters = {config['num_structured_iters']}")
     print(f"enable_global_vp = {config.get('enable_global_vp', True)}")
@@ -951,7 +1039,7 @@ def _run_ris_only_stage2(
         ris_config["stage2_damping_grid"] = tuple(
             config.get("stage2_ris_rescue_damping_grid", (0.0, 1.0))
         )
-    impl = str(config.get("stage2_ris_rescue_impl", "robust_jnpp"))
+    impl = str(config.get("stage2_ris_rescue_impl", FINAL_PROPOSED_RIS_RESCUE_IMPL))
     stage2_start = time.perf_counter()
     if impl == "robust_jnpp":
         estimate_used, structured_diag = robust_jnpp_basin_recovery(
@@ -972,6 +1060,189 @@ def _run_ris_only_stage2(
         structured_diag,
         ris_config,
         time.perf_counter() - stage2_start,
+    )
+
+
+def refine_stage2_ris_factors(
+    z_noisy: np.ndarray,
+    scene: dict,
+    config: dict,
+    stage1_estimate: dict,
+    *,
+    efim_context: dict | None = None,
+) -> Stage2CommonState:
+    """Run the sole common RIS-only Stage-II preprocessing step."""
+    start = time.perf_counter()
+    refined, structured_diag, rescue_config, refinement_runtime = _run_ris_only_stage2(
+        z_noisy, scene, config, copy.deepcopy(stage1_estimate)
+    )
+    tau_hat_s = np.asarray(
+        [tau_from_pole(pole, scene["delta_f"]) for pole in refined["poles"]],
+        dtype=float,
+    )
+    uncertainty = build_stage2_delay_uncertainty(
+        stage1_estimate,
+        scene,
+        config,
+        efim_context=efim_context,
+    )
+    local_records = build_local_fix_records(refined, scene, rescue_config)
+    valid_local = int(sum(bool(record.get("valid", False)) for record in local_records))
+    diagnostics = dict(structured_diag)
+    diagnostics.update(
+        {
+            "common_ris_refinement_success": True,
+            "common_ris_refinement_impl": str(
+                config.get("stage2_ris_rescue_impl", FINAL_PROPOSED_RIS_RESCUE_IMPL)
+            ),
+            "common_ris_refinement_runtime_s": float(refinement_runtime),
+            "common_ris_refinement_num_valid_local_fixes": valid_local,
+            "local_fix_records": local_records,
+            "num_valid_local_fixes": valid_local,
+            "local_weight_source": "uniform_fallback",
+            "delay_sigma_source": uncertainty["source"],
+            "delay_variance_source": uncertainty["source"],
+            "sigma_tau_source": uncertainty["source"],
+            "delay_sigma_used_floor": bool(uncertainty["used_floor"]),
+            "delay_sigma_values": np.asarray(uncertainty["sigma_tau_s"], dtype=float).copy(),
+            "stage2_common_total_runtime_s": float(time.perf_counter() - start),
+        }
+    )
+    return Stage2CommonState(
+        stage1_estimate=copy.deepcopy(stage1_estimate),
+        refined_estimate=refined,
+        rescue_config=rescue_config,
+        tau_hat_s=tau_hat_s,
+        sigma_tau_s=np.asarray(uncertainty["sigma_tau_s"], dtype=float),
+        sigma_tau_sq_s2=np.asarray(uncertainty["sigma_tau_sq_s2"], dtype=float),
+        sigma_tau_source=str(uncertainty["source"]),
+        sigma_tau_used_floor=bool(uncertainty["used_floor"]),
+        local_fix_records=local_records,
+        common_refinement_success=True,
+        common_refinement_runtime_s=float(refinement_runtime),
+        common_refinement_diagnostics=diagnostics,
+    )
+
+
+def _stage2_solution_from_polish(
+    state: Stage2CommonState,
+    scene: dict,
+    polish: dict,
+    *,
+    geometry_seed_impl: str,
+    seed_failure_reason: str = "",
+) -> dict:
+    diagnostics = dict(state.common_refinement_diagnostics)
+    diagnostics.update(polish.get("diagnostics", {}))
+    diagnostics["stage2_rescue_impl"] = geometry_seed_impl
+    diagnostics["geometry_seed_impl"] = geometry_seed_impl
+    diagnostics["stage2_failure_reason"] = seed_failure_reason
+    polish_available = bool(
+        polish.get(
+            "rescue_available",
+            polish.get("diagnostics", {}).get("rescue_available", False),
+        )
+    )
+    diagnostics["rescue_available"] = polish_available and not bool(seed_failure_reason)
+    estimate_used = copy.deepcopy(state.refined_estimate)
+    if diagnostics["rescue_available"]:
+        estimate_used["_global_vp_initial_p_u"] = np.asarray(polish["position"], dtype=float).copy()
+        estimate_used["_global_vp_initial_delta_t"] = float(polish["clock_s"])
+    return {
+        "estimate": estimate_used,
+        "position": np.asarray(polish.get("position", np.full(3, np.nan)), dtype=float).copy(),
+        "clock": float(polish.get("clock_s", np.nan)),
+        "chi": np.concatenate(
+            [
+                np.asarray(state.refined_estimate.get("gamma", []), dtype=float),
+                np.asarray(state.refined_estimate.get("eta_pol", []), dtype=float),
+            ]
+        ),
+        "objective": float(diagnostics.get("after_phi_stage2_normalized", np.nan)),
+        "rescue_available": bool(diagnostics["rescue_available"]),
+        "failure_reason": seed_failure_reason or str(diagnostics.get("polish_failure_reason", "")),
+        "runtime_s": float(state.common_refinement_runtime_s + polish.get("runtime_s", 0.0)),
+        "diagnostics": diagnostics,
+        "rescue_config": state.rescue_config,
+    }
+
+
+def solve_stage2_legacy_multistart(state: Stage2CommonState, scene: dict, config: dict) -> dict:
+    """Compute the existing legacy geometry seed, then use common polish."""
+    try:
+        position = np.asarray(
+            estimate_position_from_ris_eta(scene, state.refined_estimate), dtype=float
+        ).reshape(3)
+        ranges = np.asarray(state.refined_estimate["ris_eta"], dtype=float)[:, 0]
+        values = state.tau_hat_s - (ranges + np.asarray(scene["d_RB"], dtype=float)) / float(scene["c0"])
+        clock = float(np.median(values))
+        failure = ""
+    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+        position = np.full(3, np.nan)
+        clock = float("nan")
+        failure = "invalid_position_or_clock"
+    polish = polish_stage2_seed(
+        position, clock, state, scene, config, geometry_seed_impl="legacy_multistart"
+    )
+    return _stage2_solution_from_polish(
+        state, scene, polish, geometry_seed_impl="legacy_multistart", seed_failure_reason=failure
+    )
+
+
+def solve_stage2_pllg(state: Stage2CommonState, scene: dict, config: dict) -> dict:
+    """Public proposed-estimator entry point for the PLLG geometry seed."""
+    pllg = _solve_stage2_pllg_backend(state, scene, config)
+    return _stage2_solution_from_polish(
+        state,
+        scene,
+        pllg,
+        geometry_seed_impl="pllg",
+        seed_failure_reason=str(pllg.get("failure_reason", "")),
+    )
+
+
+def solve_stage2_rescue(
+    state: Stage2CommonState,
+    scene: dict,
+    config: dict,
+    impl: str | None = None,
+) -> dict:
+    """Dispatch only the geometry seed solver after common preprocessing."""
+    selected_impl = str(impl or config.get("stage2_rescue_impl", "legacy_multistart")).lower()
+    if selected_impl == "legacy_multistart":
+        return solve_stage2_legacy_multistart(state, scene, config)
+    if selected_impl != "pllg":
+        raise ValueError(f"unknown stage2_rescue_impl {selected_impl!r}")
+    pllg = _solve_stage2_pllg_backend(state, scene, config)
+    failure = str(pllg.get("failure_reason", ""))
+    max_projection = float(config.get("stage2_pllg_max_projection_distance_m", 0.05))
+    if np.isfinite(float(pllg.get("diagnostics", {}).get("pllg_projection_distance_m", np.nan))) and float(pllg["diagnostics"].get("pllg_projection_distance_m", 0.0)) > max_projection:
+        failure = "invalid_projected_seed"
+        pllg["diagnostics"]["pllg_failure_reason"] = failure
+    if not failure and bool(pllg.get("rescue_available", False)):
+        return _stage2_solution_from_polish(state, scene, pllg, geometry_seed_impl="pllg")
+    if bool(config.get("stage2_pllg_legacy_fallback", True)):
+        fallback_start = time.perf_counter()
+        legacy = solve_stage2_legacy_multistart(state, scene, config)
+        fallback_runtime = time.perf_counter() - fallback_start
+        legacy["diagnostics"].update(
+            {
+                "stage2_rescue_impl": "pllg",
+                "pllg_success": False,
+                "pllg_failure_reason": failure or "pllg_failure",
+                "legacy_fallback_used": True,
+                "legacy_fallback_reason": failure or "pllg_failure",
+                "legacy_fallback_runtime_s": float(fallback_runtime),
+            }
+        )
+        legacy["failure_reason"] = failure or "pllg_failure"
+        return legacy
+    return _stage2_solution_from_polish(
+        state,
+        scene,
+        {"position": np.full(3, np.nan), "clock_s": np.nan, "rescue_available": False, "diagnostics": pllg.get("diagnostics", {}), "runtime_s": pllg.get("runtime_s", 0.0)},
+        geometry_seed_impl="pllg",
+        seed_failure_reason=failure or "pllg_failure",
     )
 
 
@@ -1068,6 +1339,8 @@ def run_ris_only_stage2_branch(
     config: dict,
     base_timing: dict,
     reliability: dict,
+    *,
+    common_state: Stage2CommonState | None = None,
 ) -> dict:
     """
     Run RIS-only Stage-II basin recovery followed by raw-domain VP-WNLS.
@@ -1076,9 +1349,56 @@ def run_ris_only_stage2_branch(
     exact spherical RIS manifold before the final raw-domain VP-WNLS.
     """
     scene = data["scene"]
-    ris_estimate, structured_diag, ris_config, stage2_s = _run_ris_only_stage2(
-        data["Z_noisy"], scene, config, stage1_estimate
+    if common_state is None:
+        common_state = refine_stage2_ris_factors(
+            data["Z_noisy"], scene, config, stage1_estimate
+        )
+    stage2_solution = solve_stage2_rescue(
+        common_state,
+        scene,
+        config,
+        impl=str(config.get("stage2_rescue_impl", "legacy_multistart")),
     )
+    ris_estimate = stage2_solution["estimate"]
+    structured_diag = dict(stage2_solution.get("diagnostics", {}))
+    ris_config = stage2_solution.get("rescue_config", config)
+    stage2_s = float(stage2_solution.get("runtime_s", 0.0))
+    structured_diag.setdefault(
+        "common_ris_refinement_runtime_s",
+        float(common_state.common_refinement_runtime_s),
+    )
+    structured_diag.setdefault(
+        "common_ris_refinement_success",
+        bool(common_state.common_refinement_success),
+    )
+    structured_diag.setdefault(
+        "common_ris_refinement_impl",
+        str(config.get("stage2_ris_rescue_impl", FINAL_PROPOSED_RIS_RESCUE_IMPL)),
+    )
+    structured_diag.setdefault(
+        "common_ris_refinement_num_valid_local_fixes",
+        int(sum(bool(record.get("valid", False)) for record in common_state.local_fix_records)),
+    )
+    structured_diag["stage2_rescue_available"] = bool(
+        stage2_solution.get("rescue_available", False)
+    )
+    structured_diag["stage2_total_runtime_s"] = float(stage2_s)
+    structured_diag["stage2_failure_reason"] = str(
+        stage2_solution.get("failure_reason", "")
+    )
+    if "p_u_true" in scene and "delta_t_true" in scene:
+        seed_position = np.asarray(stage2_solution.get("position"), dtype=float).reshape(-1)
+        if seed_position.size == 3 and np.all(np.isfinite(seed_position)):
+            truth_position = np.asarray(scene["p_u_true"], dtype=float).reshape(3)
+            structured_diag["seed_position_error_m"] = float(
+                np.linalg.norm(seed_position - truth_position)
+            )
+            structured_diag["seed_z_error_m"] = float(seed_position[2] - truth_position[2])
+        seed_clock = float(stage2_solution.get("clock", np.nan))
+        if np.isfinite(seed_clock):
+            structured_diag["seed_clock_error_s"] = float(
+                seed_clock - float(scene["delta_t_true"])
+            )
     final, vp_s = _run_global_vp_branch(
         data["Y_noisy"], ris_estimate, scene, ris_config, "ris_only"
     )
@@ -1906,6 +2226,48 @@ def _ngc_tau_crb_from_efim(
     return arr, "data_only_efim_tau_crb"
 
 
+def build_stage2_delay_uncertainty(
+    stage1_estimate: dict,
+    scene: dict,
+    config: dict,
+    *,
+    efim_context: dict | None = None,
+) -> dict:
+    """Build explicit Stage-II delay uncertainty without mutating Stage-I."""
+    k_paths = int(scene["K"])
+    sigma, efim_source = _ngc_tau_crb_from_efim(efim_context, scene, config)
+    floor_ns = float(config.get("stage2_delay_sigma_floor_ns", 0.5))
+    floor_s = max(floor_ns * 1.0e-9, 1.0e-15)
+    used_floor = False
+    if sigma is None:
+        sigma = np.full(k_paths, floor_s, dtype=float)
+        source = "configured_floor"
+        used_floor = True
+    else:
+        sigma = np.asarray(sigma, dtype=float).reshape(-1)
+        if sigma.size != k_paths:
+            sigma = np.full(k_paths, floor_s, dtype=float)
+            source = "configured_floor"
+            used_floor = True
+        else:
+            # Keep the specific provenance reported by the EFIM helper rather
+            # than collapsing every EFIM-derived sigma to one generic label.
+            source = efim_source or "ngc_efim"
+            invalid = ~np.isfinite(sigma) | (sigma <= 0.0)
+            if np.any(invalid):
+                sigma = sigma.copy()
+                sigma[invalid] = floor_s
+                used_floor = True
+    sigma = np.maximum(sigma, floor_s)
+    used_floor = bool(used_floor or np.any(sigma <= floor_s))
+    return {
+        "sigma_tau_s": sigma,
+        "sigma_tau_sq_s2": sigma * sigma,
+        "source": source,
+        "used_floor": used_floor,
+    }
+
+
 def _ngc_clock_sigmas_s(
     stage1_estimate: dict,
     k_paths: int,
@@ -1913,29 +2275,20 @@ def _ngc_clock_sigmas_s(
     branch_result: dict | None = None,
     scene: dict | None = None,
 ) -> tuple[np.ndarray, str]:
-    floor_s = float(config.get("ngc_clock_sigma_floor_ns", 0.5)) * 1.0e-9
-    floor_s = max(floor_s, 1.0e-15)
-    for key in (
-        "sigma_tau_k",
-        "tau_sigma_k",
-        "delay_sigma_k",
-        "stage1_tau_sigma_s",
-        "stage1_delay_sigma_s",
-    ):
-        value = stage1_estimate.get(key)
-        if value is None:
-            continue
-        arr = np.asarray(value, dtype=float).reshape(-1)
-        if arr.size == k_paths and np.all(np.isfinite(arr)):
-            return np.maximum(arr, floor_s), key
-    if scene is not None:
-        sigmas, source = _ngc_tau_crb_from_efim(branch_result, scene, config)
-        if sigmas is not None:
-            sigmas = np.maximum(sigmas, floor_s)
-            stage1_estimate["sigma_tau_k"] = sigmas.copy()
-            stage1_estimate["sigma_tau_k_source"] = source
-            return sigmas, source
-    return np.full(k_paths, floor_s, dtype=float), "fallback_floor"
+    if scene is None:
+        floor_s = max(float(config.get("ngc_clock_sigma_floor_ns", 0.5)) * 1.0e-9, 1.0e-15)
+        return np.full(k_paths, floor_s, dtype=float), "fallback_floor"
+    ngc_config = dict(config)
+    ngc_config["stage2_delay_sigma_floor_ns"] = float(
+        config.get("ngc_clock_sigma_floor_ns", 0.5)
+    )
+    uncertainty = build_stage2_delay_uncertainty(
+        stage1_estimate,
+        scene,
+        ngc_config,
+        efim_context=branch_result,
+    )
+    return np.asarray(uncertainty["sigma_tau_s"], dtype=float), str(uncertainty["source"])
 
 
 def _ngc_optional_threshold(config: dict, key: str) -> float:
@@ -2319,8 +2672,10 @@ def select_ngc_branch(
     rescue_result: dict | None,
     reliability: dict,
     ngc_diagnostics: dict,
+    config: dict | None = None,
 ) -> tuple[dict, bool]:
     """Select direct/rescue candidate using the NGC certification policy."""
+    config = config or {}
     direct_status = str(ngc_diagnostics.get("ngc_direct_cert_status", ""))
     rescue_status = str(ngc_diagnostics.get("ngc_rescue_cert_status", ""))
     direct_green = direct_status == "green"
@@ -2335,6 +2690,68 @@ def select_ngc_branch(
         float(rescue_raw - direct_raw)
         if np.isfinite(direct_raw) and np.isfinite(rescue_raw)
         else float("nan")
+    )
+    selector_guard_enabled = bool(config.get("stage2_selector_guard", True))
+    selector_raw_degradation = (
+        float(rescue_raw - direct_raw)
+        if np.isfinite(direct_raw) and np.isfinite(rescue_raw)
+        else float("nan")
+    )
+    selector_raw_relative_improvement = (
+        float((direct_raw - rescue_raw) / max(abs(direct_raw), 1.0e-12))
+        if np.isfinite(direct_raw) and np.isfinite(rescue_raw)
+        else float("nan")
+    )
+    selector_boundary_guard_used = False
+    selector_boundary_override_used = False
+    rescue_candidate_admissible = True
+    selector_guard_reject_reason = ""
+    if selector_guard_enabled and rescue_result is not None:
+        rescue_available = bool(rescue_result.get("structured_diag", {}).get(
+            "stage2_rescue_available", rescue_result.get("rescue_available", True)
+        ))
+        if not rescue_available or not np.isfinite(rescue_raw):
+            rescue_candidate_admissible = False
+            selector_guard_reject_reason = "rescue_unavailable_or_nonfinite"
+        elif np.isfinite(direct_raw):
+            raw_tol = float(config.get("stage2_selector_raw_degradation_abs_tol", 1.0e-8))
+            raw_tol += float(config.get("stage2_selector_raw_degradation_rel_tol", 1.0e-4)) * max(abs(direct_raw), 1.0e-12)
+            if rescue_raw > direct_raw + raw_tol:
+                rescue_candidate_admissible = False
+                selector_guard_reject_reason = "raw_objective_degradation"
+        direct_boundary = bool(
+            direct_result.get("final", {}).get(
+                "boundary_hit", direct_result.get("direct_boundary_hit", False)
+            )
+        )
+        rescue_boundary = bool(
+            rescue_result.get("final", {}).get(
+                "boundary_hit", rescue_result.get("rescue_boundary_hit", False)
+            )
+        )
+        if rescue_candidate_admissible and not direct_boundary and rescue_boundary:
+            selector_boundary_guard_used = True
+            min_improvement = float(
+                config.get(
+                    "stage2_selector_boundary_override_min_rel_improvement", 1.0e-3
+                )
+            )
+            if not np.isfinite(selector_raw_relative_improvement) or selector_raw_relative_improvement < min_improvement:
+                rescue_candidate_admissible = False
+                selector_guard_reject_reason = "boundary_without_required_raw_improvement"
+            else:
+                selector_boundary_override_used = True
+        if not rescue_candidate_admissible:
+            rescue_result = None
+    ngc_diagnostics.update(
+        {
+            "rescue_candidate_admissible": bool(rescue_candidate_admissible),
+            "selector_guard_reject_reason": selector_guard_reject_reason,
+            "selector_raw_degradation": selector_raw_degradation,
+            "selector_raw_relative_improvement": selector_raw_relative_improvement,
+            "selector_boundary_guard_used": bool(selector_boundary_guard_used),
+            "selector_boundary_override_used": bool(selector_boundary_override_used),
+        }
     )
     final_unreliable = False
 
@@ -2403,6 +2820,12 @@ def select_ngc_branch(
             "branch_score_margin": branch_score_margin,
             "boundary_selection_rule_used": False,
             "warning": selected["warning"],
+            "rescue_candidate_admissible": bool(rescue_candidate_admissible),
+            "selector_guard_reject_reason": selector_guard_reject_reason,
+            "selector_raw_degradation": selector_raw_degradation,
+            "selector_raw_relative_improvement": selector_raw_relative_improvement,
+            "selector_boundary_guard_used": bool(selector_boundary_guard_used),
+            "selector_boundary_override_used": bool(selector_boundary_override_used),
         }
     )
     return selected, bool(no_gain)
@@ -2446,36 +2869,6 @@ def run_from_existing_stage1(
             print("WARNING_PAPER_BALANCED_TRIGGERED_STAGE2_AT_GOOD_SNR", flush=True)
         print("running_direct_vp_branch = True", flush=True)
 
-    # Good initialization: avoid unnecessary factor-domain projection.
-    direct_result = run_direct_vp_branch(
-        data, stage1_estimate, config, base_timing, reliability
-    )
-    direct_vp_quality = evaluate_direct_vp_quality(
-        direct_result, stage1, data["scene"], config
-    )
-    vp_options = dict(config.get("global_vp", {}))
-    trigger_mode = str(
-        vp_options.get("z_rescue_trigger", "boundary_or_unreliable")
-    ).lower()
-    if (
-        bool(vp_options.get("enable_z_rescue_multistart", True))
-        and "unreliable" in trigger_mode
-        and not bool(direct_result["final"].get("z_rescue_triggered", False))
-        and not bool(direct_vp_quality.get("good", False))
-    ):
-        rescue_config = copy.deepcopy(config)
-        rescue_config["_global_vp_force_z_rescue"] = True
-        direct_result = run_direct_vp_branch(
-            data, stage1_estimate, rescue_config, base_timing, reliability
-        )
-        direct_vp_quality = evaluate_direct_vp_quality(
-            direct_result, stage1, data["scene"], config
-        )
-    reliability = dict(reliability)
-    legacy_stage1_decision = str(reliability.get("decision", "unknown"))
-    gof_reliability_decision = str(
-        direct_vp_quality.get("reliability_decision", "direct_vp")
-    )
     geometry_trigger_names = {
         "low_assignment_margin",
         "poor_clock_consistency",
@@ -2487,10 +2880,106 @@ def run_from_existing_stage1(
         if str(reason) in geometry_trigger_names
     ]
     stage1_geometry_trigger = bool(stage1_geometry_trigger_reasons)
+    stage2_rescue_enabled = (
+        allow_stage2
+        and bool(config.get("stage2_adaptive", True))
+        and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
+    )
+    force_stage2_for_diagnostics = bool(
+        config.get("stage2_force_run_for_diagnostics", False)
+        and stage2_rescue_enabled
+    )
+    branch_timing = {
+        "direct_probe_branch_s": 0.0,
+        "direct_probe_vp_s": 0.0,
+        "direct_forced_z_rescue_branch_s": 0.0,
+        "direct_forced_z_rescue_vp_s": 0.0,
+        "rescue_branch_s": 0.0,
+        "rescue_stage2_s": 0.0,
+        "rescue_vp_s": 0.0,
+    }
+    direct_z_rescue_rerun_executed = False
+    direct_z_rescue_rerun_skipped = False
+    direct_z_rescue_skip_reason = ""
+    direct_probe_z_rescue_disabled = bool(stage1_geometry_trigger and stage2_rescue_enabled)
+    direct_probe_config = config
+    if direct_probe_z_rescue_disabled:
+        direct_probe_config = copy.deepcopy(config)
+        direct_probe_config["global_vp"] = dict(direct_probe_config.get("global_vp", {}))
+        direct_probe_config["global_vp"]["enable_z_rescue_multistart"] = False
+        if progress_printed:
+            print(
+                "direct_probe_z_rescue_disabled = True "
+                "reason=stage1_geometry_trigger_rescue_path",
+                flush=True,
+            )
+
+    # Good initialization: avoid unnecessary factor-domain projection.
+    direct_probe_start = time.perf_counter()
+    direct_result = run_direct_vp_branch(
+        data, stage1_estimate, direct_probe_config, base_timing, reliability
+    )
+    branch_timing["direct_probe_branch_s"] = time.perf_counter() - direct_probe_start
+    branch_timing["direct_probe_vp_s"] = float(
+        direct_result.get("timing", {}).get("vp", 0.0)
+    )
+    direct_vp_quality = evaluate_direct_vp_quality(
+        direct_result, stage1, data["scene"], config
+    )
+    vp_options = dict(config.get("global_vp", {}))
+    trigger_mode = str(
+        vp_options.get("z_rescue_trigger", "boundary_or_unreliable")
+    ).lower()
+    direct_z_rescue_rerun_requested = (
+        bool(vp_options.get("enable_z_rescue_multistart", True))
+        and "unreliable" in trigger_mode
+        and not bool(direct_result["final"].get("z_rescue_triggered", False))
+        and not bool(direct_vp_quality.get("good", False))
+    )
+    skip_direct_z_rescue_for_geometry = bool(
+        direct_z_rescue_rerun_requested
+        and stage2_rescue_enabled
+        and stage1_geometry_trigger
+    )
+    if direct_z_rescue_rerun_requested and skip_direct_z_rescue_for_geometry:
+        direct_z_rescue_rerun_skipped = True
+        direct_z_rescue_skip_reason = "stage1_geometry_trigger_rescue_path"
+        if progress_printed:
+            print(
+                "skipping_direct_forced_z_rescue_rerun = True "
+                f"reason={direct_z_rescue_skip_reason}",
+                flush=True,
+            )
+    elif direct_z_rescue_rerun_requested:
+        rescue_config = copy.deepcopy(config)
+        rescue_config["_global_vp_force_z_rescue"] = True
+        forced_direct_start = time.perf_counter()
+        direct_result = run_direct_vp_branch(
+            data, stage1_estimate, rescue_config, base_timing, reliability
+        )
+        direct_z_rescue_rerun_executed = True
+        branch_timing["direct_forced_z_rescue_branch_s"] = (
+            time.perf_counter() - forced_direct_start
+        )
+        branch_timing["direct_forced_z_rescue_vp_s"] = float(
+            direct_result.get("timing", {}).get("vp", 0.0)
+        )
+        direct_vp_quality = evaluate_direct_vp_quality(
+            direct_result, stage1, data["scene"], config
+        )
+    reliability = dict(reliability)
+    legacy_stage1_decision = str(reliability.get("decision", "unknown"))
+    gof_reliability_decision = str(
+        direct_vp_quality.get("reliability_decision", "direct_vp")
+    )
     reliability["legacy_stage1_decision"] = legacy_stage1_decision
     reliability["gof_reliability_decision"] = gof_reliability_decision
     reliability["stage1_geometry_trigger"] = stage1_geometry_trigger
     reliability["stage1_geometry_trigger_reasons"] = stage1_geometry_trigger_reasons
+    reliability["direct_probe_z_rescue_disabled"] = direct_probe_z_rescue_disabled
+    reliability["direct_z_rescue_rerun_executed"] = direct_z_rescue_rerun_executed
+    reliability["direct_z_rescue_rerun_skipped"] = direct_z_rescue_rerun_skipped
+    reliability["direct_z_rescue_skip_reason"] = direct_z_rescue_skip_reason
     reliability["decision"] = gof_reliability_decision
     reliability.update(
         {
@@ -2540,11 +3029,6 @@ def run_from_existing_stage1(
     }
     if stage2_policy not in valid_stage2_policies:
         raise ValueError(f"unknown proposed_stage2_policy {stage2_policy!r}")
-    stage2_rescue_enabled = (
-        allow_stage2
-        and bool(config.get("stage2_adaptive", True))
-        and str(config.get("stage2_rescue_type", "ris_only")) == "ris_only"
-    )
     ngc_active = stage2_policy == "ngc_certified_ris_only"
     ngc_diagnostics = _ngc_base_diagnostics(config)
     if ngc_active:
@@ -2557,13 +3041,21 @@ def run_from_existing_stage1(
         direct_status = str(ngc_diagnostics.get("ngc_direct_cert_status", ""))
         reliability["proposed_stage2_policy"] = stage2_policy
         reliability["stage2_policy_forced"] = False
-        if stage2_rescue_enabled and direct_status == "green":
+        if stage2_rescue_enabled and direct_status == "green" and not force_stage2_for_diagnostics:
             reliability["decision"] = "direct_vp"
             ngc_diagnostics["ngc_rescue_requested"] = False
             ngc_diagnostics[
                 "ngc_rescue_request_reason"
             ] = "ngc_green_skip_rescue"
             ngc_diagnostics["ngc_selected_by"] = "ngc_green_skip_rescue"
+            direct_vp_override = False
+        elif stage2_rescue_enabled and direct_status == "green":
+            reliability["decision"] = "direct_vp"
+            ngc_diagnostics["ngc_rescue_requested"] = True
+            ngc_diagnostics[
+                "ngc_rescue_request_reason"
+            ] = "stage2_force_run_for_diagnostics"
+            ngc_diagnostics["ngc_selected_by"] = "stage2_force_run_for_diagnostics"
             direct_vp_override = False
         elif stage2_rescue_enabled:
             reliability["decision"] = "jnpp_then_vp"
@@ -2602,11 +3094,17 @@ def run_from_existing_stage1(
 
     rescue_requested = (
         stage2_rescue_enabled
-        and reliability["decision"] == "jnpp_then_vp"
+        and (
+            reliability["decision"] == "jnpp_then_vp"
+            or force_stage2_for_diagnostics
+        )
         and not direct_vp_override
     )
+    common_stage2_state = None
     if rescue_requested:
-        rescue_impl = str(config.get("stage2_ris_rescue_impl", "robust_jnpp"))
+        rescue_impl = str(
+            config.get("stage2_ris_rescue_impl", FINAL_PROPOSED_RIS_RESCUE_IMPL)
+        )
         if rescue_impl == "robust_jnpp":
             rescue_mode = "robust_jnpp"
         elif severe_diag["severe_unreliable"] and bool(
@@ -2621,13 +3119,41 @@ def run_from_existing_stage1(
         # Poor but potentially recoverable initialization: use RIS-only projection
         # to improve the VP basin, then return to the same raw-domain VP-WNLS objective.
         if rescue_mode == "multi_hypothesis_ris_reacquisition":
+            rescue_branch_start = time.perf_counter()
             rescue_result = run_multi_hypothesis_ris_reacquisition_branch(
                 data, stage1_estimate, config, base_timing, reliability
             )
+            branch_timing["rescue_branch_s"] = time.perf_counter() - rescue_branch_start
+            branch_timing["rescue_stage2_s"] = float(
+                rescue_result.get("timing", {}).get("stage2", 0.0)
+            )
+            branch_timing["rescue_vp_s"] = float(
+                rescue_result.get("timing", {}).get("vp", 0.0)
+            )
             branches["multi_hypothesis_ris_reacquisition_then_vp"] = rescue_result
         else:
+            rescue_branch_start = time.perf_counter()
+            common_stage2_state = refine_stage2_ris_factors(
+                data["Z_noisy"],
+                data["scene"],
+                config,
+                stage1_estimate,
+                efim_context=direct_result,
+            )
             rescue_result = run_ris_only_stage2_branch(
-                data, stage1_estimate, config, base_timing, reliability
+                data,
+                stage1_estimate,
+                config,
+                base_timing,
+                reliability,
+                common_state=common_stage2_state,
+            )
+            branch_timing["rescue_branch_s"] = time.perf_counter() - rescue_branch_start
+            branch_timing["rescue_stage2_s"] = float(
+                rescue_result.get("timing", {}).get("stage2", 0.0)
+            )
+            branch_timing["rescue_vp_s"] = float(
+                rescue_result.get("timing", {}).get("vp", 0.0)
             )
             rescue_result["structured_diag"]["stage2_rescue_mode"] = rescue_mode
             branches["ris_only_stage2_then_vp"] = rescue_result
@@ -2638,8 +3164,17 @@ def run_from_existing_stage1(
                 "rescue", rescue_result, stage1_estimate, data["scene"], config
             )
         )
+        selector_rescue_result = rescue_result
+        if force_stage2_for_diagnostics and str(
+            ngc_diagnostics.get("ngc_direct_cert_status", "")
+        ) == "green":
+            selector_rescue_result = None
         selected, no_gain = select_ngc_branch(
-            direct_result, rescue_result, reliability, ngc_diagnostics
+            direct_result,
+            selector_rescue_result,
+            reliability,
+            ngc_diagnostics,
+            config,
         )
     else:
         selected, no_gain = select_proposed_branch(
@@ -2689,8 +3224,30 @@ def run_from_existing_stage1(
     result["stage2_severe_unreliable"] = severe_diag
     result["gate_override_direct_vp_good"] = bool(direct_vp_override)
     result["ris_stage2_no_gain"] = bool(no_gain)
+    stage2_diagnostics = dict(
+        rescue_result.get("structured_diag", {}) if rescue_result is not None else {}
+    )
+    result["stage2_diagnostics"] = stage2_diagnostics
+    result["stage2_rescue_triggered"] = bool(rescue_requested)
+    result["stage2_force_run_for_diagnostics"] = bool(
+        force_stage2_for_diagnostics
+    )
+    result["stage2_rescue_impl"] = str(
+        config.get("stage2_rescue_impl", "legacy_multistart")
+    )
+    result["stage2_rescue_available"] = bool(
+        rescue_result is not None
+        and rescue_result.get("structured_diag", {}).get(
+            "stage2_rescue_available", True
+        )
+    )
     result["progress_printed"] = progress_printed
+    result["direct_probe_z_rescue_disabled"] = bool(direct_probe_z_rescue_disabled)
+    result["direct_z_rescue_rerun_executed"] = bool(direct_z_rescue_rerun_executed)
+    result["direct_z_rescue_rerun_skipped"] = bool(direct_z_rescue_rerun_skipped)
+    result["direct_z_rescue_skip_reason"] = direct_z_rescue_skip_reason
     result["timing"] = dict(result["timing"])
+    result["timing"].update(branch_timing)
     result["timing"]["diagnostic_total"] = time.perf_counter() - total_start
     return result
 
@@ -3866,6 +4423,35 @@ def _print_selected_runtime(results: dict) -> None:
     print(f"data_generation_s = {_fmt(timing.get('data_generation'))}")
     print(f"hankelization_s = {_fmt(timing.get('hankelization'))}")
     print(f"stage1_s = {_fmt(timing.get('stage1'))}")
+    print(
+        "direct_probe_z_rescue_disabled = "
+        f"{results.get('direct_probe_z_rescue_disabled', 'NA')}"
+    )
+    print(f"direct_probe_branch_s = {_fmt(timing.get('direct_probe_branch_s'))}")
+    print(f"direct_probe_vp_s = {_fmt(timing.get('direct_probe_vp_s'))}")
+    print(
+        "direct_forced_z_rescue_branch_s = "
+        f"{_fmt(timing.get('direct_forced_z_rescue_branch_s'))}"
+    )
+    print(
+        "direct_forced_z_rescue_vp_s = "
+        f"{_fmt(timing.get('direct_forced_z_rescue_vp_s'))}"
+    )
+    print(
+        "direct_z_rescue_rerun_executed = "
+        f"{results.get('direct_z_rescue_rerun_executed', 'NA')}"
+    )
+    print(
+        "direct_z_rescue_rerun_skipped = "
+        f"{results.get('direct_z_rescue_rerun_skipped', 'NA')}"
+    )
+    print(
+        "direct_z_rescue_skip_reason = "
+        f"{results.get('direct_z_rescue_skip_reason', '') or 'NA'}"
+    )
+    print(f"rescue_branch_s = {_fmt(timing.get('rescue_branch_s'))}")
+    print(f"rescue_stage2_s = {_fmt(timing.get('rescue_stage2_s'))}")
+    print(f"rescue_vp_s = {_fmt(timing.get('rescue_vp_s'))}")
     print(f"stage2_ris_rescue_time = {_fmt(stage2_timing.get('stage2'))}")
     print(f"ris_only_stage2_s = {_fmt(stage2_timing.get('stage2'))}")
     print(f"ris_projection_total_s = {_fmt(stage2_timing.get('ris_projection_total'))}")
@@ -4064,6 +4650,144 @@ def _repeat_estimate_position(scene: dict, estimate: Any) -> float:
         return float("nan")
 
 
+def _repeat_array3(value: Any) -> np.ndarray:
+    try:
+        array = np.asarray(value, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        return np.full(3, np.nan)
+    return array.copy() if array.size == 3 and np.all(np.isfinite(array)) else np.full(3, np.nan)
+
+
+def _stage2_repeat_sidecars(
+    result: dict,
+    *,
+    trial_id: int,
+    seed: int,
+    config: dict,
+) -> tuple[dict, list[dict]]:
+    scene = result.get("scene", {})
+    diag = dict(result.get("stage2_diagnostics", {}))
+    final = result.get("final", {})
+    p_true = _repeat_array3(scene.get("p_u_true"))
+    p_final = _repeat_array3(final.get("p_u"))
+    c0 = _repeat_float(scene.get("c0", config.get("c0")))
+    stage2_position = _repeat_array3(diag.get("seed_position"))
+    final_clock = _repeat_float(final.get("delta_t"))
+    true_clock = _repeat_float(scene.get("delta_t_true"))
+    sigma_values = np.asarray(diag.get("delay_sigma_values", []), dtype=float).reshape(-1)
+    linear_position = _repeat_array3(diag.get("pllg_linear_x_m"))
+    projected_position = _repeat_array3(diag.get("projected_position"))
+    sidecar = {
+        "trial_id": int(trial_id), "seed": int(seed), "snr_db": _repeat_float(config.get("SNR_dB")),
+        "true_k": int(scene.get("K", config.get("K", 0))),
+        "stage2_rescue_impl": str(result.get("stage2_rescue_impl", config.get("stage2_rescue_impl", "legacy_multistart"))),
+        "ngc_direct_status": str(result.get("ngc_direct_cert_status", "")),
+        "ngc_direct_score": _repeat_float(result.get("ngc_direct_total_score")),
+        "rescue_triggered": bool(result.get("stage2_rescue_triggered", False)),
+        "stage2_force_run_for_diagnostics": bool(result.get("stage2_force_run_for_diagnostics", False)),
+        "rescue_available": bool(result.get("stage2_rescue_available", False)),
+        "pllg_success": bool(diag.get("pllg_success", False)),
+        "pllg_failure_reason": str(diag.get("pllg_failure_reason", "")),
+        "legacy_fallback_used": bool(diag.get("legacy_fallback_used", False)),
+        "legacy_fallback_reason": str(diag.get("legacy_fallback_reason", "")),
+        "num_valid_local_fixes": int(diag.get("num_valid_local_fixes", 0)),
+        "local_weight_source": str(diag.get("local_weight_source", "")),
+        "delay_variance_source": str(diag.get("delay_sigma_source", diag.get("sigma_tau_source", ""))),
+        "pllg_rank": diag.get("pllg_rank", ""), "pllg_condition_number": diag.get("pllg_condition_number", ""),
+        "pllg_reweight_steps": diag.get("pllg_reweight_steps", config.get("stage2_pllg_reweight_steps", 1)),
+        "pllg_linear_x_m": linear_position[0], "pllg_linear_y_m": linear_position[1], "pllg_linear_z_m": linear_position[2],
+        "pllg_linear_s_m": diag.get("pllg_linear_s_m", ""), "pllg_linear_clock_s": diag.get("pllg_linear_clock_s", ""),
+        "pllg_projected_x_m": projected_position[0], "pllg_projected_y_m": projected_position[1], "pllg_projected_z_m": projected_position[2],
+        "pllg_projection_distance_m": diag.get("pllg_projection_distance_m", ""),
+        "pllg_phi_before_polish": diag.get("before_phi_stage2_normalized", ""),
+        "pllg_phi_after_polish": diag.get("after_phi_stage2_normalized", ""),
+        "pllg_polish_success": bool(diag.get("polish_accepted", False)),
+        "pllg_linear_runtime_s": diag.get("pllg_linear_runtime_s", ""),
+        "pllg_polish_runtime_s": diag.get("polish_runtime_s", ""),
+        "legacy_fallback_runtime_s": diag.get("legacy_fallback_runtime_s", ""),
+        "stage2_total_runtime_s": diag.get("stage2_total_runtime_s", result.get("timing", {}).get("stage2", "")),
+        "seed_position_error_m": float(np.linalg.norm(stage2_position - p_true)) if np.all(np.isfinite(stage2_position)) and np.all(np.isfinite(p_true)) else "",
+        "seed_z_error_m": float(stage2_position[2] - p_true[2]) if np.all(np.isfinite(stage2_position)) and np.all(np.isfinite(p_true)) else "",
+        "seed_clock_error_s": _repeat_float(diag.get("seed_clock_s")) - true_clock if np.isfinite(_repeat_float(diag.get("seed_clock_s"))) and np.isfinite(true_clock) else "",
+        "final_position_error_m": float(np.linalg.norm(p_final - p_true)) if np.all(np.isfinite(p_final)) and np.all(np.isfinite(p_true)) else "",
+        "final_clock_error_s": final_clock - true_clock if np.isfinite(final_clock) and np.isfinite(true_clock) else "",
+        "z_boundary_hit": bool(final.get("boundary_hit", False)),
+        "common_ris_refinement_success": bool(diag.get("common_ris_refinement_success", False)),
+        "common_ris_refinement_impl": str(diag.get("common_ris_refinement_impl", "")),
+        "common_ris_refinement_runtime_s": diag.get("common_ris_refinement_runtime_s", ""),
+        "common_ris_refinement_num_valid_local_fixes": diag.get("common_ris_refinement_num_valid_local_fixes", ""),
+        "geometry_seed_impl": str(diag.get("geometry_seed_impl", "")),
+        "pllg_pseudorange_block_weight": diag.get("pllg_pseudorange_block_weight", config.get("stage2_pllg_pseudorange_block_weight", 1.0)),
+        "delay_sigma_source": str(diag.get("delay_sigma_source", diag.get("sigma_tau_source", ""))),
+        "delay_sigma_used_floor": bool(diag.get("delay_sigma_used_floor", diag.get("sigma_tau_used_floor", False))),
+        "delay_sigma_min_s": float(np.min(sigma_values)) if sigma_values.size else "",
+        "delay_sigma_max_s": float(np.max(sigma_values)) if sigma_values.size else "",
+        "delay_sigma_values_json": json.dumps(sigma_values.tolist()),
+        "stage2_clock_term_raw_s2_before": diag.get("before_clock_term_raw_s2", ""),
+        "stage2_clock_term_normalized_before": diag.get("before_clock_term_normalized", ""),
+        "stage2_ris_term_raw_before": diag.get("before_ris_term_raw", ""),
+        "stage2_ris_term_mean_before": diag.get("before_ris_term_mean", ""),
+        "stage2_ris_term_normalized_before": diag.get("before_ris_term_normalized", ""),
+        "stage2_phi_normalized_before": diag.get("before_phi_stage2_normalized", ""),
+        "stage2_clock_term_raw_s2_after": diag.get("after_clock_term_raw_s2", ""),
+        "stage2_clock_term_normalized_after": diag.get("after_clock_term_normalized", ""),
+        "stage2_ris_term_raw_after": diag.get("after_ris_term_raw", ""),
+        "stage2_ris_term_mean_after": diag.get("after_ris_term_mean", ""),
+        "stage2_ris_term_normalized_after": diag.get("after_ris_term_normalized", ""),
+        "stage2_phi_normalized_after": diag.get("after_phi_stage2_normalized", ""),
+        "stage2_ris_normalization_scale": config.get("stage2_ris_normalization_scale", 1.0e-4),
+        "stage2_lambda_ris_normalized": config.get("stage2_lambda_ris_normalized", 1.0),
+        "polish_accepted": bool(diag.get("polish_accepted", False)),
+        "stage2_clock_estimator": str(diag.get("clock_estimator", "")),
+        "stage2_clock_weighted_mean_s": diag.get("clock_weighted_mean_s", ""),
+        "stage2_clock_decoupled_s": diag.get("clock_decoupled_s", ""),
+        "stage2_clock_decoupled_available": bool(diag.get("clock_decoupled_available", False)),
+        "stage2_clock_decoupled_reason": str(diag.get("clock_decoupled_reason", "")),
+        "stage2_clock_decoupled_num_inliers": diag.get("clock_decoupled_num_inliers", ""),
+        "stage2_clock_decoupled_scale_m": diag.get("clock_decoupled_scale_m", ""),
+        "rescue_candidate_admissible": result.get("rescue_candidate_admissible", ""),
+        "selector_guard_reject_reason": str(result.get("selector_guard_reject_reason", "")),
+        "selector_raw_degradation": result.get("selector_raw_degradation", ""),
+        "selector_raw_relative_improvement": result.get("selector_raw_relative_improvement", ""),
+        "selector_boundary_guard_used": result.get("selector_boundary_guard_used", ""),
+        "selector_boundary_override_used": result.get("selector_boundary_override_used", ""),
+    }
+    try:
+        stage1_records = build_local_fix_records(result.get("estimate_initial", {}), scene, config, source_stage="stage1")
+    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+        stage1_records = []
+    refined_records = diag.get("local_fix_records", [])
+    stage1_by_panel = {int(record.get("panel_index", -1)): record for record in stage1_records}
+    local_rows = []
+    for record in refined_records:
+        panel = int(record.get("panel_index", -1))
+        position = _repeat_array3(record.get("position"))
+        true_local = p_true
+        err = position - true_local
+        stage1_position = _repeat_array3(stage1_by_panel.get(panel, {}).get("position"))
+        eta = np.asarray(record.get("eta", [np.nan] * 3), dtype=float).reshape(-1)
+        local_rows.append({
+            "trial_id": int(trial_id), "seed": int(seed), "snr_db": _repeat_float(config.get("SNR_dB")),
+            "panel_index": panel, "assigned_panel_index": record.get("assigned_column_index", ""),
+            "panel_match_correct": "", "local_fix_valid": bool(record.get("valid", False)),
+            "local_fix_reject_reason": str(record.get("reject_reason", "")),
+            "local_fix_x_m": position[0], "local_fix_y_m": position[1], "local_fix_z_m": position[2],
+            "true_x_m": true_local[0], "true_y_m": true_local[1], "true_z_m": true_local[2],
+            "local_error_x_m": err[0], "local_error_y_m": err[1], "local_error_z_m": err[2],
+            "local_error_norm_m": float(np.linalg.norm(err)) if np.all(np.isfinite(err)) else "",
+            "range_hat_m": eta[0] if eta.size >= 1 else "", "theta_hat_rad": eta[1] if eta.size >= 2 else "", "phi_hat_rad": eta[2] if eta.size >= 3 else "",
+            "projection_residual_before": stage1_by_panel.get(panel, {}).get("residual_after", ""),
+            "projection_residual_after": record.get("residual_after", ""),
+            "assignment_margin": result.get("reliability", {}).get("assignment_margin", ""),
+            "local_weight_source": record.get("weight_source", ""), "local_weight_scalar": record.get("weight_scalar", ""),
+            "local_fix_source_stage": str(record.get("source_stage", "refined")),
+            "common_refinement_impl": str(diag.get("common_ris_refinement_impl", "")),
+            "stage1_local_fix_x_m": stage1_position[0], "stage1_local_fix_y_m": stage1_position[1], "stage1_local_fix_z_m": stage1_position[2],
+            "refined_local_fix_x_m": position[0], "refined_local_fix_y_m": position[1], "refined_local_fix_z_m": position[2],
+        })
+    return sidecar, local_rows
+
+
 def _empty_repeat_trial_row(
     trial_id: int,
     seed: int,
@@ -4234,6 +4958,14 @@ def _extract_repeat_trial_metrics(
             "warning": str(result.get("warning", final.get("warning", ""))),
         }
     )
+    try:
+        stage2_sidecar, local_sidecar = _stage2_repeat_sidecars(
+            result, trial_id=trial_id, seed=seed, config=config
+        )
+    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+        stage2_sidecar, local_sidecar = {}, []
+    row["_stage2_sidecar"] = stage2_sidecar
+    row["_stage2_local_fix_sidecar"] = local_sidecar
     return row
 
 
@@ -4471,6 +5203,14 @@ def run_repeated_main_single(
     log_path = out_dir / "main_single_repeat.log"
     metadata_path = out_dir / "main_single_repeat_metadata.json"
     _write_repeat_csv(trial_path, rows, REPEAT_TRIAL_FIELDS)
+    stage2_rows = [row.get("_stage2_sidecar", {}) for row in rows if row.get("_stage2_sidecar")]
+    local_rows = [local for row in rows for local in row.get("_stage2_local_fix_sidecar", [])]
+    _write_repeat_csv(out_dir / "stage2_diagnostics.csv", stage2_rows, STAGE2_DIAGNOSTIC_FIELDS)
+    _write_repeat_csv(
+        out_dir / "stage2_local_fix_diagnostics.csv",
+        local_rows,
+        STAGE2_LOCAL_FIX_DIAGNOSTIC_FIELDS,
+    )
     outlier_rows = [
         row
         for row in rows
@@ -4590,9 +5330,11 @@ def _snr_out_dir_name(snr_db: float) -> str:
 
 
 def _repeat_requested(args: argparse.Namespace) -> bool:
+    # A run count or worker count of one describes the single-run path, so it
+    # must not pull in the repeat machinery and its CSV/metadata side effects.
     return bool(
-        args.repeat_runs_was_set
-        or args.repeat_jobs_was_set
+        (args.repeat_runs_was_set and args.repeat_runs > 1)
+        or (args.repeat_jobs_was_set and args.repeat_jobs > 1)
         or args.repeat_out_dir_was_set
         or args.rerun_seeds is not None
         or (args.snr_db is not None and len(args.snr_db) > 1)
@@ -4718,6 +5460,48 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument("--paper-k", type=int, default=None)
+    parser.add_argument(
+        "--stage2-rescue-impl",
+        choices=("legacy_multistart", "pllg"),
+        default=None,
+    )
+    parser.add_argument("--stage2-pllg-reweight-steps", type=int, choices=(0, 1), default=None)
+    parser.add_argument("--stage2-pllg-cond-max", type=float, default=None)
+    parser.add_argument("--stage2-pllg-pseudorange-block-weight", type=float, default=None)
+    parser.add_argument(
+        "--stage2-clock-estimator",
+        choices=("decoupled_robust", "weighted_mean"),
+        default=None,
+    )
+    parser.add_argument("--stage2-clock-sigma-range-m", type=float, default=None)
+    parser.add_argument("--stage2-clock-outlier-kappa", type=float, default=None)
+    parser.add_argument("--stage2-delay-sigma-floor-ns", type=float, default=None)
+    parser.add_argument("--stage2-ris-normalization-scale", type=float, default=None)
+    parser.add_argument("--stage2-lambda-ris-normalized", type=float, default=None)
+    parser.add_argument("--stage2-pllg-max-projection-distance-m", type=float, default=None)
+    parser.add_argument(
+        "--stage2-pllg-local-weight-mode",
+        choices=("auto", "uniform"),
+        default=None,
+    )
+    parser.add_argument(
+        "--stage2-pllg-legacy-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--stage2-force-run-for-diagnostics", action="store_true")
+    parser.add_argument(
+        "--stage2-selector-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--stage2-selector-raw-degradation-abs-tol", type=float, default=None)
+    parser.add_argument("--stage2-selector-raw-degradation-rel-tol", type=float, default=None)
+    parser.add_argument(
+        "--stage2-selector-boundary-override-min-rel-improvement",
+        type=float,
+        default=None,
+    )
     parser.add_argument("--blas-threads", type=int, default=1)
     parser.add_argument(
         "--global-vp-backend",
@@ -4761,6 +5545,9 @@ def main(argv: list[str] | None = None) -> None:
         token == "--repeat-out-dir" or token.startswith("--repeat-out-dir=")
         for token in argv_list
     )
+    args.seed_was_set = any(
+        token == "--seed" or token.startswith("--seed=") for token in argv_list
+    )
 
     rerun_seeds = None
     if args.rerun_seeds is not None:
@@ -4793,6 +5580,35 @@ def main(argv: list[str] | None = None) -> None:
         base_overrides: dict[str, Any] = {}
         if args.paper_k is not None:
             base_overrides["K"] = int(args.paper_k)
+        if args.stage2_rescue_impl is not None:
+            base_overrides["stage2_rescue_impl"] = str(args.stage2_rescue_impl)
+        if args.stage2_pllg_reweight_steps is not None:
+            base_overrides["stage2_pllg_reweight_steps"] = int(args.stage2_pllg_reweight_steps)
+        if args.stage2_pllg_cond_max is not None:
+            base_overrides["stage2_pllg_cond_max"] = float(args.stage2_pllg_cond_max)
+        for argument, key in (
+            ("stage2_pllg_pseudorange_block_weight", "stage2_pllg_pseudorange_block_weight"),
+            ("stage2_clock_estimator", "stage2_clock_estimator"),
+            ("stage2_clock_sigma_range_m", "stage2_clock_sigma_range_m"),
+            ("stage2_clock_outlier_kappa", "stage2_clock_outlier_kappa"),
+            ("stage2_delay_sigma_floor_ns", "stage2_delay_sigma_floor_ns"),
+            ("stage2_ris_normalization_scale", "stage2_ris_normalization_scale"),
+            ("stage2_lambda_ris_normalized", "stage2_lambda_ris_normalized"),
+            ("stage2_pllg_max_projection_distance_m", "stage2_pllg_max_projection_distance_m"),
+            ("stage2_selector_guard", "stage2_selector_guard"),
+            ("stage2_selector_raw_degradation_abs_tol", "stage2_selector_raw_degradation_abs_tol"),
+            ("stage2_selector_raw_degradation_rel_tol", "stage2_selector_raw_degradation_rel_tol"),
+            ("stage2_selector_boundary_override_min_rel_improvement", "stage2_selector_boundary_override_min_rel_improvement"),
+        ):
+            value = getattr(args, argument)
+            if value is not None:
+                base_overrides[key] = value
+        if args.stage2_pllg_local_weight_mode is not None:
+            base_overrides["stage2_pllg_local_weight_mode"] = str(args.stage2_pllg_local_weight_mode)
+        if args.stage2_pllg_legacy_fallback is not None:
+            base_overrides["stage2_pllg_legacy_fallback"] = bool(args.stage2_pllg_legacy_fallback)
+        if args.stage2_force_run_for_diagnostics:
+            base_overrides["stage2_force_run_for_diagnostics"] = True
         global_vp_overrides = {}
         if args.global_vp_backend is not None:
             global_vp_overrides["backend"] = args.global_vp_backend
@@ -4858,8 +5674,42 @@ def main(argv: list[str] | None = None) -> None:
         run_mr_sweep()
     else:
         config = default_config()
+        if args.seed_was_set:
+            # Previously --seed only reached the repeat path, so single runs
+            # silently reused config["seed"] and every --seed value produced an
+            # identical realization.
+            config["seed"] = int(args.seed)
         if args.snr_db is not None:
             config["SNR_dB"] = float(args.snr_db[0])
+        if args.stage2_rescue_impl is not None:
+            config["stage2_rescue_impl"] = str(args.stage2_rescue_impl)
+        if args.stage2_pllg_reweight_steps is not None:
+            config["stage2_pllg_reweight_steps"] = int(args.stage2_pllg_reweight_steps)
+        if args.stage2_pllg_cond_max is not None:
+            config["stage2_pllg_cond_max"] = float(args.stage2_pllg_cond_max)
+        for argument, key in (
+            ("stage2_pllg_pseudorange_block_weight", "stage2_pllg_pseudorange_block_weight"),
+            ("stage2_clock_estimator", "stage2_clock_estimator"),
+            ("stage2_clock_sigma_range_m", "stage2_clock_sigma_range_m"),
+            ("stage2_clock_outlier_kappa", "stage2_clock_outlier_kappa"),
+            ("stage2_delay_sigma_floor_ns", "stage2_delay_sigma_floor_ns"),
+            ("stage2_ris_normalization_scale", "stage2_ris_normalization_scale"),
+            ("stage2_lambda_ris_normalized", "stage2_lambda_ris_normalized"),
+            ("stage2_pllg_max_projection_distance_m", "stage2_pllg_max_projection_distance_m"),
+            ("stage2_selector_guard", "stage2_selector_guard"),
+            ("stage2_selector_raw_degradation_abs_tol", "stage2_selector_raw_degradation_abs_tol"),
+            ("stage2_selector_raw_degradation_rel_tol", "stage2_selector_raw_degradation_rel_tol"),
+            ("stage2_selector_boundary_override_min_rel_improvement", "stage2_selector_boundary_override_min_rel_improvement"),
+        ):
+            value = getattr(args, argument)
+            if value is not None:
+                config[key] = value
+        if args.stage2_pllg_local_weight_mode is not None:
+            config["stage2_pllg_local_weight_mode"] = str(args.stage2_pllg_local_weight_mode)
+        if args.stage2_pllg_legacy_fallback is not None:
+            config["stage2_pllg_legacy_fallback"] = bool(args.stage2_pllg_legacy_fallback)
+        if args.stage2_force_run_for_diagnostics:
+            config["stage2_force_run_for_diagnostics"] = True
         if args.global_vp_backend is not None:
             config["global_vp"]["backend"] = args.global_vp_backend
         if args.global_vp_gpu_device is not None:

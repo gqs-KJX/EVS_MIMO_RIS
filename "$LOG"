@@ -1,0 +1,14 @@
+WALL_S 1436.32
+selected_branch ris_only_stage2_then_vp
+direct_probe_z_rescue_disabled True
+direct_z_rescue_rerun_executed False
+direct_z_rescue_rerun_skipped True
+direct_z_rescue_skip_reason stage1_geometry_trigger_rescue_path
+diagnostic_total 1436.319
+stage1 218.095
+direct_probe_branch_s 126.126
+direct_probe_vp_s 125.679
+direct_forced_z_rescue_branch_s 0.0
+rescue_branch_s 1087.245
+rescue_stage2_s 1055.015
+rescue_vp_s 32.231

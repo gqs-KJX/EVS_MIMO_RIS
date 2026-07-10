@@ -151,9 +151,9 @@ def default_config() -> dict:
     k_default = 1
 
     config = {
-        "seed": 20260526,
-        "trials": 1,
-        "SNR_dB": 0.0,
+        "seed": 821394406,
+        "trials": 10,
+        "SNR_dB": -10.0,
         "enable_global_vp": True,
         "stage2_mode": "none",
         "diagnostic_mode": "performance",
@@ -269,7 +269,33 @@ def default_config() -> dict:
         },
         "num_structured_iters": 1,
         "stage2_ris_rescue_max_iters": 1,
-        "stage2_ris_rescue_impl": "robust_jnpp",
+        "stage2_rescue_impl": "legacy_multistart",
+        "stage2_pllg_reweight_steps": 1,
+        "stage2_pllg_cond_max": 1.0e12,
+        "stage2_pllg_local_weight_mode": "auto",
+        # Clock-annihilated pseudorange rows are rank-deficient at K = 3 and
+        # carry ~no information about z (measured z-GDOP 35.1, range-only CRB
+        # sigma_z = 4.2 m).  Enabling them degraded the seed monotonically in
+        # the block-weight sweep, so they are off by default and retained only
+        # as an ablation knob.
+        "stage2_pllg_pseudorange_block_weight": 0.0,
+        "stage2_delay_sigma_floor_ns": 0.5,
+        "stage2_ris_normalization_scale": 1.0e-4,
+        "stage2_lambda_ris_normalized": 1.0,
+        # Exported Stage-II clock: "decoupled_robust" uses the position-free
+        # m_k - r_k replicas with a median/MAD screen; "weighted_mean" restores
+        # the previous non-robust closed-form clock of Phi_S2.
+        "stage2_clock_estimator": "decoupled_robust",
+        "stage2_clock_sigma_range_m": 0.12,
+        "stage2_clock_outlier_kappa": 3.0,
+        "stage2_pllg_max_projection_distance_m": 0.05,
+        "stage2_pllg_legacy_fallback": True,
+        "stage2_force_run_for_diagnostics": False,
+        "stage2_selector_guard": True,
+        "stage2_selector_raw_degradation_abs_tol": 1.0e-8,
+        "stage2_selector_raw_degradation_rel_tol": 1.0e-4,
+        "stage2_selector_boundary_override_min_rel_improvement": 1.0e-3,
+        "stage2_ris_rescue_impl": "local_ris_projection",
         "stage2_ris_rescue_use_damping": False,
         "stage2_ris_rescue_damping_grid": (0.0, 1.0),
         "jnpp_weight_mode": "exponential",
@@ -366,6 +392,9 @@ def default_config() -> dict:
             "finite_difference_check": False,
             "use_analytic_jacobian": True,
             "matrix_free_beta": False,
+            "vp_dictionary_mode": "matrix_free",
+            "vp_debug_compare_explicit": False,
+            "vp_debug_compare_max_evals": 3,
             "enable_z_rescue_multistart": True,
             "z_rescue_num_starts": 7,
             "z_rescue_trigger": "boundary_or_unreliable",

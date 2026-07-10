@@ -88,6 +88,16 @@ def test_variant_filter_defaults_to_none():
     assert args.variant_filter_values is None
 
 
+def test_vp_dictionary_mode_cli_override_without_backend():
+    args = figures.parse_args(
+        ["--vp-dictionary-mode", "matrix_free", "--vp-debug-compare-explicit"]
+    )
+    overrides = figures.global_vp_cli_overrides(args)
+    assert overrides["vp_dictionary_mode"] == "matrix_free"
+    assert overrides["vp_debug_compare_explicit"] is True
+    assert "backend" not in overrides
+
+
 def test_variant_filter_keeps_named_variant_and_peb_alias():
     variants = figures._variants_for_figure(
         "fig1",

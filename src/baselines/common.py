@@ -141,6 +141,37 @@ def proposed_trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
         "ngc_final_unreliable": result.get(
             "ngc_final_unreliable", final.get("ngc_final_unreliable", "")
         ),
+        "vp_dictionary_mode": final.get("vp_dictionary_mode", ""),
+        "vp_dictionary_mode_requested": final.get("vp_dictionary_mode_requested", ""),
+        "vp_jacobian_mode": final.get("vp_jacobian_mode", ""),
+        "vp_matrix_free_enabled": final.get("vp_matrix_free_enabled", ""),
+        "vp_matrix_free_fallback_reason": final.get(
+            "vp_matrix_free_fallback_reason", ""
+        ),
+        "vp_precontract_static_modes": final.get("vp_precontract_static_modes", ""),
+        "vp_factor_cache_hits": final.get("vp_factor_cache_hits", ""),
+        "vp_factor_cache_misses": final.get("vp_factor_cache_misses", ""),
+        "vp_matrix_free_num_objective_calls": final.get(
+            "vp_matrix_free_num_objective_calls", ""
+        ),
+        "vp_matrix_free_debug_num_compares": final.get(
+            "vp_matrix_free_debug_num_compares", ""
+        ),
+        "vp_matrix_free_debug_rel_G_diff": final.get(
+            "vp_matrix_free_debug_rel_G_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_b_diff": final.get(
+            "vp_matrix_free_debug_rel_b_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_x_hat_diff": final.get(
+            "vp_matrix_free_debug_rel_x_hat_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_regularized_objective_diff": final.get(
+            "vp_matrix_free_debug_rel_regularized_objective_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_gradient_diff": final.get(
+            "vp_matrix_free_debug_rel_gradient_diff", ""
+        ),
     }
 
 
@@ -264,6 +295,41 @@ def make_baseline_row(
         "rescue_requested": diagnostics.get("rescue_requested", ""),
         "ngc_selected_by": diagnostics.get("ngc_selected_by", ""),
         "ngc_final_unreliable": diagnostics.get("ngc_final_unreliable", ""),
+        "vp_dictionary_mode": diagnostics.get("vp_dictionary_mode", ""),
+        "vp_dictionary_mode_requested": diagnostics.get(
+            "vp_dictionary_mode_requested", ""
+        ),
+        "vp_jacobian_mode": diagnostics.get("vp_jacobian_mode", ""),
+        "vp_matrix_free_enabled": diagnostics.get("vp_matrix_free_enabled", ""),
+        "vp_matrix_free_fallback_reason": diagnostics.get(
+            "vp_matrix_free_fallback_reason", ""
+        ),
+        "vp_precontract_static_modes": diagnostics.get(
+            "vp_precontract_static_modes", ""
+        ),
+        "vp_factor_cache_hits": diagnostics.get("vp_factor_cache_hits", ""),
+        "vp_factor_cache_misses": diagnostics.get("vp_factor_cache_misses", ""),
+        "vp_matrix_free_num_objective_calls": diagnostics.get(
+            "vp_matrix_free_num_objective_calls", ""
+        ),
+        "vp_matrix_free_debug_num_compares": diagnostics.get(
+            "vp_matrix_free_debug_num_compares", ""
+        ),
+        "vp_matrix_free_debug_rel_G_diff": diagnostics.get(
+            "vp_matrix_free_debug_rel_G_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_b_diff": diagnostics.get(
+            "vp_matrix_free_debug_rel_b_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_x_hat_diff": diagnostics.get(
+            "vp_matrix_free_debug_rel_x_hat_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_regularized_objective_diff": diagnostics.get(
+            "vp_matrix_free_debug_rel_regularized_objective_diff", ""
+        ),
+        "vp_matrix_free_debug_rel_gradient_diff": diagnostics.get(
+            "vp_matrix_free_debug_rel_gradient_diff", ""
+        ),
         "warning": row_warning,
     }
 

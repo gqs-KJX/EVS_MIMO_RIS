@@ -24,13 +24,19 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["M_A"] == 16
     assert config["ris_shape"] == (64, 64)
     assert config["T"] == 256
-    assert config["SNR_dB"] == 0.0
-    assert config["trials"] == 1
+    assert config["SNR_dB"] == -10.0
+    assert config["trials"] == 10
     assert config["num_structured_iters"] == 1
     assert config["stage2_ris_rescue_max_iters"] == 1
-    assert config["stage2_ris_rescue_impl"] == "robust_jnpp"
+    assert config["stage2_ris_rescue_impl"] == "local_ris_projection"
     assert config["stage2_ris_rescue_use_damping"] is False
     assert tuple(config["stage2_ris_rescue_damping_grid"]) == (0.0, 1.0)
+    # The clock-annihilated pseudorange block is z-blind at K = 3 and is kept
+    # only as an ablation knob, so it must stay disabled by default.
+    assert config["stage2_pllg_pseudorange_block_weight"] == 0.0
+    assert config["stage2_clock_estimator"] == "decoupled_robust"
+    assert config["stage2_clock_sigma_range_m"] == 0.12
+    assert config["stage2_clock_outlier_kappa"] == 3.0
     assert config["jnpp_use_confidence_weights"] is True
     assert config["jnpp_rank_weight_rho"] == 2.0
     assert config["jnpp_min_weight"] == 0.05
@@ -140,6 +146,9 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["global_vp"]["finite_difference_check"] is False
     assert config["global_vp"]["use_analytic_jacobian"] is True
     assert config["global_vp"]["matrix_free_beta"] is False
+    assert config["global_vp"]["vp_dictionary_mode"] == "matrix_free"
+    assert config["global_vp"]["vp_debug_compare_explicit"] is False
+    assert config["global_vp"]["vp_debug_compare_max_evals"] == 3
     assert config["stage2_strict_accept_rel"] == 1.0e-6
     assert config["ris_min_relative_improvement"] == 5.0e-3
     assert tuple(config["stage2_damping_grid"]) == (0.0, 0.125, 0.25, 0.5, 0.75, 1.0)
@@ -292,7 +301,9 @@ def test_ngc_certificate_uses_efim_tau_crb_and_marks_bad_clock_red():
     cert = _ngc_certificate("direct", branch, stage1_estimate, scene, config)
 
     assert cert["ngc_direct_clock_sigma_source"] == "data_only_efim_tau_crb"
-    assert "sigma_tau_k" in stage1_estimate
+    # The delay uncertainty is now returned explicitly instead of being cached
+    # back onto Stage-I, so certification no longer depends on call order.
+    assert "sigma_tau_k" not in stage1_estimate
     assert cert["ngc_direct_cert_status"] == "red"
     assert cert["ngc_direct_clock_score_norm"] >= cert["ngc_threshold_clock_red"]
 

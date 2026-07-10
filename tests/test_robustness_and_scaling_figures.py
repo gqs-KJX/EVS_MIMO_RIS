@@ -38,6 +38,37 @@ def _tiny_config(k_paths: int = 1) -> dict:
     return config
 
 
+def test_trim_memory_cli_is_recorded_in_robustness_tasks_and_metadata():
+    args = figures.parse_args(
+        [
+            "--figures",
+            "fig8",
+            "--n-trials",
+            "1",
+            "--baselines",
+            "ff_omp",
+            "--calibration-std-grid",
+            "0",
+            "--assumed-k-grid",
+            "1",
+            "--no-trim-memory",
+        ]
+    )
+    args.resource_plan = {"process_workers": 1, "blas_threads": 1}
+    baselines = figures.baselines_for_figure(
+        "fig8",
+        args.baselines,
+        include_calibration_oracle_peb=args.include_calibration_oracle_peb,
+        include_trueK_peb_reference=args.include_trueK_peb_reference,
+        include_constrained_jones_peb=args.include_constrained_jones_peb,
+    )
+    tasks = figures.build_tasks(args, "fig8", baselines)
+    metadata = figures._metadata_signature(args, "fig8", baselines)
+    assert args.trim_memory is False
+    assert tasks[0]["trim_memory"] is False
+    assert metadata["trim_memory"] is False
+
+
 def test_calibration_phase_error_changes_generation_response_only():
     data = _make_data(_tiny_config())
     nominal = data["scene"]["a_RB"].copy()

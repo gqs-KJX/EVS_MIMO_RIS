@@ -88,6 +88,76 @@ def add_mc_args(
         )
 
 
+def add_stage2_rescue_args(parser: argparse.ArgumentParser) -> None:
+    """Add optional Stage-II rescue backend controls."""
+    parser.add_argument(
+        "--stage2-rescue-impl",
+        choices=("legacy_multistart", "pllg"),
+        default=None,
+    )
+    parser.add_argument("--stage2-pllg-reweight-steps", type=int, choices=(0, 1), default=None)
+    parser.add_argument("--stage2-pllg-cond-max", type=float, default=None)
+    parser.add_argument("--stage2-pllg-pseudorange-block-weight", type=float, default=None)
+    parser.add_argument("--stage2-delay-sigma-floor-ns", type=float, default=None)
+    parser.add_argument("--stage2-ris-normalization-scale", type=float, default=None)
+    parser.add_argument("--stage2-lambda-ris-normalized", type=float, default=None)
+    parser.add_argument("--stage2-pllg-max-projection-distance-m", type=float, default=None)
+    parser.add_argument(
+        "--stage2-pllg-local-weight-mode",
+        choices=("auto", "uniform"),
+        default=None,
+    )
+    parser.add_argument(
+        "--stage2-pllg-legacy-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--stage2-force-run-for-diagnostics",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--stage2-selector-guard",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--stage2-selector-raw-degradation-abs-tol", type=float, default=None)
+    parser.add_argument("--stage2-selector-raw-degradation-rel-tol", type=float, default=None)
+    parser.add_argument(
+        "--stage2-selector-boundary-override-min-rel-improvement",
+        type=float,
+        default=None,
+    )
+
+
+def apply_stage2_rescue_cli_overrides(config: dict, args: argparse.Namespace) -> dict:
+    """Apply explicitly supplied Stage-II controls to a config in place."""
+    mapping = {
+        "stage2_rescue_impl": "stage2_rescue_impl",
+        "stage2_pllg_reweight_steps": "stage2_pllg_reweight_steps",
+        "stage2_pllg_cond_max": "stage2_pllg_cond_max",
+        "stage2_pllg_pseudorange_block_weight": "stage2_pllg_pseudorange_block_weight",
+        "stage2_delay_sigma_floor_ns": "stage2_delay_sigma_floor_ns",
+        "stage2_ris_normalization_scale": "stage2_ris_normalization_scale",
+        "stage2_lambda_ris_normalized": "stage2_lambda_ris_normalized",
+        "stage2_pllg_max_projection_distance_m": "stage2_pllg_max_projection_distance_m",
+        "stage2_pllg_local_weight_mode": "stage2_pllg_local_weight_mode",
+        "stage2_pllg_legacy_fallback": "stage2_pllg_legacy_fallback",
+        "stage2_selector_guard": "stage2_selector_guard",
+        "stage2_selector_raw_degradation_abs_tol": "stage2_selector_raw_degradation_abs_tol",
+        "stage2_selector_raw_degradation_rel_tol": "stage2_selector_raw_degradation_rel_tol",
+        "stage2_selector_boundary_override_min_rel_improvement": "stage2_selector_boundary_override_min_rel_improvement",
+    }
+    for argument, key in mapping.items():
+        value = getattr(args, argument, None)
+        if value is not None:
+            config[key] = value
+    if bool(getattr(args, "stage2_force_run_for_diagnostics", False)):
+        config["stage2_force_run_for_diagnostics"] = True
+    return config
+
+
 def add_progress_args(
     parser: argparse.ArgumentParser,
     *,

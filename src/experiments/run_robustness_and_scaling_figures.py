@@ -190,6 +190,21 @@ FIELDNAMES = [
     "rescue_requested",
     "ngc_selected_by",
     "ngc_final_unreliable",
+    "vp_dictionary_mode",
+    "vp_dictionary_mode_requested",
+    "vp_jacobian_mode",
+    "vp_matrix_free_enabled",
+    "vp_matrix_free_fallback_reason",
+    "vp_precontract_static_modes",
+    "vp_factor_cache_hits",
+    "vp_factor_cache_misses",
+    "vp_matrix_free_num_objective_calls",
+    "vp_matrix_free_debug_num_compares",
+    "vp_matrix_free_debug_rel_G_diff",
+    "vp_matrix_free_debug_rel_b_diff",
+    "vp_matrix_free_debug_rel_x_hat_diff",
+    "vp_matrix_free_debug_rel_regularized_objective_diff",
+    "vp_matrix_free_debug_rel_gradient_diff",
 ]
 
 _PATH_ARRAY_KEYS = (
@@ -1064,6 +1079,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "gpu_batch_size": args.gpu_batch_size,
         "cpu_batch_size": args.cpu_batch_size,
         "gpu_memory_fraction": args.gpu_memory_fraction,
+        "trim_memory": bool(args.trim_memory),
         "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
         "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
         "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
@@ -1130,7 +1146,7 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
                 "max_assumed_K": max(args.assumed_k_grid),
                 "blas_threads": args.blas_threads,
                 "profile_memory": args.profile_memory,
-                "trim_memory": True,
+                "trim_memory": bool(args.trim_memory),
                 "strict_ris_geometry": args.strict_ris_geometry,
                 "backend_config": {
                     "backend": str(args.baseline_backend),
@@ -1205,7 +1221,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         jobs_default=10,
         blas_threads_default="auto",
         include_respect_existing_blas_env=False,
-        include_trim_memory=False,
+        include_trim_memory=True,
     )
     parser.add_argument("--strict-ris-geometry", action="store_true")
     add_progress_args(parser)
