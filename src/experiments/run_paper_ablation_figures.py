@@ -800,6 +800,11 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 **_proposed_ngc_spec(allow_stage2=True),
                 "stage2_rescue_impl": "pllg",
                 "stage2_force_run_for_diagnostics": True,
+                # The estimator disables the pseudorange block by default, and
+                # with weight 0 the PLLG seed collapses onto the legacy seed.
+                # This ablation exists to show what the block does, so it must
+                # switch the block back on explicitly.
+                "stage2_pllg_pseudorange_block_weight": 1.0,
             },
         }
     return {}
