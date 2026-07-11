@@ -115,6 +115,41 @@ def test_wesvp_ms_true_current_eta_recovers_noiseless_response_with_or_without_q
         assert projection["qd_attempted"] is use_qd
 
 
+def test_coarse_exact_multistart_reuses_grid_without_fresnel_lifting():
+    wavelength = 0.05
+    ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)
+    m_dim = ris_grid.shape[0]
+    omega = np.eye(m_dim, dtype=complex)
+    a_rb = np.ones(m_dim, dtype=complex)
+    true_eta = np.array([3.0, 0.08, 0.14])
+    c_tilde = compressed_exact_response(
+        true_eta, omega, a_rb, ris_grid, wavelength
+    )
+    search = _small_search_config("wesvp_ms")
+    search["stage2_warm_start_mode"] = "coarse_exact_multistart"
+    search["stage2_warm_start_shortlist_size"] = 3
+
+    projection = project_ris_factor(
+        c_tilde,
+        omega,
+        a_rb,
+        ris_grid,
+        wavelength,
+        search,
+        current_eta=true_eta + np.array([0.2, -0.04, 0.05]),
+    )
+
+    assert projection["stage2_warm_start_mode"] == "coarse_exact_multistart"
+    assert projection["coarse_shortlist_used_as_starts"] is True
+    assert projection["stage2_time_ris_fresnel_lift"] == 0.0
+    assert projection["stage2_num_exact_starts"] >= 3
+    assert any(
+        source.startswith("coarse_shortlist_")
+        for source in projection["candidate_sources"]
+    )
+    assert projection["relative_residual"] < 1.0e-6
+
+
 def test_wesvp_ms_works_with_qd_disabled_using_current_eta_and_exact_grid():
     wavelength = 0.05
     ris_grid = make_ris_grid(5, 5, wavelength / 2.0, wavelength / 2.0)

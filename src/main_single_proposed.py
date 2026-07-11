@@ -79,8 +79,24 @@ REPEAT_TRIAL_FIELDS = [
     "distance_to_position_box_boundary_m",
     "z_rescue_triggered",
     "z_rescue_num_starts",
+    "z_rescue_strategy",
+    "z_rescue_num_probes",
+    "z_rescue_num_full_refines",
+    "z_rescue_probe_runtime_s",
+    "z_rescue_full_refine_runtime_s",
+    "z_rescue_refine_vp_mode",
     "z_rescue_best_z",
     "z_rescue_selected_reason",
+    "stage2_warm_start_mode",
+    "stage2_ris_warm_start_runtime_s",
+    "stage2_ris_fresnel_lift_runtime_s",
+    "stage2_ris_refine_runtime_s",
+    "adaptive_jones_triggered",
+    "adaptive_jones_trigger_reason",
+    "global_vp_fixed_anchor_runtime_s",
+    "global_vp_jones_runtime_s",
+    "global_vp_optimizer_nfev",
+    "global_vp_actual_residual_calls",
     "direct_boundary_hit",
     "rescue_boundary_hit",
     "branch_score_margin",
@@ -102,6 +118,10 @@ REPEAT_NUMERIC_METRICS = [
         "adaptive_enabled",
         "boundary_hit_axis",
         "z_rescue_selected_reason",
+        "z_rescue_strategy",
+        "z_rescue_refine_vp_mode",
+        "stage2_warm_start_mode",
+        "adaptive_jones_trigger_reason",
         "warning",
     }
 ]
@@ -1430,6 +1450,12 @@ def run_ris_only_stage2_branch(
             ),
             "stage2_time_ris_correlation": float(
                 structured_diag.get("stage2_time_ris_correlation", 0.0)
+            ),
+            "stage2_time_ris_warm_start": float(
+                structured_diag.get("stage2_time_ris_warm_start", 0.0)
+            ),
+            "stage2_time_ris_fresnel_lift": float(
+                structured_diag.get("stage2_time_ris_fresnel_lift", 0.0)
             ),
             "stage2_time_ris_refine": float(
                 structured_diag.get("stage2_time_ris_refine", 0.0)
@@ -2859,6 +2885,12 @@ def run_from_existing_stage1(
     if total_start is None:
         total_start = time.perf_counter()
     config = _apply_main_single_defaults(copy.deepcopy(config))
+    try:
+        noise_variance = float(data.get("noise_variance", np.nan))
+    except (TypeError, ValueError):
+        noise_variance = float("nan")
+    if np.isfinite(noise_variance) and noise_variance > 0.0:
+        config.setdefault("noise_variance", noise_variance)
     base_timing = dict(data.get("timing", {}))
     stage1_estimate = stage1["estimate"]
     base_timing.update(stage1["timing"])
@@ -4480,6 +4512,14 @@ def _print_selected_runtime(results: dict) -> None:
         f"{_fmt(stage2_timing.get('stage2_time_ris_correlation'))}"
     )
     print(
+        "stage2_ris_warm_start_time = "
+        f"{_fmt(stage2_timing.get('stage2_time_ris_warm_start'))}"
+    )
+    print(
+        "stage2_ris_fresnel_lift_time = "
+        f"{_fmt(stage2_timing.get('stage2_time_ris_fresnel_lift'))}"
+    )
+    print(
         "stage2_ris_refine_time = "
         f"{_fmt(stage2_timing.get('stage2_time_ris_refine'))}"
     )
@@ -4548,7 +4588,39 @@ def _print_selected_runtime(results: dict) -> None:
         "global_vp_residual_eval_time_mean = "
         f"{_fmt(final.get('global_vp_residual_eval_time_mean'))}"
     )
+    print(
+        "global_vp_residual_eval_time_total = "
+        f"{_fmt(final.get('global_vp_residual_eval_time_total'))}"
+    )
     print(f"global_vp_num_residual_calls = {final.get('global_vp_num_residual_calls', 'NA')}")
+    print(f"global_vp_optimizer_nfev = {final.get('global_vp_optimizer_nfev', 'NA')}")
+    print(
+        "global_vp_fixed_anchor_runtime_s = "
+        f"{_fmt(final.get('global_vp_fixed_anchor_runtime_s'))}"
+    )
+    print(
+        "global_vp_jones_runtime_s = "
+        f"{_fmt(final.get('global_vp_jones_runtime_s'))}"
+    )
+    print(f"adaptive_jones_triggered = {final.get('adaptive_jones_triggered', 'NA')}")
+    print(
+        "adaptive_jones_trigger_reason = "
+        f"{final.get('adaptive_jones_trigger_reason', 'NA')}"
+    )
+    print(f"z_rescue_strategy = {final.get('z_rescue_strategy', 'NA')}")
+    print(f"z_rescue_num_probes = {final.get('z_rescue_num_probes', 'NA')}")
+    print(
+        "z_rescue_num_full_refines = "
+        f"{final.get('z_rescue_num_full_refines', 'NA')}"
+    )
+    print(
+        "z_rescue_probe_runtime_s = "
+        f"{_fmt(final.get('z_rescue_probe_runtime_s'))}"
+    )
+    print(
+        "z_rescue_full_refine_runtime_s = "
+        f"{_fmt(final.get('z_rescue_full_refine_runtime_s'))}"
+    )
     print(f"global_vp_jacobian_mode = {final.get('global_vp_jacobian_mode', 'NA')}")
     print(f"global_vp_s = {_fmt(timing.get('vp'))}")
     if bool(results.get("stage1_config", {}).get("verbose_timing", False)):
@@ -4829,7 +4901,14 @@ def _empty_repeat_trial_row(
             "boundary_hit_axis": "",
             "z_rescue_triggered": False,
             "z_rescue_num_starts": 0,
+            "z_rescue_strategy": "",
+            "z_rescue_num_probes": 0,
+            "z_rescue_num_full_refines": 0,
+            "z_rescue_refine_vp_mode": "",
             "z_rescue_selected_reason": "",
+            "stage2_warm_start_mode": "",
+            "adaptive_jones_triggered": False,
+            "adaptive_jones_trigger_reason": "",
             "direct_boundary_hit": False,
             "rescue_boundary_hit": False,
             "boundary_selection_rule_used": False,
@@ -4884,6 +4963,21 @@ def _extract_repeat_trial_metrics(
     boundary_axis = boundary["boundary_hit_axis"]
     if isinstance(boundary_axis, list):
         boundary_axis = ",".join(boundary_axis)
+    timing = result.get("timing", {})
+    structured_diag = result.get("structured_diag", {})
+    ris_details = (
+        structured_diag.get("updates", [{}])[0].get("ris_projection_details", [])
+        if structured_diag.get("updates")
+        else []
+    )
+    stage2_warm_start_mode = next(
+        (
+            str(detail.get("stage2_warm_start_mode"))
+            for detail in ris_details
+            if detail.get("stage2_warm_start_mode")
+        ),
+        "",
+    )
     row.update(
         {
             "runtime_s": float(runtime_s),
@@ -4952,9 +5046,51 @@ def _extract_repeat_trial_metrics(
             ),
             "z_rescue_triggered": bool(final.get("z_rescue_triggered", False)),
             "z_rescue_num_starts": int(final.get("z_rescue_num_starts", 0)),
+            "z_rescue_strategy": str(final.get("z_rescue_strategy", "")),
+            "z_rescue_num_probes": int(final.get("z_rescue_num_probes", 0)),
+            "z_rescue_num_full_refines": int(
+                final.get("z_rescue_num_full_refines", 0)
+            ),
+            "z_rescue_probe_runtime_s": _repeat_float(
+                final.get("z_rescue_probe_runtime_s")
+            ),
+            "z_rescue_full_refine_runtime_s": _repeat_float(
+                final.get("z_rescue_full_refine_runtime_s")
+            ),
+            "z_rescue_refine_vp_mode": str(
+                final.get("z_rescue_refine_vp_mode", "")
+            ),
             "z_rescue_best_z": _repeat_float(final.get("z_rescue_best_z")),
             "z_rescue_selected_reason": str(
                 final.get("z_rescue_selected_reason", "")
+            ),
+            "stage2_warm_start_mode": stage2_warm_start_mode,
+            "stage2_ris_warm_start_runtime_s": _repeat_float(
+                timing.get("stage2_time_ris_warm_start")
+            ),
+            "stage2_ris_fresnel_lift_runtime_s": _repeat_float(
+                timing.get("stage2_time_ris_fresnel_lift")
+            ),
+            "stage2_ris_refine_runtime_s": _repeat_float(
+                timing.get("stage2_time_ris_refine")
+            ),
+            "adaptive_jones_triggered": bool(
+                final.get("adaptive_jones_triggered", False)
+            ),
+            "adaptive_jones_trigger_reason": str(
+                final.get("adaptive_jones_trigger_reason", "")
+            ),
+            "global_vp_fixed_anchor_runtime_s": _repeat_float(
+                final.get("global_vp_fixed_anchor_runtime_s")
+            ),
+            "global_vp_jones_runtime_s": _repeat_float(
+                final.get("global_vp_jones_runtime_s")
+            ),
+            "global_vp_optimizer_nfev": _repeat_float(
+                final.get("global_vp_optimizer_nfev")
+            ),
+            "global_vp_actual_residual_calls": _repeat_float(
+                final.get("global_vp_num_residual_calls")
             ),
             "direct_boundary_hit": bool(
                 result.get("direct_boundary_hit", final.get("direct_boundary_hit", False))

@@ -2,6 +2,7 @@ import csv
 
 import numpy as np
 
+from src import global_vp
 from src import main_single_proposed as main_single
 from src.config import default_config
 from src.global_vp import (
@@ -34,6 +35,59 @@ def test_z_rescue_starts_span_bounds_and_include_interior_values():
     assert np.isclose(z_values[-1], 1.43)
     assert np.any((z_values > 0.5) & (z_values < 1.3))
     assert all(np.allclose(start[:2], [1.2, 0.3]) for start in starts)
+
+
+def test_probe_then_refine_runs_only_best_z_start_and_stops_at_noise_floor(
+    monkeypatch,
+):
+    config = default_config()
+    config["noise_variance"] = 1.0
+    config["global_vp"] = dict(config["global_vp"])
+    config["global_vp"].update(
+        {
+            "z_rescue_strategy": "probe_then_refine",
+            "z_rescue_num_starts": 7,
+            "z_rescue_num_full_refines": 2,
+            "z_rescue_early_stop_noise_floor_factor": 1.02,
+        }
+    )
+    scene = {"K": 1, "I": 1, "N": 1, "T": 1}
+    full_calls = []
+    probe_calls = []
+
+    def fake_once(y_raw, estimate, scene_arg, config_arg):
+        start = np.asarray(
+            estimate.get("_global_vp_initial_p_u", [1.2, 0.3, 1.45]), dtype=float
+        )
+        full_calls.append(float(start[2]))
+        score = 1.0 + (float(start[2]) - 0.75) ** 2
+        return {
+            "p_u": start.copy(),
+            "delta_t": 0.0,
+            "raw_objective_final": score,
+            "raw_objective": score,
+            "global_vp_success": True,
+        }
+
+    def fake_probe(y_raw, estimate, scene_arg, config_arg):
+        start = np.asarray(estimate["_global_vp_initial_p_u"], dtype=float)
+        probe_calls.append(float(start[2]))
+        score = 1.0 + (float(start[2]) - 0.75) ** 2
+        return {"raw_objective_final": score}
+
+    monkeypatch.setattr(global_vp, "_global_exact_spherical_vp_refinement_once", fake_once)
+    monkeypatch.setattr(global_vp, "_legacy_vp_initial_result", fake_probe)
+
+    result = global_vp.global_exact_spherical_vp_refinement(
+        np.ones((1, 1, 1), dtype=complex), {}, scene, config
+    )
+
+    assert len(probe_calls) == 7
+    assert len(full_calls) == 2  # normal plus one shortlisted full refinement
+    assert result["z_rescue_num_full_refines"] == 1
+    assert result["z_rescue_num_probes"] == 7
+    assert result["z_rescue_strategy"] == "probe_then_refine"
+    assert abs(result["p_u"][2] - 0.75) < 0.05
 
 
 def test_z_rescue_selection_chooses_lower_raw_objective():
@@ -187,4 +241,3 @@ def test_rerun_seeds_are_parsed_and_used_exactly(tmp_path, monkeypatch):
     )
     assert captured["rerun_seeds"] == seeds
     assert captured["n_runs"] == 3
-

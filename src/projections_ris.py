@@ -902,6 +902,8 @@ def _project_ris_factor_wesvp_ms(
     timing = {
         "stage2_time_ris_codebook_build": 0.0,
         "stage2_time_ris_correlation": 0.0,
+        "stage2_time_ris_warm_start": 0.0,
+        "stage2_time_ris_fresnel_lift": 0.0,
         "stage2_time_ris_refine": 0.0,
     }
     lower, upper = _ris_search_bounds(search_config)
@@ -1011,32 +1013,59 @@ def _project_ris_factor_wesvp_ms(
 
     use_fresnel = bool(search_config.get("use_fresnel_warm_start", True))
     use_fresnel = use_fresnel and projection_mode == "wesvp_ms"
+    warm_start_mode = str(
+        search_config.get("stage2_warm_start_mode", "legacy_lifted")
+    ).lower()
     lifted_best = None
     fresnel_used_as_start = False
+    coarse_shortlist_used_as_starts = False
+    warm_start_begin = time.perf_counter()
     if use_fresnel:
-        num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
-        num_lift_steps = int(search_config.get("num_lift_steps", 3))
-        lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
-        ris_pgd_step_scale = float(search_config.get("ris_pgd_step_scale", 0.5))
-        for _, eta_candidate in coarse_candidates[:num_lift_candidates]:
-            lifted = _compressed_lifted_candidate(
-                c_tilde,
-                eta_candidate,
-                omega,
-                a_rb,
-                ris_grid,
-                wavelength,
-                eps,
-                num_lift_steps,
-                lambda_phys,
-                ris_pgd_step_scale,
-            )
-            if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
-                lifted_best = lifted
-        if lifted_best is not None:
-            if _eta_within_bounds(lifted_best["eta_local"], refine_lower, refine_upper):
+        if warm_start_mode == "legacy_lifted":
+            lift_begin = time.perf_counter()
+            num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
+            num_lift_steps = int(search_config.get("num_lift_steps", 3))
+            lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
+            ris_pgd_step_scale = float(search_config.get("ris_pgd_step_scale", 0.5))
+            for _, eta_candidate in coarse_candidates[:num_lift_candidates]:
+                lifted = _compressed_lifted_candidate(
+                    c_tilde,
+                    eta_candidate,
+                    omega,
+                    a_rb,
+                    ris_grid,
+                    wavelength,
+                    eps,
+                    num_lift_steps,
+                    lambda_phys,
+                    ris_pgd_step_scale,
+                )
+                if lifted_best is None or lifted["objective"] < lifted_best["objective"]:
+                    lifted_best = lifted
+            timing["stage2_time_ris_fresnel_lift"] += time.perf_counter() - lift_begin
+            if lifted_best is not None and _eta_within_bounds(
+                lifted_best["eta_local"], refine_lower, refine_upper
+            ):
                 starts.append((lifted_best["eta_local"], "fresnel"))
                 fresnel_used_as_start = True
+        elif warm_start_mode == "coarse_exact_multistart":
+            shortlist_size = max(
+                1,
+                int(
+                    search_config.get(
+                        "stage2_warm_start_shortlist_size",
+                        search_config.get("num_lift_candidates", 4),
+                    )
+                ),
+            )
+            for rank, (_, eta_candidate) in enumerate(
+                coarse_candidates[:shortlist_size], start=1
+            ):
+                starts.append((eta_candidate, f"coarse_shortlist_{rank}"))
+            coarse_shortlist_used_as_starts = True
+        else:
+            raise ValueError(f"unknown stage2_warm_start_mode {warm_start_mode!r}")
+    timing["stage2_time_ris_warm_start"] += time.perf_counter() - warm_start_begin
 
     unique_starts: list[tuple[np.ndarray, str]] = []
     for eta_start, source in starts:
@@ -1274,6 +1303,9 @@ def _project_ris_factor_wesvp_ms(
         "lifted_available": lifted_best is not None,
         "lifted_used": False,
         "lifted_used_for_start": bool(fresnel_used_as_start),
+        "coarse_shortlist_used_as_starts": bool(coarse_shortlist_used_as_starts),
+        "stage2_warm_start_mode": warm_start_mode if use_fresnel else "disabled",
+        "stage2_num_exact_starts": int(len(unique_starts)),
         "lifted_relative_residual": None
         if lifted_best is None
         else float(np.sqrt(lifted_best["data_residual"] / c_norm_sq)),
@@ -1326,8 +1358,23 @@ def _project_ris_factor_legacy(
     )
 
     projection_mode = str(search_config.get("projection_mode", "paper")).lower()
-    use_local_grid = current_eta is not None and projection_mode != "exact"
-    if use_local_grid:
+    coarse_refine_starts = search_config.get("_coarse_refine_starts")
+    use_prescreened_starts = coarse_refine_starts is not None
+    use_local_grid = (
+        current_eta is not None
+        and projection_mode != "exact"
+        and not use_prescreened_starts
+    )
+    if use_prescreened_starts:
+        refine_lower = lower
+        refine_upper = upper
+        grid_candidates = [
+            np.clip(np.asarray(eta, dtype=float), lower, upper)
+            for eta in coarse_refine_starts
+        ]
+        if not grid_candidates:
+            raise ValueError("_coarse_refine_starts must contain at least one eta")
+    elif use_local_grid:
         center = np.clip(np.asarray(current_eta, dtype=float), lower, upper)
         range_span = float(search_config.get("stage2_range_span", 0.45))
         angle_span = float(search_config.get("stage2_angle_span", 0.12))
@@ -1355,12 +1402,13 @@ def _project_ris_factor_legacy(
         refine_lower = lower
         refine_upper = upper
 
-    grid_candidates = [
-        np.array([range_m, elevation, azimuth], dtype=float)
-        for range_m in r_grid
-        for elevation in e_grid
-        for azimuth in a_grid
-    ]
+    if not use_prescreened_starts:
+        grid_candidates = [
+            np.array([range_m, elevation, azimuth], dtype=float)
+            for range_m in r_grid
+            for elevation in e_grid
+            for azimuth in a_grid
+        ]
 
     coarse_candidates = []
     for eta_local in grid_candidates:

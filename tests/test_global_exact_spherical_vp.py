@@ -325,7 +325,13 @@ def test_adaptive_jones_leakage_guard_selects_fixed_pol(monkeypatch):
     y_raw = np.ones((1, 1, 4), dtype=complex)
     config = default_config()
     config["global_vp"] = dict(config["global_vp"])
-    config["global_vp"].update({"mode": "adaptive_jones", "jones_leakage_threshold": 0.25})
+    config["global_vp"].update(
+        {
+            "mode": "adaptive_jones",
+            "jones_leakage_threshold": 0.25,
+            "enable_z_rescue_multistart": False,
+        }
+    )
 
     def fake_fixed(*args, **kwargs):
         return {
@@ -370,6 +376,7 @@ def test_adaptive_jones_selects_jones_when_score_is_better(monkeypatch):
     config = default_config()
     config["global_vp"] = dict(config["global_vp"])
     config["global_vp"]["mode"] = "adaptive_jones"
+    config["global_vp"]["enable_z_rescue_multistart"] = False
 
     def fake_fixed(*args, **kwargs):
         return {
@@ -404,6 +411,59 @@ def test_adaptive_jones_selects_jones_when_score_is_better(monkeypatch):
     result = global_vp.global_exact_spherical_vp_refinement(y_raw, {}, scene, config)
     assert result["selected_vp_family_branch"] == "adaptive_jones"
     assert result["jones_score"] < result["fixed_pol_score"]
+
+
+def test_adaptive_jones_skips_when_fixed_anchor_reaches_known_noise_floor(monkeypatch):
+    import src.global_vp as global_vp
+
+    scene = {"K": 1, "I": 1, "N": 1, "T": 8}
+    y_raw = np.ones((1, 1, 8), dtype=complex)
+    config = default_config()
+    config["noise_variance"] = 1.0
+    config["global_vp"] = dict(config["global_vp"])
+    config["global_vp"].update(
+        {
+            "mode": "adaptive_jones",
+            "adaptive_jones_trigger_mode": "noise_floor",
+            "adaptive_jones_noise_floor_factor": 1.02,
+            "enable_z_rescue_multistart": False,
+        }
+    )
+
+    def fake_fixed(*args, **kwargs):
+        return {
+            "p_u": np.zeros(3),
+            "delta_t": 0.0,
+            "raw_objective_final": 1.01,
+            "raw_objective": 1.01,
+            "Y_hat": y_raw.copy(),
+            "beta_raw": np.ones(1, dtype=complex),
+            "linear_nuisance_dim": 1,
+            "nonlinear_dim": 6,
+            "global_vp_success": True,
+        }
+
+    def fail_jones(*args, **kwargs):
+        raise AssertionError("Jones branch should be skipped at the noise floor")
+
+    monkeypatch.setattr(
+        global_vp, "_global_exact_spherical_vp_refinement_least_squares", fake_fixed
+    )
+    monkeypatch.setattr(
+        global_vp, "_global_exact_spherical_vp_refinement_lbfgsb_reduced", fail_jones
+    )
+    monkeypatch.setattr(
+        global_vp,
+        "_adaptive_jones_lambdas",
+        lambda *args, **kwargs: (np.array([1.0]), np.array([1.0])),
+    )
+
+    result = global_vp.global_exact_spherical_vp_refinement(y_raw, {}, scene, config)
+
+    assert result["selected_vp_family_branch"] == "fixed_pol_anchor"
+    assert result["adaptive_jones_triggered"] is False
+    assert result["adaptive_jones_trigger_reason"] == "fixed_at_noise_floor"
+    assert result["global_vp_jones_runtime_s"] == 0.0
 
 
 def test_main_single_smoke_run_executes():

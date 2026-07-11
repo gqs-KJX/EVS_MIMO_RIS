@@ -25,7 +25,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["ris_shape"] == (64, 64)
     assert config["T"] == 256
     assert config["SNR_dB"] == -10.0
-    assert config["trials"] == 10
+    assert config["trials"] == 1
     assert config["num_structured_iters"] == 1
     assert config["stage2_ris_rescue_max_iters"] == 1
     assert config["stage2_ris_rescue_impl"] == "local_ris_projection"
@@ -92,7 +92,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["stage1_factor_init"] == "hankel_coupled_ls"
     assert config["stage1_factor_reg"] == 1.0e-10
     assert config["stage1_factor_reg_mode"] == "relative"
-    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["stage1_ris_geometry_mode"] == "coarse_to_exact_assignment"
     assert config["ris_search"]["projection_mode"] == "wesvp_ms"
     assert config["ris_search"]["use_qd_init"] is False
     assert config["ris_search"]["qd_proxy_reg"] == 1.0e-6
@@ -102,6 +102,12 @@ def test_default_config_matches_single_diagnostic_defaults():
     assert config["ris_search"]["wesvp_ftol"] == 1.0e-12
     assert config["ris_search"]["wesvp_gtol"] == 1.0e-8
     assert config["ris_search"]["use_fresnel_warm_start"] is True
+    assert config["ris_search"]["stage2_warm_start_mode"] == "coarse_exact_multistart"
+    assert config["ris_search"]["stage2_warm_start_shortlist_size"] == 4
+    assert config["global_vp"]["adaptive_jones_trigger_mode"] == "noise_floor"
+    assert config["global_vp"]["adaptive_jones_max_iter"] == 20
+    assert config["global_vp"]["z_rescue_strategy"] == "probe_then_refine"
+    assert config["global_vp"]["z_rescue_refine_vp_mode"] == "fixed_pol"
     assert config["ris_centers"].shape == (3, 3)
     assert config["stage2_enable_evs"] is False
     assert config["stage2_enable_delay"] is False
@@ -356,7 +362,7 @@ def test_stage1_light_and_heavy_presets_are_explicit():
     config = default_config()
     apply_stage1_init_preset(config, "paper_balanced")
     assert config["stage1_init_mode"] == "paper_balanced"
-    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["stage1_ris_geometry_mode"] == "coarse_to_exact_assignment"
     assert config["ris_search"]["num_range"] == 9
     assert config["ris_search"]["num_elev"] == 5
     assert config["ris_search"]["num_az"] == 13
@@ -376,7 +382,7 @@ def test_stage1_light_and_heavy_presets_are_explicit():
 
     apply_stage1_init_preset(config, "normal_heavy")
     assert config["stage1_init_mode"] == "normal_heavy"
-    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["stage1_ris_geometry_mode"] == "coarse_to_exact_assignment"
     assert config["ris_search"]["num_range"] == 15
     assert config["ris_search"]["num_elev"] == 9
     assert config["ris_search"]["num_az"] == 25

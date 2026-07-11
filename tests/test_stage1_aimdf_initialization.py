@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from src.channel_model import channel_components, generate_scene, synthesize_raw_tensor
-from src.config import default_config
+from src.config import apply_stage1_init_preset, default_config
 from src.estimators import (
     _coupled_hankel_factor_initialization,
     _fit_z_model,
@@ -15,6 +15,7 @@ from src.projections_delay import (
     bq_from_poles,
     estimate_poles_aimdf_asym_tls_from_hankel,
     estimate_poles_aimdf_tls_from_hankel,
+    estimate_poles_aimdf_tls_from_hankel_with_diagnostics,
     estimate_poles_esprit_from_hankel,
 )
 from src.tensor_utils import hankelize_frequency, reconstruct_z
@@ -110,17 +111,45 @@ def test_stage1_fullfreq_tls_still_available():
     assert estimate["stage1_delay_singular_values"].size >= scene["K"]
 
 
+def test_covariance_eigh_delay_subspace_matches_svd():
+    rng = np.random.default_rng(117)
+    i_dim, p_dim, l_dim, t_dim, k_paths = 5, 5, 5, 7, 3
+    poles = np.exp(1j * np.array([-0.71, 0.23, 1.08]))
+    a_mat = _complex_normal(rng, (i_dim, k_paths))
+    c_mat = _complex_normal(rng, (t_dim, k_paths))
+    beta = _complex_normal(rng, (k_paths,))
+    b_mat, q_mat = bq_from_poles(poles, p_dim, l_dim)
+    z_tensor = reconstruct_z(beta, a_mat, b_mat, q_mat, c_mat)
+
+    svd_poles, svd_diag = estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
+        z_tensor, k_paths, subspace_solver="svd"
+    )
+    eigh_poles, eigh_diag = estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
+        z_tensor, k_paths, subspace_solver="covariance_eigh"
+    )
+
+    assert _best_phase_error(eigh_poles, svd_poles) < 1.0e-10
+    np.testing.assert_allclose(
+        eigh_diag["singular_values"][:k_paths],
+        svd_diag["singular_values"][:k_paths],
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+
+
 def test_default_config_contains_explicit_stage1_options():
     config = default_config()
 
     assert config["stage1_init_mode"] == "paper_stable"
     assert config["stage1_delay_method"] == "aimdf_fullfreq_tls"
+    assert config["stage1_delay_subspace_solver"] == "covariance_eigh"
     assert config["stage1_forward_backward"] is True
     assert config["stage1_tls"] is True
     assert config["stage1_factor_init"] == "hankel_coupled_ls"
     assert config["stage1_factor_reg_mode"] == "relative"
     assert config["stage1_factor_reg_rel"] == 1.0e-6
-    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["stage1_ris_geometry_mode"] == "coarse_to_exact_assignment"
+    assert config["stage1_assignment_num_exact_permutations"] == 2
     assert config["ris_search"]["num_range"] == 15
     assert config["ris_search"]["num_elev"] == 9
     assert config["ris_search"]["num_az"] == 25
@@ -359,6 +388,10 @@ def test_initialize_from_hankel_returns_expected_keys_and_rebuilds_bq_from_poles
         "stage1_ris_residuals",
         "stage1_max_ris_residual",
         "stage1_ris_residual_type",
+        "stage1_local_geometry_valid",
+        "stage1_delay_valid",
+        "stage1_boundary_hit",
+        "stage1_assignment_confident",
         "stage1_time_delay_estimation",
         "stage1_time_vandermonde_reconstruction",
         "stage1_time_coupled_ls",
@@ -399,6 +432,14 @@ def test_initialize_from_hankel_returns_expected_keys_and_rebuilds_bq_from_poles
     )
     assert len(estimate["stage1_ris_residuals"]) == scene["K"]
     assert np.isfinite(estimate["stage1_max_ris_residual"])
+    for key in (
+        "stage1_local_geometry_valid",
+        "stage1_delay_valid",
+        "stage1_boundary_hit",
+        "stage1_assignment_confident",
+    ):
+        assert estimate[key].shape == (scene["K"],)
+        assert estimate[key].dtype == bool
     for key in (
         "stage1_time_delay_estimation",
         "stage1_time_coupled_ls",
@@ -456,12 +497,10 @@ def test_stage1_physical_panel_ordering():
     assert estimate["A"].shape[1] == scene["K"]
 
 
-def test_stage1_paper_balanced_uses_legacy_fast_projection_not_coarse():
-    from src.config import apply_stage1_init_preset
-
+def test_stage1_paper_balanced_uses_coarse_to_exact_assignment():
     config = default_config()
     apply_stage1_init_preset(config, "paper_balanced")
-    assert config["stage1_ris_geometry_mode"] == "legacy_fast_projection"
+    assert config["stage1_ris_geometry_mode"] == "coarse_to_exact_assignment"
     assert config["ris_search"]["num_exact_refine_starts"] == 3
     assert config["ris_search"]["num_lift_candidates"] == 3
     assert config["ris_search"]["num_lift_steps"] == 3
@@ -501,3 +540,71 @@ def test_stage1_paper_balanced_final_vp_not_worse_than_current_by_more_than_tole
     exact = initialize_from_hankel(z_tensor, scene, exact_config)
 
     assert paper["initial_z_residual"] <= exact["initial_z_residual"] + 5.0e-1
+
+
+def _small_stage1_assignment_case(seed: int = 115):
+    rng = np.random.default_rng(seed)
+    config = default_config()
+    config.update(
+        {
+            "K": 2,
+            "M_A": 1,
+            "ris_shape": (4, 4),
+            "N": 9,
+            "P": 5,
+            "T": 12,
+            "ris_centers": config["ris_centers"][:2].copy(),
+        }
+    )
+    apply_stage1_init_preset(config, "smoke")
+    config["ris_search"]["num_exact_refine_starts"] = 2
+    scene = generate_scene(config, rng)
+    components = channel_components(
+        scene,
+        scene["p_u_true"],
+        scene["delta_t_true"],
+        scene["gamma_true"],
+        scene["eta_true"],
+    )
+    y_tensor = synthesize_raw_tensor(components, scene["beta_true"])
+    return config, scene, hankelize_frequency(y_tensor, scene["P"])
+
+
+def test_stage1_coarse_to_exact_shortlist_refines_only_selected_pairs():
+    config, scene, z_tensor = _small_stage1_assignment_case()
+    config["stage1_ris_geometry_mode"] = "coarse_to_exact_assignment"
+    config["stage1_assignment_num_exact_permutations"] = 1
+
+    estimate = initialize_from_hankel(z_tensor, scene, config)
+
+    assert estimate["stage1_assignment_num_coarse_pairs"] == 4
+    assert estimate["stage1_assignment_num_exact_pairs"] == 2
+    assert len(estimate["stage1_shortlisted_assignments"]) == 1
+    assert estimate["assignment"] == list(estimate["stage1_shortlisted_assignments"][0])
+    refined_mask = estimate["stage1_exact_refined_mask_col_by_panel"]
+    assert np.count_nonzero(refined_mask) == 2
+    assert all(refined_mask[col, panel] for col, panel in enumerate(estimate["assignment"]))
+    assert np.all(np.isfinite(estimate["assignment_costs_col_by_panel"]))
+
+
+def test_stage1_coarse_to_exact_matches_full_exact_when_all_permutations_shortlisted():
+    config, scene, z_tensor = _small_stage1_assignment_case(seed=116)
+    exact_config = dict(config)
+    exact_config["ris_search"] = dict(config["ris_search"])
+    exact_config["stage1_ris_geometry_mode"] = "legacy_fast_projection"
+    hybrid_config = dict(config)
+    hybrid_config["ris_search"] = dict(config["ris_search"])
+    hybrid_config["stage1_ris_geometry_mode"] = "coarse_to_exact_assignment"
+    hybrid_config["stage1_assignment_num_exact_permutations"] = 2
+
+    exact = initialize_from_hankel(z_tensor, scene, exact_config)
+    hybrid = initialize_from_hankel(z_tensor, scene, hybrid_config)
+
+    assert hybrid["stage1_assignment_num_exact_pairs"] == 4
+    assert hybrid["assignment"] == exact["assignment"]
+    np.testing.assert_allclose(hybrid["ris_eta"], exact["ris_eta"], atol=1.0e-9)
+    np.testing.assert_allclose(
+        hybrid["assignment_costs_col_by_panel"],
+        exact["assignment_costs_col_by_panel"],
+        atol=1.0e-10,
+    )

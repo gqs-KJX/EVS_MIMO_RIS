@@ -400,12 +400,32 @@ def _esprit_rotation(
     return np.linalg.lstsq(upper, lower, rcond=None)[0], False
 
 
+def _left_subspace_decomposition(
+    matrix: np.ndarray,
+    solver: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return left singular vectors and singular values without requiring Vh."""
+    selected_solver = str(solver).lower()
+    if selected_solver == "svd":
+        u_mat, s_val, _ = np.linalg.svd(matrix, full_matrices=False)
+        return u_mat, s_val
+    if selected_solver != "covariance_eigh":
+        raise ValueError(f"unknown Stage-I delay subspace solver {solver!r}")
+    covariance = matrix @ matrix.conj().T
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    rank_dim = min(matrix.shape)
+    order = np.argsort(eigenvalues, kind="mergesort")[::-1][:rank_dim]
+    s_val = np.sqrt(np.maximum(eigenvalues[order], 0.0))
+    return eigenvectors[:, order], s_val
+
+
 def estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
     z_tensor: np.ndarray,
     k_paths: int,
     forward_backward: bool = True,
     tls: bool = True,
     eps: float = 1e-12,
+    subspace_solver: str = "svd",
 ) -> tuple[np.ndarray, dict]:
     """Estimate full-frequency A-IMDF poles and return Stage-I diagnostics."""
     assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
@@ -420,7 +440,7 @@ def estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
     else:
         y_aug = y_freq
 
-    u_mat, s_val, _ = np.linalg.svd(y_aug, full_matrices=False)
+    u_mat, s_val = _left_subspace_decomposition(y_aug, subspace_solver)
     signal_subspace = u_mat[:, :k_paths]
     psi, used_tls = _esprit_rotation(
         signal_subspace[:-1, :], signal_subspace[1:, :], k_paths, tls
@@ -440,6 +460,7 @@ def estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
         "snapshot_sketch_dim": None,
         "Y_asym_shape": y_freq.shape,
         "Y_fb_shape": y_aug.shape,
+        "subspace_solver": str(subspace_solver).lower(),
     }
     return poles, diagnostics
 
@@ -452,6 +473,7 @@ def estimate_poles_aimdf_asym_tls_from_hankel(
     snapshot_sketch_dim: int | None = None,
     sketch_seed: int = 0,
     eps: float = 1e-12,
+    subspace_solver: str = "svd",
 ) -> tuple[np.ndarray, dict]:
     """Estimate delay poles from the L-mode aperture using asymmetric FB/TLS ESPRIT."""
     assert z_tensor.ndim == 4, "Z must have shape I x P x L x T"
@@ -472,7 +494,7 @@ def estimate_poles_aimdf_asym_tls_from_hankel(
     else:
         y_fb = y_asym
 
-    u_mat, s_val, _ = np.linalg.svd(y_fb, full_matrices=False)
+    u_mat, s_val = _left_subspace_decomposition(y_fb, subspace_solver)
     signal_subspace = u_mat[:, :k_paths]
     upper = signal_subspace[:-1, :]
     lower = signal_subspace[1:, :]
@@ -492,6 +514,7 @@ def estimate_poles_aimdf_asym_tls_from_hankel(
         "snapshot_sketch_dim": snapshot_sketch_dim,
         "Y_asym_shape": y_asym.shape,
         "Y_fb_shape": y_fb.shape,
+        "subspace_solver": str(subspace_solver).lower(),
     }
     return poles, diagnostics
 

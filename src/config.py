@@ -83,8 +83,8 @@ def apply_stage1_init_preset(config: dict, mode: str | None = None) -> dict:
                 "stage1_snapshot_sketch_dim": None,
                 "stage1_forward_backward": True,
                 "stage1_tls": True,
-                "stage1_ris_geometry_mode": "legacy_fast_projection",
-                "stage1_ris_residual_type": "legacy_fast_projection",
+                "stage1_ris_geometry_mode": "coarse_to_exact_assignment",
+                "stage1_ris_residual_type": "exact_shortlisted_projection",
             }
         )
         ris_search.update(
@@ -104,8 +104,8 @@ def apply_stage1_init_preset(config: dict, mode: str | None = None) -> dict:
                 "stage1_snapshot_sketch_dim": None,
                 "stage1_forward_backward": True,
                 "stage1_tls": True,
-                "stage1_ris_geometry_mode": "legacy_fast_projection",
-                "stage1_ris_residual_type": "legacy_fast_projection",
+                "stage1_ris_geometry_mode": "coarse_to_exact_assignment",
+                "stage1_ris_residual_type": "exact_shortlisted_projection",
             }
         )
         ris_search.update(
@@ -125,8 +125,8 @@ def apply_stage1_init_preset(config: dict, mode: str | None = None) -> dict:
                 "stage1_snapshot_sketch_dim": max(8 * k_paths, 32),
                 "stage1_forward_backward": True,
                 "stage1_tls": True,
-                "stage1_ris_geometry_mode": "legacy_fast_projection",
-                "stage1_ris_residual_type": "legacy_fast_projection",
+                "stage1_ris_geometry_mode": "coarse_to_exact_assignment",
+                "stage1_ris_residual_type": "exact_shortlisted_projection",
             }
         )
         ris_search.update(
@@ -230,6 +230,7 @@ def default_config() -> dict:
         "delta_t_bounds": np.array([0.0, 10.0e-9]),
         "stage1_init_mode": "paper_stable",
         "stage1_delay_method": "aimdf_fullfreq_tls",
+        "stage1_delay_subspace_solver": "covariance_eigh",
         "stage1_forward_backward": True,
         "stage1_tls": True,
         "stage1_snapshot_sketch_dim": None,
@@ -238,8 +239,9 @@ def default_config() -> dict:
         "stage1_factor_reg_mode": "relative",
         "stage1_factor_reg_rel": 1.0e-6,
         "stage1_factor_reg_floor": 1.0e-12,
-        "stage1_ris_geometry_mode": "legacy_fast_projection",
-        "stage1_ris_residual_type": "legacy_fast_projection",
+        "stage1_ris_geometry_mode": "coarse_to_exact_assignment",
+        "stage1_ris_residual_type": "exact_shortlisted_projection",
+        "stage1_assignment_num_exact_permutations": 2,
         "ris_search": {
             "range_bounds": (2.5, 6.5),
             "elev_bounds": (-0.45, 0.25),
@@ -266,6 +268,8 @@ def default_config() -> dict:
             "wesvp_ftol": 1.0e-12,
             "wesvp_gtol": 1.0e-8,
             "use_fresnel_warm_start": True,
+            "stage2_warm_start_mode": "coarse_exact_multistart",
+            "stage2_warm_start_shortlist_size": 4,
         },
         "num_structured_iters": 1,
         "stage2_ris_rescue_max_iters": 1,
@@ -368,6 +372,10 @@ def default_config() -> dict:
             "run_fixed_pol_anchor": True,
             "jones_leakage_threshold": 0.25,
             "jones_min_rel_improvement": 1.0e-3,
+            "adaptive_jones_trigger_mode": "noise_floor",
+            "adaptive_jones_noise_floor_factor": 1.02,
+            "adaptive_jones_run_if_noise_unknown": True,
+            "adaptive_jones_max_iter": 20,
             "jones_tau": 0.25,
             "jones_tau_min": 1.0e-3,
             "jones_tau_max": 10.0,
@@ -397,6 +405,10 @@ def default_config() -> dict:
             "vp_debug_compare_max_evals": 3,
             "enable_z_rescue_multistart": True,
             "z_rescue_num_starts": 7,
+            "z_rescue_strategy": "probe_then_refine",
+            "z_rescue_num_full_refines": 2,
+            "z_rescue_early_stop_noise_floor_factor": 1.02,
+            "z_rescue_refine_vp_mode": "fixed_pol",
             "z_rescue_trigger": "boundary_or_unreliable",
             "z_rescue_keep_xy": True,
             "z_rescue_margin_m": 0.02,

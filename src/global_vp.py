@@ -78,6 +78,10 @@ def _global_vp_config(config: dict) -> dict:
         "vp_debug_compare_max_evals": 3,
         "enable_z_rescue_multistart": True,
         "z_rescue_num_starts": 7,
+        "z_rescue_strategy": "probe_then_refine",
+        "z_rescue_num_full_refines": 2,
+        "z_rescue_early_stop_noise_floor_factor": 1.02,
+        "z_rescue_refine_vp_mode": "fixed_pol",
         "z_rescue_trigger": "boundary_or_unreliable",
         "z_rescue_keep_xy": True,
         "z_rescue_margin_m": 0.02,
@@ -3079,11 +3083,15 @@ def _global_exact_spherical_vp_refinement_least_squares(
         options,
         rolled_back=rolled_back,
     )
-    num_calls = int(result.get("optimizer", {}).get("n_eval", 0))
+    optimizer_nfev = int(result.get("optimizer", {}).get("n_eval", 0))
+    num_calls = int(result.get("residual_eval_count", optimizer_nfev))
+    residual_eval_time = float(result.get("residual_eval_time_s", solver_time))
     result["global_vp_cache_build_time"] = float(cache_build_time)
     result["global_vp_num_residual_calls"] = int(num_calls)
+    result["global_vp_optimizer_nfev"] = int(optimizer_nfev)
+    result["global_vp_residual_eval_time_total"] = float(residual_eval_time)
     result["global_vp_residual_eval_time_mean"] = float(
-        solver_time / max(num_calls, 1)
+        residual_eval_time / max(num_calls, 1)
     )
     result["global_vp_jacobian_mode"] = (
         "legacy_least_squares_numerical"
@@ -3175,52 +3183,117 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
     fixed_config = copy.deepcopy(config)
     fixed_config["global_vp"] = dict(fixed_config.get("global_vp", {}))
     fixed_config["global_vp"]["mode"] = "fixed_pol"
+    fixed_start = time.perf_counter()
     fixed_result = _global_exact_spherical_vp_refinement_least_squares(
         y_raw, init_estimate, scene, fixed_config
     )
+    fixed_runtime_s = time.perf_counter() - fixed_start
 
     snr_eff, lambda_path = _adaptive_jones_lambdas(
         fixed_result, init_estimate, scene, config
     )
-    jones_init = copy.deepcopy(init_estimate)
-    jones_init["p_u"] = np.asarray(fixed_result["p_u"], dtype=float).copy()
-    jones_init["delta_t"] = float(fixed_result["delta_t"])
-    jones_init["jones_lambda_per_path"] = lambda_path.copy()
-    jones_config = copy.deepcopy(config)
-    jones_config["global_vp"] = dict(jones_config.get("global_vp", {}))
-    jones_config["global_vp"]["mode"] = "adaptive_jones"
-    jones_result = _global_exact_spherical_vp_refinement_lbfgsb_reduced(
-        y_raw, jones_init, scene, jones_config
-    )
+    fixed_raw = float(fixed_result["raw_objective_final"])
+    noise_variance = init_estimate.get("noise_variance", config.get("noise_variance"))
+    try:
+        noise_variance = float(noise_variance)
+    except (TypeError, ValueError):
+        noise_variance = float("nan")
+    trigger_mode = str(options.get("adaptive_jones_trigger_mode", "always")).lower()
+    if trigger_mode == "always":
+        run_jones = True
+        jones_trigger_reason = "configured_always"
+    elif trigger_mode == "noise_floor":
+        if not bool(fixed_result.get("global_vp_success", True)):
+            run_jones = True
+            jones_trigger_reason = "fixed_anchor_failed"
+        elif not np.isfinite(noise_variance) or noise_variance <= 0.0:
+            run_jones = bool(options.get("adaptive_jones_run_if_noise_unknown", True))
+            jones_trigger_reason = (
+                "noise_variance_unknown_run"
+                if run_jones
+                else "noise_variance_unknown_skip"
+            )
+        else:
+            noise_floor_factor = float(
+                options.get("adaptive_jones_noise_floor_factor", 1.02)
+            )
+            run_jones = bool(fixed_raw > noise_floor_factor * noise_variance)
+            jones_trigger_reason = (
+                "fixed_above_noise_floor" if run_jones else "fixed_at_noise_floor"
+            )
+    else:
+        raise ValueError(f"unknown adaptive_jones_trigger_mode {trigger_mode!r}")
+
+    jones_result = None
+    jones_runtime_s = 0.0
+    if run_jones:
+        jones_init = copy.deepcopy(init_estimate)
+        jones_init["p_u"] = np.asarray(fixed_result["p_u"], dtype=float).copy()
+        jones_init["delta_t"] = float(fixed_result["delta_t"])
+        jones_init["jones_lambda_per_path"] = lambda_path.copy()
+        jones_config = copy.deepcopy(config)
+        jones_config["global_vp"] = dict(jones_config.get("global_vp", {}))
+        jones_config["global_vp"]["mode"] = "adaptive_jones"
+        jones_config["global_vp"]["max_iter"] = min(
+            int(jones_config["global_vp"].get("max_iter", 80)),
+            max(1, int(options.get("adaptive_jones_max_iter", 20))),
+        )
+        jones_start = time.perf_counter()
+        jones_result = _global_exact_spherical_vp_refinement_lbfgsb_reduced(
+            y_raw, jones_init, scene, jones_config
+        )
+        jones_runtime_s = time.perf_counter() - jones_start
 
     m_samples = int(y_raw.size)
     sigma2_hat = float(
-        init_estimate.get(
-            "noise_variance",
-            config.get("noise_variance", fixed_result.get("raw_objective_final", 1.0)),
-        )
+        noise_variance
+        if np.isfinite(noise_variance) and noise_variance > 0.0
+        else fixed_raw
     )
     d_eff_fixed = float(4 + 2 * int(scene["K"]))
-    trace_h = float(jones_result.get("trace_H", 2 * int(scene["K"])))
+    trace_h = float(
+        jones_result.get("trace_H", 2 * int(scene["K"]))
+        if jones_result is not None
+        else 2 * int(scene["K"])
+    )
     d_eff_jones = float(4.0 + 2.0 * trace_h)
     fixed_score = _vp_family_score(
-        fixed_result["raw_objective_final"], sigma2_hat, d_eff_fixed, m_samples
+        fixed_raw, sigma2_hat, d_eff_fixed, m_samples
     )
-    jones_score = _vp_family_score(
-        jones_result["raw_objective_final"], sigma2_hat, d_eff_jones, m_samples
+    jones_score = (
+        _vp_family_score(
+            jones_result["raw_objective_final"], sigma2_hat, d_eff_jones, m_samples
+        )
+        if jones_result is not None
+        else float("inf")
     )
-    leakage = np.asarray(jones_result.get("jones_leakage_per_path", []), dtype=float)
-    fixed_raw = float(fixed_result["raw_objective_final"])
-    jones_raw = float(jones_result["raw_objective_final"])
-    rel_improvement = (fixed_raw - jones_raw) / max(fixed_raw, config.get("eps", 1.0e-10))
+    leakage = np.asarray(
+        jones_result.get("jones_leakage_per_path", [])
+        if jones_result is not None
+        else [],
+        dtype=float,
+    )
+    jones_raw = (
+        float(jones_result["raw_objective_final"])
+        if jones_result is not None
+        else float("nan")
+    )
+    rel_improvement = (
+        (fixed_raw - jones_raw) / max(fixed_raw, config.get("eps", 1.0e-10))
+        if np.isfinite(jones_raw)
+        else float("nan")
+    )
     leakage_guard = bool(
         leakage.size
         and np.nanmax(leakage) > float(options.get("jones_leakage_threshold", 0.25))
         and rel_improvement < float(options.get("jones_min_rel_improvement", 1.0e-3))
     )
-    choose_jones = bool(jones_score < fixed_score and not leakage_guard)
+    choose_jones = bool(
+        jones_result is not None and jones_score < fixed_score and not leakage_guard
+    )
     selected = copy.deepcopy(jones_result if choose_jones else fixed_result)
     selected_branch = "adaptive_jones" if choose_jones else "fixed_pol_anchor"
+    diagnostic_source = jones_result if jones_result is not None else fixed_result
 
     diagnostics = {
         "global_vp_mode": "adaptive_jones",
@@ -3237,24 +3310,35 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
         "jones_relative_residual_improvement": float(rel_improvement),
         "fixed_pol_anchor_raw_objective": fixed_raw,
         "adaptive_jones_raw_objective": jones_raw,
-        "global_vp_backend": jones_result.get("global_vp_backend", "cpu"),
-        "global_vp_gpu_used": bool(
-            jones_result.get("global_vp_gpu_used", False)
+        "adaptive_jones_triggered": bool(run_jones),
+        "adaptive_jones_trigger_reason": jones_trigger_reason,
+        "adaptive_jones_trigger_mode": trigger_mode,
+        "adaptive_jones_noise_variance": float(noise_variance),
+        "adaptive_jones_fixed_to_noise_ratio": float(
+            fixed_raw / noise_variance
+            if np.isfinite(noise_variance) and noise_variance > 0.0
+            else np.nan
         ),
-        "global_vp_gpu_device": jones_result.get("global_vp_gpu_device", ""),
-        "global_vp_objective_backend": jones_result.get(
+        "global_vp_fixed_anchor_runtime_s": float(fixed_runtime_s),
+        "global_vp_jones_runtime_s": float(jones_runtime_s),
+        "global_vp_backend": diagnostic_source.get("global_vp_backend", "cpu"),
+        "global_vp_gpu_used": bool(
+            diagnostic_source.get("global_vp_gpu_used", False)
+        ),
+        "global_vp_gpu_device": diagnostic_source.get("global_vp_gpu_device", ""),
+        "global_vp_objective_backend": diagnostic_source.get(
             "global_vp_objective_backend", ""
         ),
-        "global_vp_linear_solve_backend": jones_result.get(
+        "global_vp_linear_solve_backend": diagnostic_source.get(
             "global_vp_linear_solve_backend", ""
         ),
         "global_vp_gpu_num_objective_calls": int(
-            jones_result.get("global_vp_gpu_num_objective_calls", 0)
+            diagnostic_source.get("global_vp_gpu_num_objective_calls", 0)
         ),
-        "global_vp_gpu_transfer_policy": jones_result.get(
+        "global_vp_gpu_transfer_policy": diagnostic_source.get(
             "global_vp_gpu_transfer_policy", ""
         ),
-        "global_vp_backend_warning": jones_result.get(
+        "global_vp_backend_warning": diagnostic_source.get(
             "global_vp_backend_warning", ""
         ),
         "global_vp_lstsq_backend": "cpu",
@@ -3288,8 +3372,8 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
         "vp_matrix_free_debug_rel_regularized_objective_diff",
         "vp_matrix_free_debug_rel_gradient_diff",
     ):
-        if key in jones_result:
-            diagnostics[key] = jones_result[key]
+        if key in diagnostic_source:
+            diagnostics[key] = diagnostic_source[key]
     selected.update(diagnostics)
     selected["nonlinear_dim"] = 4
     if not choose_jones:
@@ -3383,6 +3467,9 @@ def global_exact_spherical_vp_refinement(
         float(options.get("z_rescue_margin_m", 0.02)),
     )
     candidates = [normal]
+    probe_runtime_s = 0.0
+    full_refine_runtime_s = 0.0
+    num_full_refines = 0
     candidate_scores = [
         {
             "z_start": float(current[2]),
@@ -3394,15 +3481,70 @@ def global_exact_spherical_vp_refinement(
             "kind": "normal",
         }
     ]
-    for start in starts:
+    strategy = str(options.get("z_rescue_strategy", "full_multistart")).lower()
+    if strategy == "full_multistart":
+        starts_to_refine = starts
+    elif strategy == "probe_then_refine":
+        probe_rows = []
+        probe_begin = time.perf_counter()
+        for start in starts:
+            probe_init = copy.deepcopy(init_estimate)
+            probe_init["_global_vp_initial_p_u"] = start.copy()
+            probe_init["_global_vp_initial_delta_t"] = float(normal["delta_t"])
+            probe = _legacy_vp_initial_result(y_raw, probe_init, scene, config)
+            probe_score = float(probe["raw_objective_final"])
+            probe_rows.append((probe_score, start.copy()))
+            candidate_scores.append(
+                {
+                    "z_start": float(start[2]),
+                    "z_final": float(start[2]),
+                    "raw_objective_final": probe_score,
+                    "boundary_hit": bool(
+                        distance_to_box_boundary(start, bounds, boundary_tol)[
+                            "boundary_hit"
+                        ]
+                    ),
+                    "kind": "z_probe",
+                }
+            )
+        probe_runtime_s = time.perf_counter() - probe_begin
+        probe_rows.sort(key=lambda item: item[0])
+        max_refines = min(
+            max(1, int(options.get("z_rescue_num_full_refines", 2))),
+            len(probe_rows),
+        )
+        starts_to_refine = [start for _, start in probe_rows[:max_refines]]
+    else:
+        raise ValueError(f"unknown z_rescue_strategy {strategy!r}")
+
+    noise_variance = config.get("noise_variance")
+    try:
+        noise_variance = float(noise_variance)
+    except (TypeError, ValueError):
+        noise_variance = float("nan")
+    early_stop_factor = float(
+        options.get("z_rescue_early_stop_noise_floor_factor", 1.02)
+    )
+    for start in starts_to_refine:
         rescue_init = copy.deepcopy(init_estimate)
         rescue_init["_global_vp_initial_p_u"] = start.copy()
         rescue_init["_global_vp_initial_delta_t"] = float(normal["delta_t"])
         rescue_config = copy.deepcopy(config)
         rescue_config["_global_vp_z_rescue_active"] = True
+        configured_vp_mode = _global_vp_mode(config)
+        z_refine_vp_mode = (
+            str(options.get("z_rescue_refine_vp_mode", "fixed_pol")).lower()
+            if configured_vp_mode == "adaptive_jones"
+            else configured_vp_mode
+        )
+        rescue_config["global_vp"] = dict(rescue_config.get("global_vp", {}))
+        rescue_config["global_vp"]["mode"] = z_refine_vp_mode
+        refine_begin = time.perf_counter()
         rescue = _global_exact_spherical_vp_refinement_once(
             y_raw, rescue_init, scene, rescue_config
         )
+        full_refine_runtime_s += time.perf_counter() - refine_begin
+        num_full_refines += 1
         score = float(
             rescue.get("raw_objective_final", rescue.get("raw_objective", np.nan))
         )
@@ -3421,6 +3563,14 @@ def global_exact_spherical_vp_refinement(
                 "kind": "z_rescue",
             }
         )
+        if (
+            strategy == "probe_then_refine"
+            and not rescue_boundary["boundary_hit"]
+            and np.isfinite(noise_variance)
+            and noise_variance > 0.0
+            and score <= early_stop_factor * noise_variance
+        ):
+            break
 
     selected, reason = select_z_rescue_candidate(
         candidates,
@@ -3429,12 +3579,45 @@ def global_exact_spherical_vp_refinement(
         boundary_accept_rel_tol=float(options.get("boundary_accept_rel_tol", 1.0e-3)),
     )
     selected = copy.deepcopy(selected)
+    if _global_vp_mode(config) == "adaptive_jones":
+        for key in (
+            "fixed_pol_score",
+            "jones_score",
+            "snr_eff_per_path",
+            "lambda_jones_per_path",
+            "jones_leakage_per_path",
+            "jones_leakage_guard_triggered",
+            "jones_relative_residual_improvement",
+            "adaptive_jones_triggered",
+            "adaptive_jones_trigger_reason",
+            "adaptive_jones_trigger_mode",
+            "adaptive_jones_noise_variance",
+            "adaptive_jones_fixed_to_noise_ratio",
+            "global_vp_jones_runtime_s",
+        ):
+            if key in normal:
+                selected.setdefault(key, copy.deepcopy(normal[key]))
+        selected["global_vp_mode"] = "adaptive_jones"
+        selected["vp_mode"] = "adaptive_jones"
+        selected.setdefault("selected_vp_family_branch", "fixed_pol_anchor")
     after = distance_to_box_boundary(selected["p_u"], bounds, boundary_tol)
     selected.update(after)
     selected.update(
         {
             "z_rescue_triggered": True,
             "z_rescue_num_starts": int(len(starts)),
+            "z_rescue_strategy": strategy,
+            "z_rescue_num_probes": int(
+                len(starts) if strategy == "probe_then_refine" else 0
+            ),
+            "z_rescue_num_full_refines": int(num_full_refines),
+            "z_rescue_probe_runtime_s": float(probe_runtime_s),
+            "z_rescue_full_refine_runtime_s": float(full_refine_runtime_s),
+            "z_rescue_refine_vp_mode": (
+                str(options.get("z_rescue_refine_vp_mode", "fixed_pol")).lower()
+                if _global_vp_mode(config) == "adaptive_jones"
+                else _global_vp_mode(config)
+            ),
             "z_rescue_best_z": float(selected["p_u"][2]),
             "z_rescue_best_score": float(
                 selected.get("raw_objective_final", selected.get("raw_objective", np.nan))
