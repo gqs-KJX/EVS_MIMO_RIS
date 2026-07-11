@@ -1169,18 +1169,34 @@ def _stage2_solution_from_polish(
 
 def solve_stage2_legacy_multistart(state: Stage2CommonState, scene: dict, config: dict) -> dict:
     """Compute the existing legacy geometry seed, then use common polish."""
-    try:
-        position = np.asarray(
-            estimate_position_from_ris_eta(scene, state.refined_estimate), dtype=float
-        ).reshape(3)
-        ranges = np.asarray(state.refined_estimate["ris_eta"], dtype=float)[:, 0]
-        values = state.tau_hat_s - (ranges + np.asarray(scene["d_RB"], dtype=float)) / float(scene["c0"])
-        clock = float(np.median(values))
-        failure = ""
-    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+    valid_records = [
+        record for record in state.local_fix_records if bool(record.get("valid", False))
+    ]
+    if not valid_records:
         position = np.full(3, np.nan)
         clock = float("nan")
-        failure = "invalid_position_or_clock"
+        failure = "no_valid_local_fixes"
+    else:
+        try:
+            position = np.mean(
+                np.asarray([record["position"] for record in valid_records], dtype=float),
+                axis=0,
+            ).reshape(3)
+            panels = np.asarray(
+                [int(record["panel_index"]) for record in valid_records], dtype=int
+            )
+            ranges = np.asarray(state.refined_estimate["ris_eta"], dtype=float)[
+                panels, 0
+            ]
+            values = state.tau_hat_s[panels] - (
+                ranges + np.asarray(scene["d_RB"], dtype=float)[panels]
+            ) / float(scene["c0"])
+            clock = float(np.median(values))
+            failure = ""
+        except (KeyError, TypeError, ValueError, IndexError, np.linalg.LinAlgError):
+            position = np.full(3, np.nan)
+            clock = float("nan")
+            failure = "invalid_position_or_clock"
     polish = polish_stage2_seed(
         position, clock, state, scene, config, geometry_seed_impl="legacy_multistart"
     )

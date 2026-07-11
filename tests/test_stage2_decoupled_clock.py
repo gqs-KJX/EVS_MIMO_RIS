@@ -1,6 +1,7 @@
 import numpy as np
 
 from src.config import default_config
+from src.main_single_proposed import solve_stage2_legacy_multistart
 from src.projections_delay import pole_from_tau
 from src.stage2_rescue import Stage2CommonState, decoupled_clock_estimate
 
@@ -43,7 +44,13 @@ def _state(position, delta_t, *, range_bias=None, delay_bias_m=None, sigma_tau_s
     ris_eta[:, 0] = ris_range
 
     records = [
-        {"panel_index": k, "valid": True, "reject_reason": ""} for k in range(k_paths)
+        {
+            "panel_index": k,
+            "valid": True,
+            "reject_reason": "",
+            "position": np.asarray(position, dtype=float).copy(),
+        }
+        for k in range(k_paths)
     ]
     return Stage2CommonState(
         stage1_estimate={},
@@ -131,3 +138,34 @@ def test_decoupled_clock_rejects_out_of_bounds_clock():
 
     assert result["available"] is False
     assert result["reason"] == "clock_out_of_bounds"
+
+
+def test_legacy_position_seed_averages_only_screened_valid_fixes():
+    config = default_config()
+    position = np.array([1.25, 0.55, 0.75])
+    state, scene = _state(position, 5.0e-9)
+    state.local_fix_records[0]["position"] = np.array([1.05, 0.35, 0.65])
+    state.local_fix_records[1]["position"] = np.array([20.0, -30.0, 40.0])
+    state.local_fix_records[1]["valid"] = False
+    state.local_fix_records[1]["reject_reason"] = "local_geometry_out_of_domain"
+    state.local_fix_records[2]["position"] = np.array([1.45, 0.75, 0.85])
+
+    result = solve_stage2_legacy_multistart(state, scene, config)
+
+    np.testing.assert_allclose(
+        result["diagnostics"]["seed_position"], position, rtol=0.0, atol=1.0e-15
+    )
+
+
+def test_legacy_position_seed_is_unavailable_without_valid_fixes():
+    config = default_config()
+    state, scene = _state(np.array([1.25, 0.55, 0.75]), 5.0e-9)
+    for record in state.local_fix_records:
+        record["valid"] = False
+        record["reject_reason"] = "geometry_validity_false"
+
+    result = solve_stage2_legacy_multistart(state, scene, config)
+
+    assert result["rescue_available"] is False
+    assert result["failure_reason"] == "no_valid_local_fixes"
+    assert result["diagnostics"]["stage2_failure_reason"] == "no_valid_local_fixes"
