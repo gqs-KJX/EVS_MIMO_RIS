@@ -152,7 +152,7 @@ def default_config() -> dict:
 
     config = {
         "seed": 821394406,
-        "trials": 1,
+        "trials": 10,
         "SNR_dB": -10.0,
         "enable_global_vp": True,
         "stage2_mode": "none",

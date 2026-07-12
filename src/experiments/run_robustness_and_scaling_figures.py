@@ -28,6 +28,7 @@ if __package__ in (None, ""):
     from src.baselines.far_field_omp import run_far_field_omp_baseline
     from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
+    from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from src.config import default_config
     from src.experiments.resource_control import (
@@ -48,7 +49,10 @@ if __package__ in (None, ""):
     )
     from src.experiments.run_benchmark_comparison import _apply_grid_profile
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
-    from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
+    from src.main_single_proposed import _make_data, run_single_proposed_diagnostic, run_stage1_only
+    from src.estimators import reconstruct_raw_tensor_from_structured_estimate, estimate_position_from_local_ris
+    from src.diagnostics import estimate_position_from_ris_eta
+    from src.projections_delay import tau_from_pole
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
@@ -56,6 +60,7 @@ else:
     from ..baselines.far_field_omp import run_far_field_omp_baseline
     from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
+    from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from ..config import default_config
     from .resource_control import (
@@ -76,15 +81,25 @@ else:
     )
     from .run_benchmark_comparison import _apply_grid_profile
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
-    from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
+    from ..main_single_proposed import _make_data, run_single_proposed_diagnostic, run_stage1_only
+    from ..estimators import reconstruct_raw_tensor_from_structured_estimate, estimate_position_from_local_ris
+    from ..diagnostics import estimate_position_from_ris_eta
+    from ..projections_delay import tau_from_pole
     from ..tensor_utils import hankelize_frequency
     from ..utils import scipy_is_available
 
 
-FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c"]
+FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c", "fig11"]
 DEFAULT_FIGURES = ",".join(FIGURE_ORDER)
-DEFAULT_BASELINES = "proposed,ff_omp,ris_momp,nf_mmpsr,peb"
-ESTIMATOR_BASELINES = ("proposed", "ff_omp", "ris_momp", "nf_mmpsr")
+DEFAULT_BASELINES = "proposed,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,constrained_jones_peb"
+ESTIMATOR_BASELINES = (
+    "proposed",
+    "ff_omp",
+    "ris_momp",
+    "nf_mmpsr",
+    "nf_ris_groupomp_localgrid_wls",
+    "stage1_only",
+)
 REFERENCE_BASELINES = (
     "peb",
     "constrained_jones_peb",
@@ -92,10 +107,12 @@ REFERENCE_BASELINES = (
     "trueK_peb_reference",
 )
 BASELINE_LABELS = {
-    "proposed": "NGC-Jones-VP",
+    "proposed": "Proposed NGC–LG-RDC",
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
+    "nf_ris_groupomp_localgrid_wls": "NF-RIS GroupOMP+Local-WLS",
+    "stage1_only": "Stage-I Only",
     "peb": "Data-only Free-Jones PEB",
     "constrained_jones_peb": "Constrained-Jones PEB",
     "oracle_calibrated_peb": "Oracle-calibrated PEB (reference)",
@@ -105,16 +122,21 @@ FIGURE_FILES = {
     "fig8": (
         "fig8_calibration_trials.csv",
         "fig8_calibration_summary.csv",
-        "fig8_calibration_rmse_vs_phase_error",
+        "fig8_calibration_rmse_outlier",
     ),
     "fig9": (
         "fig9_k_mismatch_trials.csv",
         "fig9_k_mismatch_summary.csv",
-        "fig9_k_mismatch_rmse_vs_Khat",
+        "fig9_k_mismatch_rmse_outlier",
     ),
-    "fig10a": ("fig10a_T_trials.csv", "fig10a_T_summary.csv", "fig10a_rmse_vs_T"),
-    "fig10b": ("fig10b_MR_trials.csv", "fig10b_MR_summary.csv", "fig10b_rmse_vs_MR"),
-    "fig10c": ("fig10c_rUE_trials.csv", "fig10c_rUE_summary.csv", "fig10c_rmse_vs_rUE"),
+    "fig10a": ("fig10a_T_trials.csv", "fig10a_T_summary.csv", "fig10a_T_rmse_runtime"),
+    "fig10b": ("fig10b_MR_trials.csv", "fig10b_MR_summary.csv", "fig10b_MR_rmse_runtime"),
+    "fig10c": ("fig10c_rUE_trials.csv", "fig10c_rUE_summary.csv", "fig10c_rUE_rmse_outlier"),
+    "fig11": (
+        "fig11_resolvability_trials.csv",
+        "fig11_resolvability_summary.csv",
+        "fig11_resolvability",
+    ),
 }
 X_FIELDS = {
     "fig8": ("calibration_std_deg", "Calibration phase error std. (deg)"),
@@ -122,6 +144,10 @@ X_FIELDS = {
     "fig10a": ("T", "Training length T"),
     "fig10b": ("M_R", r"RIS element number $M_R$"),
     "fig10c": ("r_ue_m", r"UE distance from RIS centroid $r_{\rm UE}$ (m)"),
+    "fig11": (
+        "delta_tau_min_ns",
+        r"Minimum path-delay separation $\Delta\tau_{\min}$ (ns)",
+    ),
 }
 FIELDNAMES = [
     "figure",
@@ -131,12 +157,14 @@ FIELDNAMES = [
     "true_K",
     "assumed_K",
     "calibration_std_deg",
+    "delta_tau_min_ns",
     "T",
     "ris_side",
     "M_R",
     "r_ue_m",
     "baseline",
     "position_rmse_m",
+    "outlier_flag",
     "y_nmse",
     "raw_objective_final",
     "runtime_s",
@@ -373,7 +401,6 @@ def default_rue_grid(config: dict) -> list[float]:
     r0 = float(np.linalg.norm(np.asarray(config["p_u_true"], dtype=float) - np.mean(centers, axis=0)))
     return [factor * r0 for factor in (0.5, 0.75, 1.0, 1.5, 2.0, 3.0)]
 
-
 def make_config(
     seed: int,
     snr_db: float,
@@ -383,6 +410,7 @@ def make_config(
     ris_side: int | None = None,
     r_ue_m: float | None = None,
     strict_ris_geometry: bool = False,
+    grid_profile: str = "medium",
 ) -> dict:
     config = default_config()
     config.update(
@@ -412,9 +440,7 @@ def make_config(
         config["ris_shape"] = (int(ris_side), int(ris_side))
     if r_ue_m is not None:
         config["p_u_true"] = ue_position_on_centroid_ray(config, float(r_ue_m))
-    # This follows the benchmark runner's resource-safe profile. The baseline
-    # mathematics is unchanged; only its documented dictionary resolution is set.
-    _apply_grid_profile(config, "coarse")
+    _apply_grid_profile(config, grid_profile)
     return config
 
 
@@ -652,6 +678,7 @@ def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
     baselines = copy.deepcopy(configured.get("baselines", {}))
     baselines.setdefault("ff_omp", {})["max_groups"] = int(assumed_k)
     baselines.setdefault("ris_momp", {})["max_groups"] = int(assumed_k)
+    baselines.setdefault("nf_ris_groupomp_localgrid_wls", {})["max_groups"] = int(assumed_k)
     # NF-MMPSR creates two Jones nuisance columns per panel; its model
     # dimension and support therefore follow scene["K"] == assumed_K.
     baselines.setdefault("nf_mmpsr", {})["assumed_K"] = int(assumed_k)
@@ -674,6 +701,7 @@ def _common_row_fields(task: dict[str, Any], data: dict, baseline: str) -> dict[
         "true_K": int(task["true_K"]),
         "assumed_K": int(task.get("assumed_K", task["true_K"])),
         "calibration_std_deg": float(task.get("calibration_std_deg", 0.0)),
+        "delta_tau_min_ns": float(task.get("delta_tau_min_ns", 0.0)),
         "T": int(scene["T"]),
         "ris_side": int(scene["M_Rx"]),
         "M_R": int(scene["M_R"]),
@@ -717,11 +745,6 @@ def _proposed_result_row(data: dict, config: dict, task: dict[str, Any]) -> dict
     )
 
 
-BASELINE_RUNNERS = {
-    "ff_omp": run_far_field_omp_baseline,
-    "ris_momp": run_ris_momp_baseline,
-    "nf_mmpsr": run_near_field_mmpsr_baseline,
-}
 
 
 def _peb_result_row(
@@ -736,11 +759,11 @@ def _peb_result_row(
 ) -> dict[str, Any]:
     start = time.perf_counter()
     metrics = _peb_from_efim(data, config)
-    if baseline == "constrained_jones_peb":
+    if baseline in {"constrained_jones_peb", "oracle_calibrated_peb", "trueK_peb_reference"}:
         metrics = {
             **metrics,
             "peb_position_m": metrics.get("peb_constrained_jones_m", float("nan")),
-            "peb_variant": "constrained_jones_peb",
+            "peb_variant": baseline,
             "jones_bound_type": "constrained",
         }
     elif baseline == "peb":
@@ -773,6 +796,102 @@ def _peb_result_row(
     }
 
 
+def run_stage1_only_baseline(data: dict, config: dict) -> BaselineResult:
+    start = time.perf_counter()
+    stage1 = run_stage1_only(data, config)
+    estimate = stage1["estimate"]
+    y_hat = reconstruct_raw_tensor_from_structured_estimate(estimate, data["scene"])
+    try:
+        p_hat = estimate_position_from_local_ris(data["scene"], estimate, config)
+    except (KeyError, ValueError, np.linalg.LinAlgError):
+        p_hat = estimate_position_from_ris_eta(data["scene"], estimate)
+    tau_hat = np.array([tau_from_pole(pole, data["scene"]["delta_f"]) for pole in estimate["poles"]])
+    ranges = np.asarray(estimate["ris_eta"], dtype=float)[:, 0]
+    raw_residual = y_hat - data["Y_noisy"]
+    raw_objective_final = float(np.vdot(raw_residual.reshape(-1), raw_residual.reshape(-1)).real / data["Y_noisy"].size)
+    return BaselineResult(
+        name="stage1_only",
+        p_u=p_hat,
+        delta_t=estimate.get("delta_t", float("nan")),
+        Y_hat=y_hat,
+        raw_objective_final=raw_objective_final,
+        components={"taus": tau_hat, "ranges": ranges},
+        runtime_s=time.perf_counter() - start,
+        diagnostics={"selected_branch": "stage1_only"},
+    )
+
+
+BASELINE_RUNNERS = {
+    "ff_omp": run_far_field_omp_baseline,
+    "ris_momp": run_ris_momp_baseline,
+    "nf_mmpsr": run_near_field_mmpsr_baseline,
+    "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
+    "stage1_only": run_stage1_only_baseline,
+}
+
+
+def adjust_ris_center_for_delay(
+    p_u: np.ndarray,
+    p_B: np.ndarray,
+    c_nominal: np.ndarray,
+    target_delay_s: float,
+    delta_t: float,
+    c0: float,
+) -> np.ndarray:
+    L_target = c0 * (target_delay_s - delta_t)
+    L_min = np.linalg.norm(p_u - p_B)
+    if L_target < L_min:
+        L_target = L_min + 1.0e-3
+    v = c_nominal - p_u
+    v_norm = np.linalg.norm(v)
+    if v_norm < 1.0e-4:
+        v = np.array([1.0, 0.0, 0.0])
+    else:
+        v = v / v_norm
+    s_low = 0.0
+    s_high = 100.0
+    for _ in range(50):
+        s_mid = 0.5 * (s_low + s_high)
+        c_mid = p_u + s_mid * v
+        L_mid = s_mid + np.linalg.norm(c_mid - p_B)
+        if L_mid < L_target:
+            s_low = s_mid
+        else:
+            s_high = s_mid
+    return p_u + s_low * v
+
+
+def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> dict:
+    config = copy.deepcopy(config)
+    p_u = np.asarray(config["p_u_true"], dtype=float)
+    p_B = np.asarray(config["p_B"], dtype=float)
+    ris_centers = np.asarray(config["ris_centers"], dtype=float).copy()
+    c0 = float(config["c0"])
+    delta_t = float(config["delta_t_true"])
+
+    nominal_delays = []
+    for k in range(len(ris_centers)):
+        d_ur = np.linalg.norm(p_u - ris_centers[k])
+        d_rb = np.linalg.norm(ris_centers[k] - p_B)
+        nominal_delays.append((d_ur + d_rb) / c0 + delta_t)
+
+    idx = np.argsort(nominal_delays)
+
+    delta_tau = float(delta_tau_min_ns) * 1.0e-9
+    t0 = nominal_delays[idx[0]]
+    t1 = t0 + max(nominal_delays[idx[1]] - t0, delta_tau)
+    t2 = t1 + delta_tau
+
+    ris_centers[idx[1]] = adjust_ris_center_for_delay(
+        p_u, p_B, ris_centers[idx[1]], t1, delta_t, c0
+    )
+    ris_centers[idx[2]] = adjust_ris_center_for_delay(
+        p_u, p_B, ris_centers[idx[2]], t2, delta_t, c0
+    )
+    config["ris_centers"] = ris_centers
+    return config
+
+
 def _failure_row(task: dict[str, Any], data: dict, baseline: str, exc: BaseException) -> dict[str, Any]:
     return {
         **_common_row_fields(task, data, baseline),
@@ -799,6 +918,7 @@ def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
         ris_side=task.get("ris_side"),
         r_ue_m=task.get("r_ue_m"),
         strict_ris_geometry=bool(task.get("strict_ris_geometry", False)),
+        grid_profile=task.get("grid_profile", "medium"),
     )
     config["crb"] = dict(task.get("crb", {}))
     baselines = copy.deepcopy(config.get("baselines", {}))
@@ -817,6 +937,9 @@ def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
             int(task["max_assumed_K"]),
         )
         config = _configure_assumed_k(config, int(task["assumed_K"]))
+    elif figure == "fig11":
+        config = adjust_config_for_resolvability(config, float(task["delta_tau_min_ns"]))
+        data = _make_data(config)
     else:
         data = _make_data(config)
     return data, reference_data, config
@@ -888,6 +1011,8 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
                 else:
                     raise ValueError(f"unknown baseline {baseline!r}")
                 row = {**_common_row_fields(task, data, baseline), **row}
+                pos_err = _to_float(row.get("position_rmse_m"))
+                row["outlier_flag"] = int(pos_err > 0.1) if (not np.isnan(pos_err) and baseline not in REFERENCE_BASELINES) else ""
         except Exception as exc:  # noqa: BLE001 - failures are recorded per method.
             row = _failure_row(task, data, baseline, exc)
         if bool(task.get("trim_memory", True)):
@@ -976,8 +1101,23 @@ def summarize_rows(rows: Iterable[dict[str, Any]], figure: str) -> list[dict[str
         median = float(np.median(values)) if values.size else float("nan")
         p90 = float(np.percentile(values, 90.0)) if values.size else float("nan")
         p95 = float(np.percentile(values, 95.0)) if values.size else float("nan")
-        runtime = np.asarray([_to_float(row.get("runtime_s")) for row in successful], dtype=float)
-        runtime = runtime[np.isfinite(runtime)]
+        
+        # Outlier calculation: error > 0.1m
+        outliers = [row for row in successful if _to_float(row.get("position_rmse_m")) > 0.1]
+        outlier_rate = len(outliers) / max(len(successful), 1) if baseline not in REFERENCE_BASELINES else float("nan")
+        
+        runtimes = np.asarray([_to_float(row.get("runtime_s")) for row in successful], dtype=float)
+        runtimes = runtimes[np.isfinite(runtimes)]
+        
+        rss_values = []
+        for row in successful:
+            before = _to_float(row.get("rss_mb_before"))
+            after = _to_float(row.get("rss_mb_after"))
+            val = max(before, after)
+            if np.isfinite(val):
+                rss_values.append(val)
+        rss_peak_mean = float(np.mean(rss_values)) if rss_values else float("nan")
+        
         summary.append(
             {
                 "figure": figure,
@@ -991,7 +1131,11 @@ def summarize_rows(rows: Iterable[dict[str, Any]], figure: str) -> list[dict[str
                 "median_m": median,
                 "p90_m": p90,
                 "p95_m": p95,
-                "runtime_s_mean": float(np.mean(runtime)) if runtime.size else float("nan"),
+                "outlier_rate": outlier_rate,
+                "runtime_s_mean": float(np.mean(runtimes)) if runtimes.size else float("nan"),
+                "runtime_s_median": float(np.median(runtimes)) if runtimes.size else float("nan"),
+                "runtime_s_p95": float(np.percentile(runtimes, 95.0)) if runtimes.size else float("nan"),
+                "rss_mb_peak_mean": rss_peak_mean,
             }
         )
     return summary
@@ -1005,24 +1149,29 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
 
     _, xlabel = X_FIELDS[figure]
     _, _, stem = FIGURE_FILES[figure]
-    fig, ax = plt.subplots(figsize=(6.6, 4.2))
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(11.0, 4.2))
+
     styles = {
         "proposed": ("o", "-"),
         "ff_omp": ("s", "-"),
         "ris_momp": ("^", "-"),
         "nf_mmpsr": ("D", "-"),
+        "nf_ris_groupomp_localgrid_wls": ("*", "-"),
+        "stage1_only": ("x", "-"),
         "peb": ("v", "--"),
         "constrained_jones_peb": ("h", "-."),
         "oracle_calibrated_peb": ("P", "--"),
         "trueK_peb_reference": ("X", "--"),
     }
+
+    # Left plot: Accuracy (RMSE / PEB)
     for baseline in BASELINE_LABELS:
         selected = [row for row in summary if row["baseline"] == baseline]
         if not selected:
             continue
         selected.sort(key=lambda row: float(row["x_value"]))
         marker, linestyle = styles[baseline]
-        ax.plot(
+        ax_left.plot(
             [float(row["x_value"]) for row in selected],
             [float(row["rmse_m"]) for row in selected],
             marker=marker,
@@ -1030,11 +1179,51 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
             linewidth=1.5,
             label=BASELINE_LABELS[baseline],
         )
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Position RMSE / PEB (m)")
-    ax.set_yscale("log")
-    ax.grid(True, which="both", linestyle=":", linewidth=0.7)
-    ax.legend(fontsize=8)
+    ax_left.set_xlabel(xlabel)
+    ax_left.set_ylabel("Position RMSE / PEB (m)")
+    ax_left.set_yscale("log")
+    ax_left.grid(True, which="both", linestyle=":", linewidth=0.7)
+    ax_left.legend(fontsize=8)
+    ax_left.set_title("Estimation Accuracy")
+
+    # Right plot: Runtime or Outlier rate
+    plot_runtime = figure in {"fig10a", "fig10b"}
+    for baseline in BASELINE_LABELS:
+        if baseline in REFERENCE_BASELINES:
+            continue
+        selected = [row for row in summary if row["baseline"] == baseline]
+        if not selected:
+            continue
+        selected.sort(key=lambda row: float(row["x_value"]))
+        marker, linestyle = styles[baseline]
+
+        if plot_runtime:
+            y_values = [float(row["runtime_s_mean"]) for row in selected]
+            y_label = "Mean Runtime (s)"
+            title_str = "Computational Complexity"
+            log_scale = True
+        else:
+            y_values = [float(row["outlier_rate"]) for row in selected]
+            y_label = "Outlier Probability"
+            title_str = "Outlier Probability (Error > 0.1 m)"
+            log_scale = False
+
+        ax_right.plot(
+            [float(row["x_value"]) for row in selected],
+            y_values,
+            marker=marker,
+            linestyle=linestyle,
+            linewidth=1.5,
+            label=BASELINE_LABELS[baseline],
+        )
+    ax_right.set_xlabel(xlabel)
+    ax_right.set_ylabel(y_label)
+    if log_scale:
+        ax_right.set_yscale("log")
+    ax_right.grid(True, which="both", linestyle=":", linewidth=0.7)
+    ax_right.legend(fontsize=8)
+    ax_right.set_title(title_str)
+
     fig.tight_layout()
     fig.savefig(out_dir / f"{stem}.pdf")
     fig.savefig(out_dir / f"{stem}.png", dpi=180)
@@ -1047,15 +1236,20 @@ def write_summary_markdown(summary: list[dict[str, Any]], figure: str, out_dir: 
         "",
         "The one-trial smoke configuration is diagnostic only; paper claims require the configured multi-trial run.",
         "",
-        "| Baseline | x | RMSE (m) | Median (m) | p90 (m) | p95 (m) | Success |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Baseline | x | RMSE (m) | Median (m) | p90 (m) | p95 (m) | Outlier Rate | Success | Mean Runtime (s) | Median Runtime (s) | Peak RSS (MB) |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary:
+        outlier_val = row.get('outlier_rate')
+        outlier_str = f"{float(outlier_val):.3f}" if (outlier_val is not None and not np.isnan(_to_float(outlier_val))) else "N/A"
         lines.append(
             f"| {BASELINE_LABELS.get(str(row['baseline']), row['baseline'])} | "
             f"{float(row['x_value']):.6g} | {float(row['rmse_m']):.6g} | "
             f"{float(row['median_m']):.6g} | {float(row['p90_m']):.6g} | "
-            f"{float(row['p95_m']):.6g} | {float(row['success_rate']):.3f} |"
+            f"{float(row['p95_m']):.6g} | {outlier_str} | {float(row['success_rate']):.3f} | "
+            f"{float(row.get('runtime_s_mean', float('nan'))):.4g} | "
+            f"{float(row.get('runtime_s_median', float('nan'))):.4g} | "
+            f"{float(row.get('rss_mb_peak_mean', float('nan'))):.1f} |"
         )
     (out_dir / f"{figure}_summary.md").write_text("\n".join(lines) + "\n")
 
@@ -1071,6 +1265,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "T_grid": list(args.T_grid),
         "ris_side_grid": list(args.ris_side_grid),
         "rue_grid": list(args.rue_grid),
+        "delta_tau_min_grid": list(args.delta_tau_min_grid),
         "baselines": list(baselines),
         "git_commit": _git_commit(),
         "seed": int(args.seed),
@@ -1080,6 +1275,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "cpu_batch_size": args.cpu_batch_size,
         "gpu_memory_fraction": args.gpu_memory_fraction,
         "trim_memory": bool(args.trim_memory),
+        "grid_profile": str(args.grid_profile),
         "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
         "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
         "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
@@ -1097,7 +1293,6 @@ def _metadata(args: argparse.Namespace, figure: str, baselines: list[str]) -> di
         "scipy_optimizer_available": bool(scipy_is_available()),
         "resource_plan": dict(args.resource_plan),
         "profile_memory": bool(args.profile_memory),
-        "grid_profile": "coarse",
         "peb_policy": (
             "oracle-calibrated reference only; not a mismatched CRB"
             if figure == "fig8" and "oracle_calibrated_peb" in baselines
@@ -1129,8 +1324,10 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
         grid = [("T", value) for value in args.T_grid]
     elif figure == "fig10b":
         grid = [("ris_side", value) for value in args.ris_side_grid]
-    else:
+    elif figure == "fig10c":
         grid = [("r_ue_m", value) for value in args.rue_grid]
+    else:  # fig11
+        grid = [("delta_tau_min_ns", value) for value in args.delta_tau_min_grid]
     tasks = []
     for name, value in grid:
         for trial_id in range(int(args.n_trials)):
@@ -1142,8 +1339,10 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
                 "true_K": args.true_k,
                 "assumed_K": args.true_k,
                 "calibration_std_deg": 0.0,
+                "delta_tau_min_ns": 0.0,
                 "baselines": baselines,
                 "max_assumed_K": max(args.assumed_k_grid),
+                "grid_profile": args.grid_profile,
                 "blas_threads": args.blas_threads,
                 "profile_memory": args.profile_memory,
                 "trim_memory": bool(args.trim_memory),
@@ -1186,6 +1385,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--T-grid", default="64,128,256,512")
     parser.add_argument("--ris-side-grid", default="16,24,32,48,64")
     parser.add_argument("--rue-grid", default="")
+    parser.add_argument("--delta-tau-min-grid", default="0.1,0.25,0.5,1.0,2.0,5.0,10.0,20.0")
+    parser.add_argument(
+        "--grid-profile",
+        choices=("coarse", "medium", "fine"),
+        default="medium",
+    )
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument(
         "--baseline-backend",
@@ -1231,6 +1436,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.assumed_k_grid = parse_int_grid(args.assumed_k_grid)
     args.T_grid = parse_int_grid(args.T_grid)
     args.ris_side_grid = parse_int_grid(args.ris_side_grid)
+    args.delta_tau_min_grid = parse_float_grid(args.delta_tau_min_grid)
     args.baselines = parse_baselines(args.baselines)
     rue_config = default_config()
     set_number_of_ris_paths(rue_config, args.true_k)
@@ -1258,6 +1464,8 @@ def main(argv: list[str] | None = None) -> None:
             else args.ris_side_grid
             if figure == "fig10b"
             else args.rue_grid
+            if figure == "fig10c"
+            else args.delta_tau_min_grid
         )
         * args.n_trials
         for figure in args.figures
@@ -1301,6 +1509,7 @@ def main(argv: list[str] | None = None) -> None:
     print("Command:", " ".join(sys.argv))
     print("Resource plan:", json.dumps(args.resource_plan, sort_keys=True))
 
+    summary_all = []
     for figure in args.figures:
         baselines = baselines_for_figure(
             figure,
@@ -1315,6 +1524,7 @@ def main(argv: list[str] | None = None) -> None:
                 float(args.snr_db),
                 int(args.true_k),
                 strict_ris_geometry=bool(args.strict_ris_geometry),
+                grid_profile=args.grid_profile,
             )
             print(
                 f"figure={figure} baseline=proposed "
@@ -1380,15 +1590,70 @@ def main(argv: list[str] | None = None) -> None:
             summary = summarize_rows(rows, figure)
             _write_csv(summary_path, summary)
             metadata_path.write_text(json.dumps(_metadata(args, figure, baselines), indent=2))
+        summary_all.extend(summary)
         if not args.no_plots:
             plot_summary(summary, figure, args.out_dir)
         write_summary_markdown(summary, figure, args.out_dir)
         print(f"{figure}: wrote {trial_path.name}, {summary_path.name}")
+
+    write_table2_scaling_runtime(summary_all, args.out_dir)
+    write_global_summary_markdown(summary_all, args.out_dir)
+
     progress.log(
         "finished", "completed", message="robustness/scaling experiment finished"
     )
     progress.close()
 
 
+def write_table2_scaling_runtime(summary_all: list[dict[str, Any]], out_dir: pathlib.Path) -> None:
+    scaling_rows = []
+    for row in summary_all:
+        if row["figure"] in {"fig10a", "fig10b"}:
+            scaling_rows.append({
+                "figure": row["figure"],
+                "baseline": row["baseline"],
+                "x_value": row["x_value"],
+                "position_rmse_m": row["rmse_m"],
+                "p95_m": row["p95_m"],
+                "outlier_rate": row["outlier_rate"],
+                "runtime_s_mean": row["runtime_s_mean"],
+                "runtime_s_p95": row["runtime_s_p95"],
+                "rss_mb_peak": row["rss_mb_peak_mean"],
+            })
+    if scaling_rows:
+        _write_csv(out_dir / "table2_scaling_runtime.csv", scaling_rows)
+
+
+def write_global_summary_markdown(summary_all: list[dict[str, Any]], out_dir: pathlib.Path) -> None:
+    lines = [
+        "# Robustness and Scaling Experiments Summary",
+        "",
+        f"Generated on {datetime.now(timezone.utc).isoformat()}",
+        "",
+    ]
+    for figure in FIGURE_ORDER:
+        fig_summary = [row for row in summary_all if row["figure"] == figure]
+        if not fig_summary:
+            continue
+        _, xlabel = X_FIELDS[figure]
+        lines.append(f"## {figure.upper()}: {xlabel}")
+        lines.append("")
+        lines.append("| Baseline | x_value | RMSE (m) | p95 (m) | Outlier Rate | Success | Mean Runtime (s) | Peak RSS (MB) |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for row in fig_summary:
+            outlier_val = row.get('outlier_rate')
+            outlier_str = f"{float(outlier_val):.3f}" if (outlier_val is not None and not np.isnan(_to_float(outlier_val))) else "N/A"
+            lines.append(
+                f"| {BASELINE_LABELS.get(str(row['baseline']), row['baseline'])} | "
+                f"{float(row['x_value']):.6g} | {float(row['rmse_m']):.6g} | "
+                f"{float(row['p95_m']):.6g} | {outlier_str} | "
+                f"{float(row['success_rate']):.3f} | {float(row['runtime_s_mean']):.4g} | "
+                f"{float(row.get('rss_mb_peak_mean', float('nan'))):.1f} |"
+            )
+        lines.append("")
+    (out_dir / "robustness_and_scaling_summary.md").write_text("\n".join(lines) + "\n")
+
+
 if __name__ == "__main__":
     main()
+

@@ -10,6 +10,7 @@ import multiprocessing as mp
 import os
 import pathlib
 import platform
+import shlex
 import subprocess
 import sys
 import time
@@ -41,6 +42,7 @@ if __package__ in (None, ""):
         trim_memory,
     )
     from src.experiments.progress_logger import ProgressLogger
+    from src.utils import scipy_is_available
     from src.experiments.cli_common import (
         add_io_args,
         add_mc_args,
@@ -68,6 +70,7 @@ else:
         trim_memory,
     )
     from .progress_logger import ProgressLogger
+    from ..utils import scipy_is_available
     from .cli_common import (
         add_io_args,
         add_mc_args,
@@ -77,15 +80,18 @@ else:
     )
 
 
-DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10"
+DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10,15,20"
 DEFAULT_BASELINES = (
     "als_cpd,ff_omp,ris_momp,nf_mmpsr,"
-    "nf_ris_groupomp_localgrid_wls,proposed,peb"
+    "nf_ris_groupomp_localgrid_wls,proposed,constrained_jones_peb"
 )
 TRIAL_CSV = "benchmark_trials.csv"
 SUMMARY_CSV = "benchmark_summary.csv"
 RMSE_PDF = "fig7_benchmark_rmse_vs_snr.pdf"
 NMSE_PDF = "fig7_benchmark_nmse_vs_snr.pdf"
+OUTLIER_PDF = "fig7_benchmark_outlier_vs_snr.pdf"
+RUNTIME_MEMORY_CSV = "table1_runtime_memory.csv"
+SUMMARY_MD = "benchmark_summary.md"
 FIELDNAMES = [
     "baseline",
     "trial_id",
@@ -218,17 +224,38 @@ BASELINE_LABELS = {
     "ff_omp": "FF-OMP",
     "ris_momp": "RIS-MOMP",
     "nf_mmpsr": "NF-MMPSR",
-    "nf_ris_groupomp_localgrid_wls": "NF-RIS-GroupOMP-LocalGrid-WLS",
-    "proposed": "NGC-Jones-VP",
-    "peb": "Data-only Free-Jones PEB",
+    "nf_ris_groupomp_localgrid_wls": "NF-RIS Group-OMP + Local WLS",
+    "proposed": "Proposed NGC–LG-RDC",
     "constrained_jones_peb": "Constrained-Jones PEB",
+    "peb": "Data-only Free-Jones PEB",
 }
+
+ESTIMATOR_BASELINES = tuple(
+    baseline
+    for baseline in BASELINE_LABELS
+    if baseline not in {"peb", "constrained_jones_peb"}
+)
 
 
 _WORKER_BLAS_THREADS = 1
 _WORKER_RESPECT_EXISTING_BLAS_ENV = False
 _WORKER_TRIM_MEMORY = True
 _WORKER_PROFILE_MEMORY = False
+
+
+def _benchmark_memory_snapshot_mb() -> float:
+    """Return RSS in MiB, with a Linux /proc fallback when psutil is absent."""
+    rss_mb = memory_snapshot_mb()
+    if np.isfinite(rss_mb):
+        return float(rss_mb)
+    try:
+        with pathlib.Path("/proc/self/status").open() as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except (OSError, IndexError, TypeError, ValueError):
+        pass
+    return float("nan")
 
 
 def _init_worker(
@@ -538,7 +565,7 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for baseline in task["baselines"]:
         rss_before = (
-            memory_snapshot_mb()
+            _benchmark_memory_snapshot_mb()
             if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY))
             else float("nan")
         )
@@ -571,7 +598,7 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
         if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
             trim_memory()
         rss_after = (
-            memory_snapshot_mb()
+            _benchmark_memory_snapshot_mb()
             if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY))
             else float("nan")
         )
@@ -666,7 +693,7 @@ def summarize_csv(
     summary: list[dict[str, Any]] = []
     for (baseline, snr_db), group in sorted(groups.items()):
         rmse_stats = _summary_stats(group["rmse"])
-        nmse_stats = _summary_stats(group["nmse"], percentiles=False)
+        nmse_stats = _summary_stats(group["nmse"])
         peb_stats = _summary_stats(group["peb"])
         runtime_stats = _summary_stats(group["runtime"], percentiles=False)
         finite_rmse = np.asarray(group["rmse"], dtype=float)
@@ -707,7 +734,13 @@ def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, f
     if arr.size == 0:
         stats = {"mean": float("nan"), "median": float("nan"), "std": float("nan")}
         if percentiles:
-            stats.update({"p10": float("nan"), "p90": float("nan")})
+            stats.update(
+                {
+                    "p10": float("nan"),
+                    "p90": float("nan"),
+                    "p95": float("nan"),
+                }
+            )
         return stats
     stats = {
         "mean": float(np.mean(arr)),
@@ -715,7 +748,13 @@ def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, f
         "std": float(np.std(arr)),
     }
     if percentiles:
-        stats.update({"p10": float(np.percentile(arr, 10.0)), "p90": float(np.percentile(arr, 90.0))})
+        stats.update(
+            {
+                "p10": float(np.percentile(arr, 10.0)),
+                "p90": float(np.percentile(arr, 90.0)),
+                "p95": float(np.percentile(arr, 95.0)),
+            }
+        )
     return stats
 
 
@@ -726,6 +765,8 @@ def get_plot_metric(baseline: str, plot_kind: str) -> str | None:
         return "position_rmse_m"
     if plot_kind == "nmse":
         return "y_nmse"
+    if plot_kind == "outlier":
+        return "outlier_rate"
     raise ValueError(f"unknown plot kind {plot_kind!r}")
 
 
@@ -737,7 +778,9 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
     for (baseline, snr_db), group in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1])):
         success = [row for row in group if str(row.get("failed")).lower() != "true"]
         rmse_stats = _summary_stats([_to_float(row.get("position_rmse_m")) for row in success])
-        nmse_stats = _summary_stats([_to_float(row.get("y_nmse")) for row in success], percentiles=False)
+        nmse_stats = _summary_stats(
+            [_to_float(row.get("y_nmse")) for row in success]
+        )
         peb_stats = _summary_stats([_to_float(row.get("peb_position_m")) for row in success])
         runtime_stats = _summary_stats([_to_float(row.get("runtime_s")) for row in success], percentiles=False)
         outlier_rate = float("nan")
@@ -790,25 +833,186 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
             continue
         rows = [row for row in summary_rows if row["baseline"] == baseline]
         xs = np.asarray([_to_float(row["snr_db"]) for row in rows], dtype=float)
-        ys = np.asarray([_to_float(row[f"{metric}_mean"]) for row in rows], dtype=float)
-        order = np.argsort(xs)
+        summary_field = metric if plot_kind == "outlier" else f"{metric}_mean"
+        ys = np.asarray(
+            [_to_float(row.get(summary_field)) for row in rows], dtype=float
+        )
+        if plot_kind == "nmse":
+            positive = ys > 0.0
+            ys[positive] = 10.0 * np.log10(ys[positive])
+            ys[~positive] = np.nan
+        finite = np.isfinite(xs) & np.isfinite(ys)
+        if not np.any(finite):
+            continue
+        order = np.argsort(xs[finite])
         linestyle = "-." if baseline == "constrained_jones_peb" else ("--" if baseline == "peb" else "-")
+        is_proposed = baseline == "proposed"
         ax.plot(
-            xs[order],
-            ys[order],
+            xs[finite][order],
+            ys[finite][order],
             marker=markers[idx % len(markers)],
             linestyle=linestyle,
-            linewidth=1.5,
+            linewidth=2.5 if is_proposed else 1.5,
             label=BASELINE_LABELS[baseline],
+            zorder=10 if is_proposed else 2,
         )
     ax.set_xlabel("SNR (dB)")
-    ax.set_ylabel("Position RMSE / PEB (m)" if plot_kind == "rmse" else "Channel NMSE")
-    ax.set_yscale("log")
+    ylabel = {
+        "rmse": "Position RMSE (m)",
+        "nmse": "Channel NMSE (dB)",
+        "outlier": "Outlier probability",
+    }[plot_kind]
+    ax.set_ylabel(ylabel)
+    if plot_kind == "rmse":
+        ax.set_yscale("log")
+    elif plot_kind == "outlier":
+        ax.set_ylim(-0.02, 1.02)
     ax.grid(True, which="both", linestyle=":", linewidth=0.7)
-    ax.legend(fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, fontsize=8)
     fig.tight_layout()
-    fig.savefig(out_dir / (RMSE_PDF if plot_kind == "rmse" else NMSE_PDF))
+    output_name = {
+        "rmse": RMSE_PDF,
+        "nmse": NMSE_PDF,
+        "outlier": OUTLIER_PDF,
+    }[plot_kind]
+    fig.savefig(out_dir / output_name)
     plt.close(fig)
+
+
+def _runtime_memory_table(trial_csv: pathlib.Path) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, list[float]]] = {
+        baseline: {
+            "seen": [],
+            "runtime_minus10": [],
+            "runtime_0": [],
+            "rss": [],
+        }
+        for baseline in ESTIMATOR_BASELINES
+    }
+    with trial_csv.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            baseline = str(row.get("baseline", ""))
+            if baseline not in grouped:
+                continue
+            grouped[baseline]["seen"].append(1.0)
+            if str(row.get("failed", "")).lower() == "true":
+                continue
+            snr_db = _to_float(row.get("snr_db"))
+            runtime_s = _to_float(row.get("runtime_s"))
+            if np.isfinite(runtime_s):
+                if np.isclose(snr_db, -10.0):
+                    grouped[baseline]["runtime_minus10"].append(runtime_s)
+                if np.isclose(snr_db, 0.0):
+                    grouped[baseline]["runtime_0"].append(runtime_s)
+            for field in ("rss_mb_before", "rss_mb_after"):
+                rss_mb = _to_float(row.get(field))
+                if np.isfinite(rss_mb):
+                    grouped[baseline]["rss"].append(rss_mb)
+
+    table_rows = []
+    for baseline in ESTIMATOR_BASELINES:
+        values = grouped[baseline]
+        if not values["seen"]:
+            continue
+        runtime_minus10 = np.asarray(values["runtime_minus10"], dtype=float)
+        runtime_0 = np.asarray(values["runtime_0"], dtype=float)
+        rss = np.asarray(values["rss"], dtype=float)
+        table_rows.append(
+            {
+                "baseline": baseline,
+                "algorithm": BASELINE_LABELS[baseline],
+                "mean_runtime_s_at_minus10_db": (
+                    float(np.mean(runtime_minus10))
+                    if runtime_minus10.size
+                    else float("nan")
+                ),
+                "mean_runtime_s_at_0_db": (
+                    float(np.mean(runtime_0))
+                    if runtime_0.size
+                    else float("nan")
+                ),
+                "peak_memory_mb": (
+                    float(np.max(rss)) if rss.size else float("nan")
+                ),
+                "memory_measurement": "max_pre_post_rss_snapshot",
+                "n_runtime_at_minus10_db": int(runtime_minus10.size),
+                "n_runtime_at_0_db": int(runtime_0.size),
+            }
+        )
+    return table_rows
+
+
+def _markdown_value(value: Any) -> str:
+    numeric = _to_float(value)
+    if np.isfinite(numeric):
+        return f"{numeric:.6g}"
+    text = str(value or "")
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _write_summary_markdown(
+    out_dir: pathlib.Path,
+    command_line: str,
+    outlier_threshold_m: float,
+    runtime_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# External benchmark summary",
+        "",
+        f"Command: `{command_line}`",
+        "",
+        (
+            "All algorithms at a given trial and SNR use the same noisy "
+            "realization, verified by `y_noisy_hash`."
+        ),
+        "",
+        (
+            "Fig.7(b) plots `10 log10(mean linear NMSE)`. The trial and "
+            "summary CSVs retain linear-domain NMSE values."
+        ),
+        "",
+        (
+            "Fig.7(c) defines an outlier as position error greater than "
+            f"{outlier_threshold_m:g} m."
+        ),
+        "",
+        "## Table I: runtime and memory comparison",
+        "",
+        (
+            "Memory is the maximum observed pre/post-run RSS snapshot. It is "
+            "available only when `--profile-memory` is enabled and is not an "
+            "in-kernel peak-memory measurement."
+        ),
+        "",
+    ]
+    columns = [
+        ("algorithm", "Algorithm"),
+        ("mean_runtime_s_at_minus10_db", "Mean runtime at -10 dB (s)"),
+        ("mean_runtime_s_at_0_db", "Mean runtime at 0 dB (s)"),
+        ("peak_memory_mb", "Peak memory (MB)"),
+    ]
+    lines.append("| " + " | ".join(label for _, label in columns) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for row in runtime_rows:
+        lines.append(
+            "| "
+            + " | ".join(_markdown_value(row.get(field, "")) for field, _ in columns)
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            (
+                "Per-SNR mean, median, standard deviation, p10, p90, p95, "
+                "success rate, and outlier rate are stored in "
+                f"`{SUMMARY_CSV}`."
+            ),
+            "",
+        ]
+    )
+    (out_dir / SUMMARY_MD).write_text("\n".join(lines) + "\n")
 
 
 def _git_commit() -> str:
@@ -820,12 +1024,16 @@ def _git_commit() -> str:
 
 def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]) -> dict[str, Any]:
     return {
+        "benchmark_layout_version": 2,
         "n_trials": int(args.n_trials),
         "snr_grid": [float(value) for value in snr_grid],
         "paper_k": int(args.paper_k),
         "baselines": list(baselines),
         "grid_profile": str(args.grid_profile),
         "seed": int(args.seed),
+        "outlier_threshold_m": float(args.outlier_threshold_m),
+        "profile_memory": bool(args.profile_memory),
+        "memory_snapshot_fallback": "proc_self_status_vmrss",
         "git_commit": _git_commit(),
         "strict_ris_geometry": bool(args.strict_ris_geometry),
         "baseline_backend": str(args.baseline_backend),
@@ -848,7 +1056,7 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], baselines: list[s
         **signature,
         "git_commit": _git_commit(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "command_line": " ".join(sys.argv),
+        "command_line": str(getattr(args, "command_line", " ".join(sys.argv))),
         "jobs": int(args.jobs),
         "process_workers": int(args.process_workers),
         "blas_threads": int(args.blas_threads),
@@ -859,6 +1067,7 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], baselines: list[s
         "profile_memory": bool(args.profile_memory),
         "python": platform.python_version(),
         "numpy": np.__version__,
+        "scipy_optimizer_available": bool(scipy_is_available()),
         "baseline_backend": str(args.baseline_backend),
         "gpu_device": args.gpu_device,
         "gpu_batch_size": args.gpu_batch_size,
@@ -940,7 +1149,12 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run EVS-MIMO-RIS benchmark comparisons.")
-    add_mc_args(parser, n_trials_default=50, paper_k_default=3, outlier_threshold_default=0.1)
+    add_mc_args(
+        parser,
+        n_trials_default=100,
+        paper_k_default=3,
+        outlier_threshold_default=0.1,
+    )
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
     add_io_args(parser, default_out_dir="results/benchmark_comparison")
     add_resource_args(parser, jobs_default=10, blas_threads_default="auto")
@@ -988,6 +1202,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    command_argv = [
+        sys.executable,
+        sys.argv[0],
+        *(sys.argv[1:] if argv is None else argv),
+    ]
+    args.command_line = shlex.join(command_argv)
+    print(f"Command: {args.command_line}")
     if args.n_trials <= 0:
         raise ValueError("--n-trials must be positive")
     if args.jobs <= 0:
@@ -1019,9 +1240,14 @@ def main(argv: list[str] | None = None) -> None:
     summary_csv = out_dir / SUMMARY_CSV
     metadata_path = out_dir / "benchmark_metadata.json"
     baselines = parse_baselines(args.baselines)
-    if (
+    if not bool(args.include_constrained_jones_peb):
+        baselines = [
+            baseline
+            for baseline in baselines
+            if baseline != "constrained_jones_peb"
+        ]
+    elif (
         "peb" in baselines
-        and bool(args.include_constrained_jones_peb)
         and "constrained_jones_peb" not in baselines
     ):
         baselines.append("constrained_jones_peb")
@@ -1166,11 +1392,31 @@ def main(argv: list[str] | None = None) -> None:
             summary,
             list(summary[0].keys()) if summary else [],
         )
+    summary = _read_csv(summary_csv)
     with metadata_path.open("w") as handle:
         json.dump(_metadata(args, snr_grid, baselines), handle, indent=2)
+    runtime_rows = _runtime_memory_table(trial_csv)
+    runtime_fields = [
+        "baseline",
+        "algorithm",
+        "mean_runtime_s_at_minus10_db",
+        "mean_runtime_s_at_0_db",
+        "peak_memory_mb",
+        "memory_measurement",
+        "n_runtime_at_minus10_db",
+        "n_runtime_at_0_db",
+    ]
+    _write_csv(out_dir / RUNTIME_MEMORY_CSV, runtime_rows, runtime_fields)
+    _write_summary_markdown(
+        out_dir,
+        args.command_line,
+        float(args.outlier_threshold_m),
+        runtime_rows,
+    )
     if not args.no_plots:
         _plot(summary, out_dir, "rmse")
         _plot(summary, out_dir, "nmse")
+        _plot(summary, out_dir, "outlier")
     progress.log("finished", "completed", message="benchmark experiment finished")
     progress.close()
     print(f"Wrote benchmark comparison outputs to {out_dir}")

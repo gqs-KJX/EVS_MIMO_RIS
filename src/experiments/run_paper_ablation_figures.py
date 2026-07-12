@@ -15,6 +15,7 @@ import multiprocessing as mp
 import os
 import pathlib
 import platform
+import shlex
 import subprocess
 import sys
 import time
@@ -131,7 +132,6 @@ RECEIVER_MODE_CONVENTION = (
     "generation and estimator evaluation."
 )
 NESTED_RECEIVER_NOISE_CONVENTION = "fixed_full6d_reference_sigma2"
-FIGURE6_K_GRID = [1, 2, 3, 4]
 FIGURE_ORDER = ["fig1", "fig2", "fig3", "fig4", "fig5", "fig6"]
 FIG1_FIG2_SHARED_FIGURE = "fig1_fig2"
 FIG1_FIG2_SHARED_TRIAL_CSV = "fig1_fig2_vp_family_trials.csv"
@@ -142,7 +142,7 @@ FIGURE_PDFS = {
     "fig3": "fig3_evs_sensing_rmse_vs_snr.pdf",
     "fig4": "fig4_evs_peb_vs_snr.pdf",
     "fig5": "fig5_ngc_rescue_outlier_trigger_vs_snr.pdf",
-    "fig6": "fig6_rmse_vs_K_snr0.pdf",
+    "fig6": "fig6_lg_rdc_seed_p95_vs_snr.pdf",
 }
 FIGURE_METRICS = {
     "fig1": "position_rmse_m",
@@ -150,16 +150,22 @@ FIGURE_METRICS = {
     "fig3": "position_rmse_m",
     "fig4": "peb_position_m",
     "fig5": "outlier_flag",
-    "fig6": "position_rmse_m",
+    "fig6": "stage2_seed_clock_error_ns",
 }
 
 VARIANT_LABELS = {
-    "direct_vp": "Direct VP (w/o rescue)",
-    "old_gated": "GoF-gated rescue",
-    "force_rescue": "Always-run rescue",
-    "oracle_init_vp": "Oracle init VP",
-    "adaptive_jones_vp_proposed": "NGC proposed",
-    "adaptive_jones_no_rescue": "Adaptive-Jones VP (w/o rescue)",
+    "stage1_only": "Stage-I Only",
+    "fixed_pol_vp": "Fixed-Pol VP",
+    "free_jones_vp": "Free-Jones VP",
+    "adaptive_jones_no_rescue": "Adaptive-Jones VP",
+    "adaptive_jones_vp_proposed": "Proposed NGC–LG-RDC",
+    "scalar_receiver": "Scalar Receiver",
+    "dual_pol_receiver": "Dual-Polarization Receiver",
+    "full_6d_evs": "Full-6D EVS",
+    "direct_vp": "Direct VP",
+    "old_gated": "GoF-Gated Rescue",
+    "force_rescue": "Always-Run Rescue",
+    "oracle_init_vp": "Oracle-Initialization VP",
     "PEB": "Data-only Free-Jones PEB",
     "proposed_peb": "Data-only Free-Jones PEB",
     "full_6d_evs_peb": "Full-6D Free-Jones PEB",
@@ -169,8 +175,11 @@ VARIANT_LABELS = {
     "full_6d_constrained_jones_peb": "Full-6D Constrained-Jones PEB",
     "adaptive_jones_vp_proposed_force_lower_raw": "Proposed w/ always-run rescue",
     "adaptive_jones_vp_proposed_old_gated": "Proposed w/ GoF-gated rescue",
-    "stage2_legacy_multistart": "Stage-II legacy multistart",
-    "stage2_pllg": "Stage-II PLLG",
+    "stage2_weighted_mean_clock": "LG + Weighted-Mean Clock",
+    "stage2_lg_rdc": "Proposed LG-RDC",
+    "stage2_pllg_joint_seed": "Joint PLLG Seed + RDC",
+    "stage2_legacy_multistart": "LG-RDC Diagnostic",
+    "stage2_pllg": "Joint PLLG Diagnostic",
 }
 
 
@@ -213,6 +222,8 @@ RAW_SUMMARY_METRICS = [
     "peb_free_jones_m",
     "peb_constrained_jones_m",
     "peb_anchored_jones_m",
+    "stage2_seed_position_error_m",
+    "stage2_seed_clock_error_ns",
 ]
 
 PEB_EXTRA_FIELDS = [
@@ -420,6 +431,12 @@ FIELDNAMES = [
     "ngc_threshold_clock_green",
     "ngc_threshold_clock_red",
     "proposed_stage2_policy",
+    "stage2_seed_position_error_m",
+    "stage2_seed_clock_error_ns",
+    "stage2_num_valid_local_fixes",
+    "stage2_clock_estimator",
+    "stage2_rescue_impl",
+    "stage2_pllg_pseudorange_block_weight",
 ]
 
 _PEB_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -665,10 +682,9 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "proposed_stage2_policy": "reliability_gated",
                 "_allow_stage2": False,
             },
-            "regularized_jones_vp": {
+            "adaptive_jones_no_rescue": {
                 "enable_global_vp": True,
-                "global_vp": {"mode": "jones_regularized"},
-                "proposed_stage2_policy": "reliability_gated",
+                "global_vp": {"mode": "adaptive_jones"},
                 "_allow_stage2": False,
             },
             "adaptive_jones_vp_proposed": {
@@ -718,28 +734,24 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
         }
     if figure == "fig6":
         return {
-            "fixed_pol_vp": {
-                "global_vp": {"mode": "fixed_pol"},
-                "proposed_stage2_policy": "reliability_gated",
-                "_allow_stage2": False,
-            },
-            "free_jones_vp": {
-                "global_vp": {"mode": "jones_free"},
-                "proposed_stage2_policy": "reliability_gated",
-                "_allow_stage2": False,
-            },
-            "adaptive_jones_no_rescue": {
-                "global_vp": {"mode": "adaptive_jones"},
-                "proposed_stage2_policy": "reliability_gated",
-                "_allow_stage2": False,
-            },
-            "adaptive_jones_vp_proposed": {
+            "stage2_weighted_mean_clock": {
                 **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_force_run_for_diagnostics": True,
+                "stage2_rescue_impl": "legacy_multistart",
+                "stage2_clock_estimator": "weighted_mean",
             },
-            "proposed_peb": {"global_vp": {"mode": "adaptive_jones"}, "_runner": "peb_only"},
-            "constrained_jones_peb": {
-                "global_vp": {"mode": "adaptive_jones"},
-                "_runner": "peb_only",
+            "stage2_lg_rdc": {
+                **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_force_run_for_diagnostics": True,
+                "stage2_rescue_impl": "legacy_multistart",
+                "stage2_clock_estimator": "decoupled_robust",
+            },
+            "stage2_pllg_joint_seed": {
+                **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_force_run_for_diagnostics": True,
+                "stage2_rescue_impl": "pllg",
+                "stage2_clock_estimator": "decoupled_robust",
+                "stage2_pllg_pseudorange_block_weight": 1.0,
             },
         }
     raise ValueError(f"unknown figure {figure!r}")
@@ -748,6 +760,10 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {
+            "PEB": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
             "free_jones_vp_gated_rescue": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
@@ -813,19 +829,7 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {
-            "PEB": {"receiver_mode": "full_6d", "_runner": "peb_only"},
             "constrained_jones_peb": {
-                "receiver_mode": "full_6d",
-                "_runner": "peb_only",
-            },
-        }
-    if figure == "fig3":
-        return {
-            "full_6d_evs_peb": {
-                "receiver_mode": "full_6d",
-                "_runner": "peb_only",
-            },
-            "full_6d_constrained_jones_peb": {
                 "receiver_mode": "full_6d",
                 "_runner": "peb_only",
             },
@@ -1033,6 +1037,10 @@ def _empty_row() -> dict[str, Any]:
         "direct_candidate_data_only_scaled_efim_condition_number",
         "rescue_candidate_data_only_scaled_efim_lambda_min",
         "rescue_candidate_data_only_scaled_efim_condition_number",
+        "stage2_seed_position_error_m",
+        "stage2_seed_clock_error_ns",
+        "stage2_num_valid_local_fixes",
+        "stage2_pllg_pseudorange_block_weight",
     ]
     for field in numeric_fields:
         row[field] = float("nan")
@@ -1053,12 +1061,12 @@ def _assert_effective_k(
     paper_k: int,
     x_value: float,
 ) -> None:
-    expected_k = int(x_value) if figure == "fig6" else int(paper_k)
+    _ = x_value
+    expected_k = int(paper_k)
     if int(effective_k) != expected_k:
-        expectation = "x_value" if figure == "fig6" else "paper_k"
         raise AssertionError(
             f"{figure}: effective_K={effective_k} must equal "
-            f"{expectation}={expected_k}"
+            f"paper_k={expected_k}"
         )
 
 
@@ -2450,6 +2458,41 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             result.get("stage1_config", {}).get("stage2_rescue_impl", "legacy_multistart"),
         )
     )
+    seed_position_error_m = _finite_float(
+        stage2_diag.get("seed_position_error_m")
+    )
+    seed_clock_error_s = _finite_float(stage2_diag.get("seed_clock_error_s"))
+    seed_clock_error_ns = (
+        1.0e9 * abs(seed_clock_error_s)
+        if np.isfinite(seed_clock_error_s)
+        else float("nan")
+    )
+    stage2_clock_estimator = str(
+        stage2_diag.get(
+            "clock_estimator",
+            result.get("stage1_config", {}).get("stage2_clock_estimator", ""),
+        )
+    )
+    stage2_pllg_weight = stage2_diag.get(
+        "pllg_pseudorange_block_weight",
+        result.get("stage1_config", {}).get(
+            "stage2_pllg_pseudorange_block_weight", ""
+        ),
+    )
+    metrics.update(
+        {
+            "stage2_seed_position_error_m": seed_position_error_m,
+            "stage2_seed_clock_error_ns": seed_clock_error_ns,
+            "stage2_num_valid_local_fixes": (
+                int(stage2_diag.get("num_valid_local_fixes", 0))
+                if stage2_diag
+                else ""
+            ),
+            "stage2_clock_estimator": stage2_clock_estimator,
+            "stage2_rescue_impl": stage2_impl,
+            "stage2_pllg_pseudorange_block_weight": stage2_pllg_weight,
+        }
+    )
     scene_centers = np.asarray(scene.get("ris_centers", []), dtype=float)
     local_rows = []
     stage1_estimate = result.get("estimate_initial", {})
@@ -2558,9 +2601,9 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
         "pllg_polish_runtime_s": stage2_diag.get("pllg_polish_runtime_s", np.nan),
         "legacy_fallback_runtime_s": stage2_diag.get("legacy_fallback_runtime_s", np.nan),
         "stage2_total_runtime_s": stage2_diag.get("stage2_total_runtime_s", stage2_diag.get("structured_refinement_total", timing.get("stage2", np.nan))),
-        "seed_position_error_m": _finite_float(stage2_diag.get("seed_position_error_m")),
+        "seed_position_error_m": seed_position_error_m,
         "seed_z_error_m": _finite_float(stage2_diag.get("seed_z_error_m")),
-        "seed_clock_error_s": _finite_float(stage2_diag.get("seed_clock_error_s")),
+        "seed_clock_error_s": seed_clock_error_s,
         "final_position_error_m": pos_rmse,
         "final_clock_error_s": _finite_float(
             float(final.get("delta_t", np.nan)) - float(scene.get("delta_t_true", np.nan))
@@ -2575,7 +2618,8 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             "common_ris_refinement_runtime_s": stage2_diag.get("common_ris_refinement_runtime_s", np.nan),
             "common_ris_refinement_num_valid_local_fixes": stage2_diag.get("common_ris_refinement_num_valid_local_fixes", ""),
             "geometry_seed_impl": str(stage2_diag.get("geometry_seed_impl", "")),
-            "pllg_pseudorange_block_weight": stage2_diag.get("pllg_pseudorange_block_weight", ""),
+            "pllg_pseudorange_block_weight": stage2_pllg_weight,
+            "stage2_clock_estimator": stage2_clock_estimator,
             "delay_sigma_source": str(stage2_diag.get("delay_sigma_source", stage2_diag.get("sigma_tau_source", ""))),
             "delay_sigma_used_floor": bool(stage2_diag.get("delay_sigma_used_floor", stage2_diag.get("sigma_tau_used_floor", False))),
             "delay_sigma_min_s": float(np.min(sigma_values)) if sigma_values.size else "",
@@ -3570,7 +3614,7 @@ def get_plot_metric(row_or_group: dict[str, Any] | list[dict[str, Any]], figure:
     if figure == "fig5":
         return "outlier_flag"
     if figure == "fig6":
-        return "peb_position_m" if "peb" in variant.lower() else "position_rmse_m"
+        return "stage2_seed_clock_error_ns"
     raise ValueError(f"unknown figure {figure!r}")
 
 
@@ -3599,8 +3643,12 @@ def _summary_stats(values: np.ndarray) -> dict[str, float]:
             "std": float(np.std(values)),
             "p10": float(np.percentile(values, 10.0)),
             "p90": float(np.percentile(values, 90.0)),
+            "p95": float(np.percentile(values, 95.0)),
         }
-    return {name: float("nan") for name in ("mean", "median", "std", "p10", "p90")}
+    return {
+        name: float("nan")
+        for name in ("mean", "median", "std", "p10", "p90", "p95")
+    }
 
 
 def _ngc_rescue_run_rate(rows: list[dict[str, Any]]) -> float:
@@ -3673,6 +3721,7 @@ def summarize_rows(rows: list[dict[str, Any]], figure: str) -> list[dict[str, An
             "plot_y_std": stats["std"],
             "plot_y_p10": stats["p10"],
             "plot_y_p90": stats["p90"],
+            "plot_y_p95": stats["p95"],
             **stats,
             "success_rate": float((len(group) - failed_count) / max(len(group), 1)),
             "outlier_rate": float(np.mean(outliers)) if outliers.size else float("nan"),
@@ -3711,10 +3760,12 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     import matplotlib.pyplot as plt
 
     metric = FIGURE_METRICS[figure]
-    xlabel = "K" if figure == "fig6" else "SNR (dB)"
+    xlabel = "SNR (dB)"
     markers = ["o", "s", "^", "D", "v", "P"]
     variants = list(dict.fromkeys(row["variant"] for row in summary_rows))
-    proposed_variant = "adaptive_jones_vp_proposed"
+    proposed_variant = (
+        "stage2_lg_rdc" if figure == "fig6" else "adaptive_jones_vp_proposed"
+    )
     if figure == "fig5":
         preferred = [
             "direct_vp",
@@ -3735,6 +3786,8 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
         ]
         for ax, field, ylabel in panels:
             for idx, variant in enumerate(variants):
+                if field == "rescue_trigger_rate" and variant == "oracle_init_vp":
+                    continue
                 rows = [row for row in summary_rows if row["variant"] == variant]
                 xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
                 ys = np.asarray([_to_float(row.get(field)) for row in rows], dtype=float)
@@ -3767,23 +3820,31 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
         return
 
     if figure == "fig6":
-        if proposed_variant in variants:
-            variants = [
-                variant for variant in variants if variant != proposed_variant
-            ] + [proposed_variant]
+        preferred = [
+            "stage2_weighted_mean_clock",
+            "stage2_lg_rdc",
+            "stage2_pllg_joint_seed",
+        ]
+        variants = [variant for variant in preferred if variant in variants]
         fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.0), sharex=True)
         panels = [
-            (axes[0], "plot_y_median", "Median position error / PEB (m)", True),
-            (axes[1], "outlier_rate", "Outlier probability", False),
+            (
+                axes[0],
+                "stage2_seed_clock_error_ns_p95",
+                "95th-percentile Stage-II clock-seed error (ns)",
+            ),
+            (
+                axes[1],
+                "stage2_seed_position_error_m_p95",
+                "95th-percentile Stage-II position-seed error (m)",
+            ),
         ]
-        for ax, field, ylabel, log_y in panels:
+        for ax, field, ylabel in panels:
             for idx, variant in enumerate(variants):
-                if field == "outlier_rate" and variant == "proposed_peb":
-                    continue
                 rows = [row for row in summary_rows if row["variant"] == variant]
                 xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
                 ys = np.asarray([_to_float(row.get(field)) for row in rows], dtype=float)
-                finite = np.isfinite(xs) & np.isfinite(ys)
+                finite = np.isfinite(xs) & np.isfinite(ys) & (ys > 0.0)
                 if not np.any(finite):
                     continue
                 order = np.argsort(xs[finite])
@@ -3799,10 +3860,7 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
                 )
             ax.set_xlabel(xlabel)
             ax.set_ylabel(ylabel)
-            if log_y:
-                ax.set_yscale("log")
-            else:
-                ax.set_ylim(-0.02, 1.02)
+            ax.set_yscale("log")
             ax.grid(True, which="both", linestyle=":", linewidth=0.7)
         handles, labels = axes[0].get_legend_handles_labels()
         if handles:
@@ -3821,7 +3879,36 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
         "outlier_flag": "Outlier probability",
     }[metric]
     fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    if proposed_variant in variants:
+    preferred_by_figure = {
+        "fig1": [
+            "stage1_only",
+            "fixed_pol_vp",
+            "free_jones_vp",
+            "adaptive_jones_no_rescue",
+            "adaptive_jones_vp_proposed",
+            "constrained_jones_peb",
+        ],
+        "fig2": [
+            "stage1_only",
+            "fixed_pol_vp",
+            "free_jones_vp",
+            "adaptive_jones_no_rescue",
+            "adaptive_jones_vp_proposed",
+        ],
+        "fig3": ["scalar_receiver", "dual_pol_receiver", "full_6d_evs"],
+        "fig4": [
+            "scalar_peb",
+            "dual_pol_peb",
+            "full_6d_evs_peb",
+            "full_6d_constrained_jones_peb",
+        ],
+    }
+    preferred = preferred_by_figure.get(figure, [])
+    if preferred:
+        variants = [variant for variant in preferred if variant in variants] + [
+            variant for variant in variants if variant not in preferred
+        ]
+    elif proposed_variant in variants:
         variants = [
             variant for variant in variants if variant != proposed_variant
         ] + [proposed_variant]
@@ -3935,7 +4022,6 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
         "n_trials": int(args.n_trials),
         "snr_grid": [float(value) for value in snr_grid],
         "paper_k": int(args.paper_k),
-        "k_grid": [int(value) for value in args.k_grid_values],
         "figures": list(figures),
         "seed": int(args.seed),
         "variant_list": {
@@ -3967,6 +4053,7 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
             global_vp_overrides.get("vp_debug_compare_explicit", False)
         ),
         "fig1_proposed_dispatch_version": 2,
+        "paper_ablation_layout_version": 3,
         "include_constrained_jones_peb": bool(
             getattr(args, "include_constrained_jones_peb", True)
         ),
@@ -4004,7 +4091,7 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "git_commit": commit,
         "timestamp": timestamp,
         "timestamp_utc": timestamp,
-        "command_line": " ".join(sys.argv),
+        "command_line": str(getattr(args, "command_line", " ".join(sys.argv))),
         "n_trials": int(args.n_trials),
         "jobs": int(args.jobs),
         "process_workers": int(args.process_workers),
@@ -4023,11 +4110,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "profile_memory": bool(args.profile_memory),
         "snr_grid": snr_grid,
         "paper_k": int(args.paper_k),
-        "k_grid": [int(value) for value in args.k_grid_values],
         "figures": figures,
         "fig6_interpretation": (
-            "complete_ngc_proposed_system_vs_vp_only_polarization_variants;"
-            "adaptive_jones_no_rescue isolates adaptive Jones VP without rescue"
+            "forced_stage2_seed_diagnostics_lg_weighted_mean_vs_lg_rdc_vs_"
+            "joint_pllg_rdc;reports_p95_absolute_seed_errors"
         ),
         "seed": int(args.seed),
         "include_diagnostic_variants": bool(
@@ -4048,8 +4134,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "config_overrides": {
             "seed": int(args.seed),
             "outlier_threshold_m": float(args.outlier_threshold_m),
-            "paper_k_for_fig1_to_fig5": int(args.paper_k),
-            "k_grid_for_fig6": [int(value) for value in args.k_grid_values],
+            "paper_k_for_all_figures": int(args.paper_k),
+            "deprecated_k_grid_ignored": [
+                int(value) for value in args.k_grid_values
+            ],
             "global_vp": global_vp_overrides,
             "crb": {
                 "include_constrained_jones_peb": bool(
@@ -4172,7 +4260,7 @@ def _csv_matches_request(
         row_paper_k = (
             int(paper_k_value) if np.isfinite(paper_k_value) else None
         )
-        expected_k = int(x_value) if canonical_figure == "fig6" else int(args.paper_k)
+        expected_k = int(args.paper_k)
         if (
             row_k != expected_k
             or effective_k != expected_k
@@ -4222,8 +4310,7 @@ def _can_reuse_csv(
 
 
 def _figure_x_grid(figure: str, snr_grid: list[float], k_grid: list[int]) -> tuple[str, list[float]]:
-    if figure == "fig6":
-        return "K", [float(k) for k in k_grid]
+    _ = figure, k_grid
     return "snr_db", snr_grid
 
 
@@ -4237,11 +4324,8 @@ def _config_for_point(
     paper_k: int,
 ) -> dict:
     overrides = copy.deepcopy(variant_updates)
-    if figure == "fig6":
-        overrides["K"] = int(x_value)
-        snr_db = 0.0
-    else:
-        overrides["K"] = int(paper_k)
+    _ = figure, x_value
+    overrides["K"] = int(paper_k)
     return make_base_config(seed, snr_db, overrides)
 
 
@@ -4260,11 +4344,7 @@ def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[li
             "error": f"{type(exc).__name__}: {exc}",
         }
     )
-    effective_k = (
-        int(task["x_value"])
-        if task["figure"] == "fig6"
-        else int(task["paper_k"])
-    )
+    effective_k = int(task["paper_k"])
     _set_row_k_metadata(
         row,
         figure=str(task["figure"]),
@@ -4280,7 +4360,7 @@ def _failure_row_from_task(task: dict[str, Any], exc: BaseException) -> tuple[li
 
 def _run_trial_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     try:
-        k_paths = int(task["x_value"]) if task["figure"] == "fig6" else int(task["paper_k"])
+        k_paths = int(task["paper_k"])
         config = _config_from_base(
             figure=task["figure"],
             seed=task["trial_seed"],
@@ -4333,7 +4413,7 @@ def _trial_tasks(
     tasks = []
     for x_value in x_values:
         snr_db = float(x_value) if x_name == "snr_db" else 0.0
-        effective_k = int(x_value) if figure == "fig6" else int(paper_k)
+        effective_k = int(paper_k)
         for variant, updates in variants.items():
             for trial_id, trial_seed in enumerate(trial_seeds):
                 tasks.append(
@@ -4391,7 +4471,7 @@ def _grouped_tasks(
     tasks = []
     for x_value in x_values:
         snr_db = float(x_value) if x_name == "snr_db" else 0.0
-        k_paths = int(x_value) if figure == "fig6" else int(paper_k)
+        k_paths = int(paper_k)
         for trial_id, trial_seed in enumerate(trial_seeds):
             tasks.append(
                 {
@@ -4555,7 +4635,7 @@ def _config_from_base(
 ) -> dict:
     config = copy.deepcopy(_base_worker_config())
     config["seed"] = int(seed)
-    config["SNR_dB"] = float(0.0 if figure == "fig6" else snr_db)
+    config["SNR_dB"] = float(snr_db)
     config["print_progress"] = False
     config["verbose_stage2"] = False
     config["run_full_legacy_comparison"] = False
@@ -4901,6 +4981,8 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 config = apply_nested_update(copy.deepcopy(base_config), updates)
                 allow_stage2 = bool(updates.get("_allow_stage2", True))
                 runner = str(updates.get("_runner", "proposed"))
+                if runner == "peb_only":
+                    continue
                 if runner == "stage1_only":
                     factory = (
                         lambda data=data, stage1=stage1, config=config: (
@@ -4988,21 +5070,23 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 if log:
                     logs.append(log)
             peb_variants = []
-            if not selected_variants or "PEB" in selected_variants:
+            if "PEB" in selected_variants:
                 peb_variants.append("PEB")
             if (
                 bool(_jones_bound_options(base_config)["include_constrained"])
-                and (
-                    not selected_variants
-                    or "constrained_jones_peb" in selected_variants
-                    or "PEB" in selected_variants
-                )
+                and "constrained_jones_peb" in selected_variants
             ):
                 peb_variants.append("constrained_jones_peb")
             for peb_variant in peb_variants:
                 peb_config = apply_nested_update(
                     copy.deepcopy(base_config),
-                    _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"],
+                    (
+                        _diagnostic_variant_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"]
+                        if peb_variant == "PEB"
+                        else _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)[
+                            "constrained_jones_peb"
+                        ]
+                    ),
                 )
                 row, log = _row_for_result_or_failure(
                     result_factory=lambda config=peb_config, data=data: (
@@ -5078,7 +5162,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     variant=variant,
                     trial_id=trial_id,
                     trial_seed=trial_seed,
-                    snr_db=0.0,
+                    snr_db=snr_db,
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
@@ -5111,7 +5195,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                     variant=variant,
                     trial_id=trial_id,
                     trial_seed=trial_seed,
-                    snr_db=0.0,
+                    snr_db=snr_db,
                     x_name=x_name,
                     x_value=x_value,
                     k_paths=k_paths,
@@ -5408,7 +5492,8 @@ STAGE2_DIAGNOSTIC_FIELDS = [
     "final_position_error_m", "final_clock_error_s", "z_boundary_hit",
     "common_ris_refinement_success", "common_ris_refinement_impl",
     "common_ris_refinement_runtime_s", "common_ris_refinement_num_valid_local_fixes",
-    "geometry_seed_impl", "pllg_pseudorange_block_weight", "delay_sigma_source",
+    "geometry_seed_impl", "pllg_pseudorange_block_weight", "stage2_clock_estimator",
+    "delay_sigma_source",
     "delay_sigma_used_floor", "delay_sigma_min_s", "delay_sigma_max_s",
     "delay_sigma_values_json", "stage2_clock_term_raw_s2_before",
     "stage2_clock_term_normalized_before", "stage2_ris_term_raw_before",
@@ -5894,7 +5979,7 @@ def _validation_rows_for_grouping(
         in {
             "fixed_pol_vp",
             "free_jones_vp",
-            "regularized_jones_vp",
+            "adaptive_jones_no_rescue",
             "adaptive_jones_vp_proposed",
         }
     }
@@ -5969,7 +6054,7 @@ def validate_grouped_equivalence(args: argparse.Namespace, snr_grid: list[float]
     variants = [
         "fixed_pol_vp",
         "free_jones_vp",
-        "regularized_jones_vp",
+        "adaptive_jones_no_rescue",
         "adaptive_jones_vp_proposed",
     ]
     metrics = ["position_rmse_m", "y_nmse", "raw_objective_final"]
@@ -6021,6 +6106,78 @@ def validate_grouped_equivalence(args: argparse.Namespace, snr_grid: list[float]
     )
 
 
+def _markdown_value(value: Any) -> str:
+    numeric = _to_float(value)
+    if np.isfinite(numeric):
+        return f"{numeric:.6g}"
+    text = str(value or "")
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _write_summary_markdown(
+    out_dir: pathlib.Path,
+    figures: list[str],
+    command_line: str,
+) -> None:
+    lines = [
+        "# Paper ablation summary",
+        "",
+        f"Command: `{command_line}`",
+        "",
+        (
+            "All plotted values below are read back from the per-figure trial "
+            "CSVs. Fig.6 reports tail seed errors and does not imply that "
+            "Stage-II improves every final estimate."
+        ),
+        "",
+    ]
+    for figure in figures:
+        summary_path = _figure_summary_csv(out_dir, figure)
+        if not summary_path.exists():
+            continue
+        rows = _read_csv(summary_path)
+        lines.extend([f"## {figure.upper()}", ""])
+        if figure == "fig5":
+            columns = [
+                ("variant", "Variant"),
+                ("x_value", "SNR (dB)"),
+                ("plot_y_mean", "Outlier probability"),
+                ("rescue_trigger_rate", "Rescue trigger rate"),
+                ("n", "Trials"),
+            ]
+        elif figure == "fig6":
+            columns = [
+                ("variant", "Variant"),
+                ("x_value", "SNR (dB)"),
+                ("stage2_seed_clock_error_ns_p95", "Clock seed p95 (ns)"),
+                ("stage2_seed_position_error_m_p95", "Position seed p95 (m)"),
+                ("success_rate", "Run success rate"),
+                ("n", "Trials"),
+            ]
+        else:
+            columns = [
+                ("variant", "Variant"),
+                ("x_value", "SNR (dB)"),
+                ("metric", "Metric"),
+                ("plot_y_mean", "Mean"),
+                ("plot_y_p95", "p95"),
+                ("success_rate", "Run success rate"),
+                ("n", "Trials"),
+            ]
+        lines.append("| " + " | ".join(label for _, label in columns) + " |")
+        lines.append("| " + " | ".join("---" for _ in columns) + " |")
+        for row in rows:
+            cells = []
+            for field, _ in columns:
+                value = row.get(field, "")
+                if field == "variant":
+                    value = VARIANT_LABELS.get(str(value), str(value))
+                cells.append(_markdown_value(value))
+            lines.append("| " + " | ".join(cells) + " |")
+        lines.append("")
+    (out_dir / "summary.md").write_text("\n".join(lines) + "\n")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv_list = sys.argv[1:] if argv is None else list(argv)
     parser = argparse.ArgumentParser(description="Generate paper ablation figures.")
@@ -6038,9 +6195,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Expose opt-in Fig.1/Fig.2 diagnostic variants before filtering.",
     )
-    add_mc_args(parser, n_trials_default=50, paper_k_default=DEFAULT_PAPER_K, outlier_threshold_default=0.1)
+    add_mc_args(
+        parser,
+        n_trials_default=200,
+        paper_k_default=DEFAULT_PAPER_K,
+        outlier_threshold_default=0.1,
+    )
     parser.add_argument("--snr-grid", default=DEFAULT_SNR_GRID)
-    parser.add_argument("--k-grid", default="1,2,3,4")
+    parser.add_argument(
+        "--k-grid",
+        default="1,2,3,4",
+        help=(
+            "Deprecated compatibility option; Fig.6 now uses --snr-grid and "
+            "keeps K fixed by --paper-k."
+        ),
+    )
     add_stage2_rescue_args(parser)
     add_io_args(parser, default_out_dir="results/ablation_paper")
     parser.add_argument("--reuse-existing", action="store_true")
@@ -6145,9 +6314,7 @@ def _progress_task_count(
             x_count = len(snr_grid)
         else:
             figure_key = figure
-            x_count = (
-                len(args.k_grid_values) if figure == "fig6" else len(snr_grid)
-            )
+            x_count = len(snr_grid)
         multiplier = 1
         if args.task_grouping == "variant":
             multiplier = len(
@@ -6193,6 +6360,13 @@ def _print_diagnostic_comparison_note(
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    command_argv = [
+        sys.executable,
+        sys.argv[0],
+        *(sys.argv[1:] if argv is None else argv),
+    ]
+    args.command_line = shlex.join(command_argv)
+    print(f"Command: {args.command_line}")
     if args.n_trials <= 0:
         raise ValueError("--n-trials must be positive")
     if args.jobs <= 0:
@@ -6207,8 +6381,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--paper-k must be positive")
     figures = parse_figures(args.figures)
     snr_grid = parse_snr_grid(args.snr_grid)
-    print(f"Running Fig.1-Fig.5 with paper_k = {args.paper_k}")
-    print(f"Running Fig.6 K-grid = {args.k_grid_values}")
+    print(f"Running Fig.1-Fig.6 with paper_k = {args.paper_k}")
+    print(f"Running Fig.1-Fig.6 SNR-grid = {snr_grid}")
     diagnostic_variants = _enabled_diagnostic_variant_names(args, figures)
     print(f"include_diagnostic_variants={bool(args.include_diagnostic_variants)}")
     print(f"diagnostic_variants={','.join(diagnostic_variants)}")
@@ -6236,10 +6410,7 @@ def main(argv: list[str] | None = None) -> None:
     n_tasks = max(
         1,
         int(args.n_trials)
-        * max(
-            len(snr_grid),
-            len(args.k_grid_values) if "fig6" in figures else 0,
-        ),
+        * len(snr_grid),
     )
     args.resource_plan = resolve_hybrid_resources(
         jobs=args.jobs,
@@ -6320,6 +6491,7 @@ def main(argv: list[str] | None = None) -> None:
         completed_figures.add(figure)
     with metadata_path.open("w") as handle:
         json.dump(_metadata(args, snr_grid, figures), handle, indent=2)
+    _write_summary_markdown(args.out_dir, figures, args.command_line)
     progress.log("finished", "completed", message="paper ablation experiment finished")
     progress.close()
     print(f"Wrote paper ablation outputs to {args.out_dir}")
