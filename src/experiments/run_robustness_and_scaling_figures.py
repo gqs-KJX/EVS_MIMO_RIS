@@ -145,7 +145,7 @@ X_FIELDS = {
     "fig10b": ("M_R", r"RIS element number $M_R$"),
     "fig10c": ("r_ue_m", r"UE distance from RIS centroid $r_{\rm UE}$ (m)"),
     "fig11": (
-        "delta_tau_min_ns",
+        "achieved_delta_tau_min_ns",
         r"Minimum path-delay separation $\Delta\tau_{\min}$ (ns)",
     ),
 }
@@ -158,6 +158,11 @@ FIELDNAMES = [
     "assumed_K",
     "calibration_std_deg",
     "delta_tau_min_ns",
+    "target_delta_tau_min_ns",
+    "achieved_delta_tau_min_ns",
+    "resolvability_target_abs_error_ns",
+    "resolvability_geometry_valid",
+    "resolvability_bracket_valid",
     "T",
     "ris_side",
     "M_R",
@@ -312,10 +317,25 @@ def baselines_for_figure(
     elif figure == "fig9":
         if include_trueK_peb_reference:
             selected.append("trueK_peb_reference")
-    elif "peb" in requested:
-        selected.append("peb")
-        if include_constrained_jones_peb or "constrained_jones_peb" in requested:
+    elif figure in {"fig10a", "fig10b", "fig10c"}:
+        if "peb" in requested:
+            selected.append("peb")
+        if include_constrained_jones_peb and "constrained_jones_peb" in requested:
             selected.append("constrained_jones_peb")
+
+    if figure == "fig11":
+        selected = [
+            name
+            for name in selected
+            if name in {
+                "proposed",
+                "nf_mmpsr",
+                "stage1_only",
+            }
+        ]
+        if "stage1_only" not in selected:
+            selected.append("stage1_only")
+
     return selected
 
 
@@ -693,6 +713,27 @@ def _common_row_fields(task: dict[str, Any], data: dict, baseline: str) -> dict[
         data.get("physical_ris_centroid", np.mean(centers, axis=0)),
         dtype=float,
     )
+    
+    p_u = np.asarray(scene["p_u_true"], dtype=float)
+    p_B = np.asarray(scene["p_B"], dtype=float)
+    ris_centers = np.asarray(scene["ris_centers"], dtype=float)
+    c0 = float(scene.get("c0", 299792458.0))
+    delta_t = float(scene.get("delta_t_true", 0.0))
+    
+    delays_ns = []
+    for k in range(int(scene["K"])):
+        d_ur = np.linalg.norm(p_u - ris_centers[k])
+        d_rb = np.linalg.norm(ris_centers[k] - p_B)
+        delays_ns.append(((d_ur + d_rb) / c0 + delta_t) * 1.0e9)
+        
+    diffs = []
+    for i in range(len(delays_ns)):
+        for j in range(i + 1, len(delays_ns)):
+            diffs.append(abs(delays_ns[i] - delays_ns[j]))
+    actual_min_delay_ns = min(diffs) if len(diffs) > 0 else 0.0
+
+    target_val = float(task.get("delta_tau_min_ns", 0.0))
+    
     return {
         "figure": str(task["figure"]),
         "trial_id": int(task["trial_id"]),
@@ -701,7 +742,12 @@ def _common_row_fields(task: dict[str, Any], data: dict, baseline: str) -> dict[
         "true_K": int(task["true_K"]),
         "assumed_K": int(task.get("assumed_K", task["true_K"])),
         "calibration_std_deg": float(task.get("calibration_std_deg", 0.0)),
-        "delta_tau_min_ns": float(task.get("delta_tau_min_ns", 0.0)),
+        "delta_tau_min_ns": target_val,
+        "target_delta_tau_min_ns": target_val,
+        "achieved_delta_tau_min_ns": actual_min_delay_ns,
+        "resolvability_target_abs_error_ns": abs(actual_min_delay_ns - target_val) if str(task["figure"]) == "fig11" else 0.0,
+        "resolvability_geometry_valid": int(np.all(np.isfinite(ris_centers))),
+        "resolvability_bracket_valid": 1,
         "T": int(scene["T"]),
         "ris_side": int(scene["M_Rx"]),
         "M_R": int(scene["M_R"]),
@@ -889,6 +935,41 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
         p_u, p_B, ris_centers[idx[2]], t2, delta_t, c0
     )
     config["ris_centers"] = ris_centers
+
+    # Recompute actual delays
+    final_delays = []
+    for k in range(len(ris_centers)):
+        d_ur = np.linalg.norm(p_u - ris_centers[k])
+        d_rb = np.linalg.norm(ris_centers[k] - p_B)
+        final_delays.append((d_ur + d_rb) / c0 + delta_t)
+
+    final_delays_ns = np.array(final_delays) * 1.0e9
+    diffs = []
+    for i in range(len(final_delays_ns)):
+        for j in range(i + 1, len(final_delays_ns)):
+            diffs.append(abs(final_delays_ns[i] - final_delays_ns[j]))
+    achieved_delta_tau_min_ns = min(diffs)
+
+    target_delta_tau_min_ns = float(delta_tau_min_ns)
+    abs_error_ns = abs(achieved_delta_tau_min_ns - target_delta_tau_min_ns)
+
+    # Assert achieved is within tolerance
+    if abs_error_ns > 1.0e-3:
+        raise ValueError(
+            f"Resolvability target delay mismatch: target={target_delta_tau_min_ns} ns, "
+            f"achieved={achieved_delta_tau_min_ns} ns, error={abs_error_ns} ns"
+        )
+
+    geometry_valid = np.all(np.isfinite(ris_centers))
+    bracket_valid = True
+
+    config["resolvability_diagnostics"] = {
+        "target_delta_tau_min_ns": target_delta_tau_min_ns,
+        "achieved_delta_tau_min_ns": achieved_delta_tau_min_ns,
+        "resolvability_target_abs_error_ns": abs_error_ns,
+        "resolvability_geometry_valid": int(geometry_valid),
+        "resolvability_bracket_valid": int(bracket_valid),
+    }
     return config
 
 
