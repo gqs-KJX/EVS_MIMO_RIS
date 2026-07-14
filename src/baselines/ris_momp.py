@@ -9,19 +9,15 @@ import numpy as np
 
 from .backend import BackendConfig, choose_batch_size, get_backend
 from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
+from .factorized_scoring import factorized_fit_supports
 from .common import (
     BaselineResult,
     delay_grid_from_scene,
     expand_jones_group,
     geometric_support_to_position_ls,
     group_omp_select,
-    linear_ls_fit,
-    raw_atom_from_support,
-    simple_atom_normalize,
-    supports_to_design,
     vectorize_raw_observation,
 )
-from ..experiments.resource_control import trim_memory
 
 
 def _ux_uy_direction_grid(size: int) -> list[tuple[int, int, float, float, np.ndarray]]:
@@ -130,8 +126,9 @@ def _fit_groups(
     ridge: float = 1.0e-10,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
     expanded = [support for group in groups for support in expand_jones_group(group, 2)]
-    Phi = supports_to_design(scene, config, expanded)
-    coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+    coeffs, y_hat, residual = factorized_fit_supports(
+        scene, config, expanded, y_vec, ridge=ridge
+    )
     return coeffs, y_hat, residual, expanded
 
 
@@ -288,6 +285,7 @@ def run_ris_momp_baseline(data: dict, config: dict) -> BaselineResult:
         batch_size=batch_size,
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
         backend_config=backend_cfg,
+        static_cache_key=cache_key,
     )
     residual = y_vec - y_hat
     coarse_residual_norm = float(np.linalg.norm(residual))
@@ -345,7 +343,7 @@ def run_ris_momp_baseline(data: dict, config: dict) -> BaselineResult:
         "backend_warning": backend.warning,
         "max_groups": max_groups,
         "momp_group_omp_enabled": True,
-        "momp_score_mode": "group_qr_projection",
+        "momp_score_mode": "factorized_group_projection",
         "momp_group_size": 2,
         "momp_max_groups": max_groups,
         "momp_selected_groups": selected,

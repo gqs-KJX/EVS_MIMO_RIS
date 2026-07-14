@@ -10,6 +10,70 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+from typing import Any
+
+
+def add_global_vp_args(parser: argparse.ArgumentParser) -> None:
+    """Add shared explicit global-VP CPU/GPU controls."""
+    parser.add_argument(
+        "--global-vp-backend",
+        choices=("cpu", "cupy", "auto"),
+        default=None,
+    )
+    parser.add_argument("--global-vp-gpu-device", type=int, default=0)
+    parser.add_argument(
+        "--global-vp-validate-gpu-against-cpu", action="store_true"
+    )
+    parser.add_argument("--global-vp-gpu-dtype", default="complex128")
+    parser.add_argument(
+        "--global-vp-gpu-keep-arrays-on-device", action="store_true"
+    )
+    parser.add_argument(
+        "--vp-dictionary-mode",
+        choices=("explicit", "matrix_free"),
+        default=None,
+    )
+    parser.add_argument("--vp-debug-compare-explicit", action="store_true")
+
+
+def global_vp_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """Return only explicitly requested global-VP overrides."""
+    has_backend = getattr(args, "global_vp_backend", None) is not None
+    has_dictionary = getattr(args, "vp_dictionary_mode", None) is not None
+    has_debug = bool(getattr(args, "vp_debug_compare_explicit", False))
+    if not (has_backend or has_dictionary or has_debug):
+        return {}
+    overrides: dict[str, Any] = {}
+    if has_backend:
+        overrides.update(
+            {
+                "backend": str(args.global_vp_backend),
+                "gpu_device": int(getattr(args, "global_vp_gpu_device", 0)),
+                "validate_gpu_against_cpu": bool(
+                    getattr(args, "global_vp_validate_gpu_against_cpu", False)
+                ),
+                "gpu_dtype": str(
+                    getattr(args, "global_vp_gpu_dtype", "complex128")
+                ),
+            }
+        )
+        if bool(getattr(args, "global_vp_gpu_keep_arrays_on_device", False)):
+            overrides["gpu_keep_arrays_on_device"] = True
+    if has_dictionary:
+        overrides["vp_dictionary_mode"] = str(args.vp_dictionary_mode)
+    if has_debug:
+        overrides["vp_debug_compare_explicit"] = True
+    return overrides
+
+
+def apply_global_vp_cli_overrides(
+    config: dict, args: argparse.Namespace
+) -> dict:
+    """Apply explicitly requested global-VP overrides in place."""
+    overrides = global_vp_cli_overrides(args)
+    if overrides:
+        config.setdefault("global_vp", {}).update(overrides)
+    return config
 
 
 def add_resource_args(

@@ -42,10 +42,12 @@ if __package__ in (None, ""):
     from src.experiments.progress_logger import ProgressLogger
     from src.experiments.cli_common import (
         add_io_args,
+        add_global_vp_args,
         add_mc_args,
         add_progress_args,
         add_resource_args,
         normalize_blas_threads,
+        global_vp_cli_overrides,
     )
     from src.experiments.run_benchmark_comparison import _apply_grid_profile
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
@@ -74,10 +76,12 @@ else:
     from .progress_logger import ProgressLogger
     from .cli_common import (
         add_io_args,
+        add_global_vp_args,
         add_mc_args,
         add_progress_args,
         add_resource_args,
         normalize_blas_threads,
+        global_vp_cli_overrides,
     )
     from .run_benchmark_comparison import _apply_grid_profile
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
@@ -210,6 +214,28 @@ FIELDNAMES = [
     "efim_parameter_order",
     "peb_reference_type",
     "peb_reference_data_hash",
+    "batch_size",
+    "max_batch_memory_mb",
+    "num_batches",
+    "baseline_backend",
+    "gpu_used",
+    "gpu_device",
+    "gpu_num_batches",
+    "gpu_batch_size",
+    "cache_enabled",
+    "cache_hits",
+    "cache_misses",
+    "cache_estimated_bytes",
+    "scoring_time_s",
+    "backend_warning",
+    "factorized_scoring",
+    "score_mode",
+    "coarse_backend",
+    "coarse_gpu_used",
+    "local_refinement_backend",
+    "local_refinement_gpu_used",
+    "wls_backend",
+    "mixed_backend",
     "k_mismatch_scene_mode",
     "true_scene_hash",
     "estimator_scene_hash",
@@ -223,6 +249,11 @@ FIELDNAMES = [
     "rescue_requested",
     "ngc_selected_by",
     "ngc_final_unreliable",
+    "global_vp_backend",
+    "global_vp_gpu_used",
+    "global_vp_gpu_device",
+    "global_vp_objective_backend",
+    "global_vp_linear_solve_backend",
     "vp_dictionary_mode",
     "vp_dictionary_mode_requested",
     "vp_jacobian_mode",
@@ -1057,7 +1088,9 @@ def _config_for_task(task: dict[str, Any]) -> dict:
     config["crb"] = dict(task.get("crb", {}))
     baselines = copy.deepcopy(config.get("baselines", {}))
     baselines["backend_config"] = dict(task.get("backend_config", {}))
+    baselines["trim_memory"] = bool(task.get("trim_memory", True))
     config["baselines"] = baselines
+    config.setdefault("global_vp", {}).update(dict(task.get("global_vp", {})))
     return config
 
 
@@ -1491,6 +1524,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
         "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
         "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
+        "global_vp_overrides": global_vp_cli_overrides(args),
     }
 
 
@@ -1575,6 +1609,7 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
                 "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
                 "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
             },
+            "global_vp": global_vp_cli_overrides(args),
             name: value,
         }
 
@@ -1619,6 +1654,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gpu-batch-size", type=int, default=None)
     parser.add_argument("--cpu-batch-size", type=int, default=None)
     parser.add_argument("--gpu-memory-fraction", type=float, default=None)
+    add_global_vp_args(parser)
     parser.add_argument("--include-calibration-oracle-peb", action="store_true")
     parser.add_argument("--include-trueK-peb-reference", action="store_true")
     parser.add_argument(
@@ -1660,6 +1696,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     set_number_of_ris_paths(rue_config, args.true_k)
     args.rue_grid = parse_float_grid(args.rue_grid) if args.rue_grid.strip() else default_rue_grid(rue_config)
     if args.baseline_backend in {"cupy", "auto"} and args.process_workers is None:
+        args.process_workers = 1
+    if args.global_vp_backend in {"cupy", "auto"} and args.process_workers is None:
         args.process_workers = 1
     normalize_blas_threads(args)
     return args

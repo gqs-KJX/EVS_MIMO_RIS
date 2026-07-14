@@ -7,8 +7,12 @@ from typing import Any
 
 import numpy as np
 
-from .backend import BackendConfig, choose_batch_size, get_backend
+from .backend import BackendConfig, choose_batch_size
 from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
+from .factorized_scoring import (
+    FactorizedPositionClockScorer,
+    factorized_fit_supports,
+)
 from .common import (
     BaselineResult,
     clock_grid_from_config,
@@ -20,7 +24,6 @@ from .common import (
     vectorize_raw_observation,
 )
 from ..geometry import local_geometry_from_position
-from ..experiments.resource_control import trim_memory
 
 
 def score_candidate_block(Psi: np.ndarray, y: np.ndarray, eps: float = 1.0e-12) -> tuple[float, np.ndarray, np.ndarray]:
@@ -83,9 +86,12 @@ def _score_position_clock(
     delta_t: float,
 ) -> dict[str, Any]:
     supports = _supports_for_candidate(scene, np.asarray(p_u, dtype=float), float(delta_t))
-    Psi = _candidate_design(scene, config, supports)
-    score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
-    residual = y_vec - y_hat
+    coeffs, y_hat, residual = factorized_fit_supports(
+        scene, config, supports, y_vec, ridge=1.0e-10
+    )
+    score = float(
+        np.linalg.norm(y_hat) ** 2 / (np.linalg.norm(y_vec) ** 2 + 1.0e-12)
+    )
     return {
         "score": float(score),
         "coeffs": coeffs,
@@ -94,6 +100,50 @@ def _score_position_clock(
         "supports": supports,
         "position": np.asarray(p_u, dtype=float),
         "delta_t": float(delta_t),
+    }
+
+
+def _factorized_candidate_record(
+    scene: dict,
+    position: np.ndarray,
+    delta_t: float,
+    score: float,
+    coeffs: np.ndarray,
+    residual_sq: float,
+    *,
+    selected_grid_index: list[int],
+) -> dict[str, Any]:
+    return {
+        "score": float(score),
+        "coeffs": np.asarray(coeffs, dtype=complex),
+        "residual_norm": float(np.sqrt(max(float(residual_sq), 0.0))),
+        "selected_grid_index": list(selected_grid_index),
+        "position": np.asarray(position, dtype=float),
+        "delta_t": float(delta_t),
+        "supports": _supports_for_candidate(scene, position, delta_t),
+    }
+
+
+def _materialize_light_candidate(
+    scene: dict,
+    config: dict,
+    y_vec: np.ndarray,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-evaluate one shortlisted candidate with the legacy explicit design."""
+    exact = _score_position_clock(
+        scene,
+        config,
+        y_vec,
+        np.asarray(candidate["position"], dtype=float),
+        float(candidate["delta_t"]),
+    )
+    return {
+        **candidate,
+        "score": float(exact["score"]),
+        "coeffs": np.asarray(exact["coeffs"], dtype=complex),
+        "residual_norm": float(np.linalg.norm(exact["residual"])),
+        "supports": exact["supports"],
     }
 
 
@@ -122,6 +172,7 @@ def _refine_candidate_local(
     config: dict,
     y_vec: np.ndarray,
     candidate: dict[str, Any],
+    scorer: FactorizedPositionClockScorer,
     *,
     positions: list[np.ndarray],
     clocks: np.ndarray,
@@ -163,17 +214,34 @@ def _refine_candidate_local(
         clock_offsets = np.linspace(-ht * scale, ht * scale, clock_size)
         center_p = np.asarray(best["position"], dtype=float)
         center_dt = float(best["delta_t"])
+        trial_positions: list[np.ndarray] = []
+        trial_clocks: list[float] = []
         for dx in axes[0]:
             for dy in axes[1]:
                 for dz in axes[2]:
                     p = np.clip(center_p + np.array([dx, dy, dz]), bounds_p[:, 0], bounds_p[:, 1])
                     for dt_offset in clock_offsets:
                         dt = float(np.clip(center_dt + dt_offset, bounds_dt[0], bounds_dt[1]))
-                        trial = _score_position_clock(scene, config, y_vec, p, dt)
-                        trial["selected_grid_index"] = candidate.get("selected_grid_index", [-1, -1])
-                        evals += 1
-                        if float(trial["score"]) > float(best["score"]):
-                            best = trial
+                        trial_positions.append(p)
+                        trial_clocks.append(dt)
+        scores, coeffs, residual_sq = scorer.score_candidates(
+            np.asarray(trial_positions, dtype=float),
+            np.asarray(trial_clocks, dtype=float),
+        )
+        for index, score in enumerate(scores):
+            evals += 1
+            if float(score) > float(best["score"]):
+                best = _factorized_candidate_record(
+                    scene,
+                    trial_positions[index],
+                    trial_clocks[index],
+                    float(score),
+                    coeffs[index],
+                    residual_sq[index],
+                    selected_grid_index=list(
+                        candidate.get("selected_grid_index", [-1, -1])
+                    ),
+                )
     return best, evals
 
 
@@ -185,7 +253,10 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
     backend_cfg = BackendConfig.from_value(
         config.get("baselines", {}).get("backend_config")
     )
-    backend = get_backend(backend_cfg)
+    candidate_scorer = FactorizedPositionClockScorer(
+        scene, config, y_vec, backend_cfg
+    )
+    backend = candidate_scorer.backend
     BASELINE_CACHE.configure(
         enabled=backend_cfg.cache_enabled,
         memory_budget_gb=backend_cfg.cache_memory_budget_gb,
@@ -223,7 +294,8 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
         )
     memory_batch_size = choose_batch_size(
         len(candidates),
-        y_vec.size * columns_per_candidate,
+        int(scene["K"]) * (int(scene["N"]) + int(scene["T"]))
+        + columns_per_candidate**2,
         memory_budget_bytes,
         np.complex128,
     )
@@ -237,112 +309,55 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
     batch_size = max(1, min(int(requested_batch_size), memory_batch_size))
     num_batches = 0
     top_candidates: list[dict[str, Any]] = []
+    shortlist_size = max(top_candidate_count, 2 * top_candidate_count)
     scoring_start = time.perf_counter()
-    y_device = (
-        backend.asarray(y_vec, dtype=backend.xp.complex128)
-        if backend.name == "cupy"
-        else None
-    )
-    y_energy = float(np.linalg.norm(y_vec) ** 2 + 1.0e-12)
     for batch_start in range(0, len(candidates), batch_size):
         batch_candidates = candidates[batch_start : batch_start + batch_size]
-        batch_designs = []
-        for pos_idx, clock_idx, position, delta_t in batch_candidates:
-            supports = _supports_for_candidate(scene, position, delta_t)
-            batch_designs.append(
-                (
-                    pos_idx,
-                    clock_idx,
+        batch_positions = np.asarray(
+            [entry[2] for entry in batch_candidates], dtype=float
+        )
+        batch_clocks = np.asarray(
+            [entry[3] for entry in batch_candidates], dtype=float
+        )
+        scores, coeffs_batch, residual_sq = candidate_scorer.score_candidates(
+            batch_positions, batch_clocks
+        )
+        num_batches += 1
+        local_order = np.argsort(-scores, kind="stable")[:shortlist_size]
+        for local_idx in local_order:
+            pos_idx, clock_idx, position, delta_t = batch_candidates[int(local_idx)]
+            _push_top_candidate(
+                top_candidates,
+                _factorized_candidate_record(
+                    scene,
                     position,
                     delta_t,
-                    supports,
-                    _candidate_design(scene, config, supports),
-                )
+                    scores[local_idx],
+                    coeffs_batch[local_idx],
+                    residual_sq[local_idx],
+                    selected_grid_index=[int(pos_idx), int(clock_idx)],
+                ),
+                limit=shortlist_size,
             )
-        num_batches += 1
-        if backend.name == "cupy":
-            designs_device = backend.asarray(
-                np.stack([entry[-1] for entry in batch_designs], axis=0),
-                dtype=backend.xp.complex128,
-            )
-            gram = backend.xp.matmul(
-                designs_device.conj().transpose(0, 2, 1), designs_device
-            )
-            rhs = backend.xp.matmul(
-                designs_device.conj().transpose(0, 2, 1),
-                backend.xp.broadcast_to(y_device, (len(batch_designs), y_vec.size))[
-                    :, :, None
-                ],
-            )[:, :, 0]
-            eye = backend.xp.eye(columns_per_candidate, dtype=backend.xp.complex128)
-            try:
-                coeffs_device = backend.solve(
-                    gram + 1.0e-10 * eye[None, :, :], rhs
-                )
-            except Exception:
-                coeffs_device = backend.xp.matmul(
-                    backend.xp.linalg.pinv(gram + 1.0e-10 * eye[None, :, :]),
-                    rhs[:, :, None],
-                )[:, :, 0]
-            fitted_device = backend.xp.matmul(
-                designs_device, coeffs_device[:, :, None]
-            )[:, :, 0]
-            scores_device = (
-                backend.xp.sum(backend.xp.abs(fitted_device) ** 2, axis=1)
-                / y_energy
-            )
-            local_best = int(backend.to_host(backend.argmax(scores_device)))
-            scores_host = np.asarray(backend.to_host(scores_device), dtype=float)
-            local_order = np.argsort(scores_host)[::-1][:top_candidate_count]
-            _ = local_best
-            for local_idx in local_order:
-                pos_idx, clock_idx, position, delta_t, supports, Psi = batch_designs[int(local_idx)]
-                score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
-                _push_top_candidate(
-                    top_candidates,
-                    {
-                        "score": float(score),
-                        "coeffs": coeffs,
-                        "y_hat": y_hat,
-                        "residual": y_vec - y_hat,
-                        "selected_grid_index": [int(pos_idx), int(clock_idx)],
-                        "position": np.asarray(position, dtype=float),
-                        "delta_t": float(delta_t),
-                        "supports": supports,
-                    },
-                    limit=top_candidate_count,
-                )
-            del designs_device, gram, rhs, coeffs_device, fitted_device, scores_device
-        else:
-            for pos_idx, clock_idx, position, delta_t, supports, Psi in batch_designs:
-                score, coeffs, y_hat = score_candidate_block(Psi, y_vec)
-                _push_top_candidate(
-                    top_candidates,
-                    {
-                        "score": float(score),
-                        "coeffs": coeffs,
-                        "y_hat": y_hat,
-                        "residual": y_vec - y_hat,
-                        "selected_grid_index": [int(pos_idx), int(clock_idx)],
-                        "position": np.asarray(position, dtype=float),
-                        "delta_t": float(delta_t),
-                        "supports": supports,
-                    },
-                    limit=top_candidate_count,
-                )
-        del batch_designs, batch_candidates
-        if bool(config.get("baselines", {}).get("trim_memory", True)):
-            trim_memory()
+        del batch_candidates, batch_positions, batch_clocks
     backend.synchronize()
     if not top_candidates:
         fallback = _score_position_clock(scene, config, y_vec, positions[0], float(clocks[0]))
         fallback["selected_grid_index"] = [0, 0]
+        fallback["residual_norm"] = float(np.linalg.norm(fallback["residual"]))
         top_candidates = [fallback]
+    else:
+        top_candidates = [
+            _materialize_light_candidate(scene, config, y_vec, candidate)
+            for candidate in top_candidates
+        ]
+        top_candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+        top_candidates = top_candidates[:top_candidate_count]
     coarse_best = top_candidates[0]
     coarse_position = np.asarray(coarse_best["position"], dtype=float).copy()
     coarse_delta_t = float(coarse_best["delta_t"])
     coarse_best_score = float(coarse_best["score"])
-    coarse_residual_norm = float(np.linalg.norm(coarse_best["residual"]))
+    coarse_residual_norm = float(coarse_best["residual_norm"])
     local_refinement = bool(cfg.get("local_refinement", cfg.get("offgrid_refinement", True)))
     refinement_levels = int(cfg.get("refinement_levels", 3))
     refinement_evals = 0
@@ -355,6 +370,7 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
                 config,
                 y_vec,
                 candidate,
+                candidate_scorer,
                 positions=positions,
                 clocks=clocks,
                 levels=refinement_levels,
@@ -366,16 +382,27 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
             )
             refined_candidates.append(refined)
             refinement_evals += evals
+        refined_candidates = [
+            _materialize_light_candidate(scene, config, y_vec, candidate)
+            for candidate in refined_candidates
+        ]
         refined_candidates.sort(key=lambda item: float(item["score"]), reverse=True)
         best = refined_candidates[0]
+        best_full = _score_position_clock(
+            scene,
+            config,
+            y_vec,
+            np.asarray(best["position"], dtype=float),
+            float(best["delta_t"]),
+        )
         refine_diag = {
             "offgrid_refinement": True,
             "refinement_objective": "cc_projection_local_grid",
             "refinement_solver": "deterministic_local_grid",
             "refinement_success": True,
             "refinement_initial_residual_norm": coarse_residual_norm,
-            "refinement_residual_norm": float(np.linalg.norm(best["residual"])),
-            "refinement_cost": float(np.linalg.norm(best["residual"]) ** 2),
+            "refinement_residual_norm": float(np.linalg.norm(best_full["residual"])),
+            "refinement_cost": float(np.linalg.norm(best_full["residual"]) ** 2),
             "refinement_initial_position": coarse_position.copy(),
             "refinement_initial_clock": coarse_delta_t,
             "refined_position": np.asarray(best["position"], dtype=float).copy(),
@@ -389,6 +416,14 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
             "refined_position": np.asarray(best["position"], dtype=float).copy(),
             "refined_clock": float(best["delta_t"]),
         }
+        best_full = _score_position_clock(
+            scene,
+            config,
+            y_vec,
+            np.asarray(best["position"], dtype=float),
+            float(best["delta_t"]),
+        )
+    best = {**best, **best_full}
     best_position = np.asarray(best["position"], dtype=float)
     best_delta_t = float(best["delta_t"])
     best_coeffs = np.asarray(best["coeffs"], dtype=complex)
@@ -429,6 +464,8 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
         "gpu_device": backend.device if backend.name == "cupy" else "",
         "scoring_time_s": time.perf_counter() - scoring_start,
         "backend_warning": backend.warning,
+        "factorized_scoring": True,
+        "score_mode": "factorized_2K_gram_projection",
         "nf_mmpsr_cc_metric": "normalized_projection",
         "nf_mmpsr_top_candidates": top_candidate_count,
         "nf_mmpsr_local_refinement_used": bool(local_refinement),

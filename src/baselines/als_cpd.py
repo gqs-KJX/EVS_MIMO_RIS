@@ -92,6 +92,138 @@ def matlab_compatible_update_factor(
     return result
 
 
+def _mttkrp_update_factor(
+    tensor: np.ndarray,
+    factors: list[np.ndarray],
+    mode: int,
+    sigma2: float,
+) -> np.ndarray:
+    """Apply the same regularized ALS update without explicit Khatri-Rao."""
+    x_conj = np.conj(np.asarray(tensor, dtype=complex))
+    a_factor, b_factor, c_factor = factors
+    if mode == 0:
+        mttkrp = np.einsum(
+            "int,nr,tr->ir", x_conj, b_factor, c_factor, optimize=True
+        )
+        gram = (c_factor.conj().T @ c_factor) * (
+            b_factor.conj().T @ b_factor
+        )
+    elif mode == 1:
+        mttkrp = np.einsum(
+            "int,ir,tr->nr", x_conj, a_factor, c_factor, optimize=True
+        )
+        gram = (c_factor.conj().T @ c_factor) * (
+            a_factor.conj().T @ a_factor
+        )
+    elif mode == 2:
+        mttkrp = np.einsum(
+            "int,ir,nr->tr", x_conj, a_factor, b_factor, optimize=True
+        )
+        gram = (b_factor.conj().T @ b_factor) * (
+            a_factor.conj().T @ a_factor
+        )
+    else:
+        raise ValueError("mode must be 0, 1, or 2")
+    gram = gram + float(sigma2) * np.eye(gram.shape[0], dtype=complex)
+    try:
+        updated_conj = np.linalg.solve(gram.T, mttkrp.T).T
+    except np.linalg.LinAlgError:
+        updated_conj = mttkrp @ np.linalg.pinv(gram)
+    return np.conj(updated_conj)
+
+
+def _cp_cross_inner(
+    left_factors: list[np.ndarray],
+    left_weights: np.ndarray,
+    right_factors: list[np.ndarray],
+    right_weights: np.ndarray,
+) -> complex:
+    cross_gram = np.ones(
+        (left_weights.size, right_weights.size), dtype=complex
+    )
+    for left, right in zip(left_factors, right_factors):
+        cross_gram *= left.conj().T @ right
+    return complex(
+        np.einsum(
+            "r,rs,s->",
+            np.asarray(left_weights, dtype=complex).conj(),
+            cross_gram,
+            np.asarray(right_weights, dtype=complex),
+            optimize=True,
+        )
+    )
+
+
+def _cp_norm_sq(factors: list[np.ndarray], weights: np.ndarray) -> float:
+    return float(
+        max(_cp_cross_inner(factors, weights, factors, weights).real, 0.0)
+    )
+
+
+def _cp_difference_norm_sq(
+    previous_factors: list[np.ndarray],
+    previous_weights: np.ndarray,
+    current_factors: list[np.ndarray],
+    current_weights: np.ndarray,
+) -> float:
+    """Evaluate the small CP difference Gram in extended precision."""
+    factors = [
+        np.column_stack([previous, current]).astype(np.clongdouble)
+        for previous, current in zip(previous_factors, current_factors)
+    ]
+    weights = np.r_[
+        -np.asarray(previous_weights, dtype=np.clongdouble),
+        np.asarray(current_weights, dtype=np.clongdouble),
+    ]
+    rank = weights.size
+    gram_product = np.ones((rank, rank), dtype=np.clongdouble)
+    for factor in factors:
+        gram = np.empty((rank, rank), dtype=np.clongdouble)
+        for row in range(rank):
+            for column in range(rank):
+                gram[row, column] = np.sum(
+                    factor[:, row].conj() * factor[:, column],
+                    dtype=np.clongdouble,
+                )
+        gram_product *= gram
+    value = np.sum(
+        weights.conj()[:, None] * gram_product * weights[None, :],
+        dtype=np.clongdouble,
+    ).real
+    return float(max(value, np.longdouble(0.0)))
+
+
+def _cp_data_inner(
+    tensor: np.ndarray, factors: list[np.ndarray], weights: np.ndarray
+) -> complex:
+    a_factor, b_factor, c_factor = factors
+    contracted = np.einsum(
+        "int,nr,tr->ir",
+        np.asarray(tensor, dtype=complex),
+        b_factor.conj(),
+        c_factor.conj(),
+        optimize=True,
+    )
+    atom_inner_data = np.einsum(
+        "ir,ir->r", a_factor.conj(), contracted, optimize=True
+    )
+    return complex(np.dot(np.asarray(weights, dtype=complex), atom_inner_data.conj()))
+
+
+def _cp_residual_norm_sq(
+    tensor: np.ndarray,
+    tensor_norm_sq: float,
+    factors: list[np.ndarray],
+    weights: np.ndarray,
+) -> float:
+    value = (
+        float(tensor_norm_sq)
+        + _cp_norm_sq(factors, weights)
+        - 2.0 * _cp_data_inner(tensor, factors, weights).real
+    )
+    return float(max(value, 0.0))
+
+
 def complex_cp_als(
     tensor: np.ndarray,
     rank: int,
@@ -108,48 +240,59 @@ def complex_cp_als(
     a_factor, b_factor, c_factor = _svd_init(x, rank)
     weights = np.ones(rank, dtype=complex)
     factors = [a_factor, b_factor, c_factor]
-    previous = reconstruct_cp_tensor(factors, weights)
+    tensor_norm = float(np.linalg.norm(x))
+    tensor_norm_sq = tensor_norm**2
+    previous_factors = list(factors)
+    previous_weights = weights.copy()
     converged = False
     residual = float("nan")
     for iteration in range(1, int(max_iter) + 1):
         a_factor, b_factor, c_factor = factors
-        pi = _khatri_rao(c_factor, b_factor)
-        a_factor = matlab_compatible_update_factor(
-            x, pi, 0, sigma2_value
-        )
-        del pi
+        a_factor = _mttkrp_update_factor(x, factors, 0, sigma2_value)
         a_factor, _ = _normalize_columns(a_factor)
-        pi = _khatri_rao(c_factor, a_factor)
-        b_factor = matlab_compatible_update_factor(
-            x, pi, 1, sigma2_value
+        factors_after_a = [a_factor, b_factor, c_factor]
+        b_factor = _mttkrp_update_factor(
+            x, factors_after_a, 1, sigma2_value
         )
-        del pi
         b_factor, _ = _normalize_columns(b_factor)
-        pi = _khatri_rao(b_factor, a_factor)
-        c_factor = matlab_compatible_update_factor(
-            x, pi, 2, sigma2_value
+        factors_after_b = [a_factor, b_factor, c_factor]
+        c_factor = _mttkrp_update_factor(
+            x, factors_after_b, 2, sigma2_value
         )
-        del pi
         c_factor, weights = _normalize_columns(c_factor)
         factors = [a_factor, b_factor, c_factor]
-        current = reconstruct_cp_tensor(factors, weights)
-        residual = float(np.linalg.norm(x - current) / (np.linalg.norm(x) + 1.0e-12))
-        rel_change = float(np.linalg.norm(current - previous) / (np.linalg.norm(current) + 1.0e-12))
+        current_norm_sq = _cp_norm_sq(factors, weights)
+        residual = float(
+            np.sqrt(
+                _cp_residual_norm_sq(
+                    x, tensor_norm_sq, factors, weights
+                )
+            )
+            / (tensor_norm + 1.0e-12)
+        )
+        difference_norm_sq = _cp_difference_norm_sq(
+            previous_factors,
+            previous_weights,
+            factors,
+            weights,
+        )
+        rel_change = float(
+            np.sqrt(difference_norm_sq)
+            / (np.sqrt(current_norm_sq) + 1.0e-12)
+        )
         if rel_change < float(tol):
             converged = True
-            del previous
             break
-        del previous
-        previous = current
-        del a_factor, b_factor, c_factor
-    else:
-        del previous, current
-    if converged:
-        del current
+        previous_factors = factors
+        previous_weights = weights.copy()
     factors[2] = factors[2] @ np.diag(weights)
     weights = np.ones(rank, dtype=complex)
-    final = reconstruct_cp_tensor(factors, weights)
-    residual = float(np.linalg.norm(x - final) / (np.linalg.norm(x) + 1.0e-12))
+    residual = float(
+        np.sqrt(
+            _cp_residual_norm_sq(x, tensor_norm_sq, factors, weights)
+        )
+        / (tensor_norm + 1.0e-12)
+    )
     diagnostics = {
         "als_matlab_compatible": True,
         "als_residual": residual,
@@ -159,6 +302,8 @@ def complex_cp_als(
         "tensor_shape": tuple(x.shape),
         "rank": rank,
         "sigma2": sigma2_value,
+        "als_update_kernel": "mttkrp_small_gram_solve",
+        "als_residual_kernel": "cp_gram_identity",
     }
     return factors, weights, diagnostics
 

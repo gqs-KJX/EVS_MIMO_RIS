@@ -183,6 +183,30 @@ def test_als_update_factor_matches_complex_als_translation():
     assert np.allclose(actual, expected)
 
 
+def test_mttkrp_updates_match_explicit_khatri_rao_updates():
+    rng = np.random.default_rng(31)
+    tensor = rng.normal(size=(4, 5, 3)) + 1j * rng.normal(size=(4, 5, 3))
+    factors = [
+        rng.normal(size=(4, 2)) + 1j * rng.normal(size=(4, 2)),
+        rng.normal(size=(5, 2)) + 1j * rng.normal(size=(5, 2)),
+        rng.normal(size=(3, 2)) + 1j * rng.normal(size=(3, 2)),
+    ]
+    sigma2 = 1.0e-6
+    khatri_rao_pairs = (
+        (factors[2], factors[1]),
+        (factors[2], factors[0]),
+        (factors[1], factors[0]),
+    )
+    for mode, (left, right) in enumerate(khatri_rao_pairs):
+        explicit = als_cpd.matlab_compatible_update_factor(
+            tensor, als_cpd._khatri_rao(left, right), mode, sigma2
+        )
+        mttkrp = als_cpd._mttkrp_update_factor(
+            tensor, factors, mode, sigma2
+        )
+        assert np.allclose(mttkrp, explicit, rtol=1.0e-11, atol=1.0e-12)
+
+
 def test_ff_omp_selects_known_atom_in_tiny_dictionary():
     Phi = np.eye(4, dtype=complex)
     y = 2.0 * Phi[:, 2]

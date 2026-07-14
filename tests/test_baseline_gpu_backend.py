@@ -7,6 +7,11 @@ import pytest
 from src.baselines import common, far_field_omp, near_field_mmpsr, ris_momp
 from src.baselines.backend import BackendConfig, get_backend
 from src.baselines.cache import BaselineCache, baseline_cache_key
+from src.baselines.factorized_scoring import (
+    FactorizedGroupScorer,
+    FactorizedPositionClockScorer,
+    build_group_factor_context,
+)
 from src.config import default_config
 from src.experiments import run_benchmark_comparison as benchmark
 from src.main_single_proposed import _make_data
@@ -145,6 +150,62 @@ def test_benchmark_row_contains_backend_diagnostics():
     ):
         assert field in row
         assert field in benchmark.FIELDNAMES
+
+
+def test_factorized_group_scores_match_explicit_qr_scores():
+    config = _tiny_config()
+    data = _make_data(config)
+    scene = data["scene"]
+    groups = list(far_field_omp._far_field_supports(scene, config))
+    y_vec = common.vectorize_raw_observation(data["Y_noisy"])
+    explicit = np.asarray(
+        [
+            common.group_projection_score(
+                common.group_design(scene, config, group), y_vec
+            )
+            for group in groups
+        ],
+        dtype=float,
+    )
+    scorer = FactorizedGroupScorer(
+        build_group_factor_context(scene, config, groups), {"backend": "cpu"}
+    )
+    factorized = np.asarray(scorer.scores(y_vec), dtype=float)
+    relative_error = np.max(
+        np.abs(factorized - explicit) / np.maximum(np.abs(explicit), 1.0e-15)
+    )
+    assert relative_error < 1.0e-10
+    assert int(np.argmax(factorized)) == int(np.argmax(explicit))
+
+
+def test_factorized_position_clock_score_matches_explicit_design():
+    config = _tiny_config()
+    data = _make_data(config)
+    scene = data["scene"]
+    y_vec = common.vectorize_raw_observation(data["Y_noisy"])
+    position = np.asarray(config["p_u_true"], dtype=float)
+    delta_t = float(config["delta_t_true"])
+    supports = near_field_mmpsr._supports_for_candidate(
+        scene, position, delta_t
+    )
+    design = near_field_mmpsr._candidate_design(scene, config, supports)
+    explicit_score, explicit_coeffs, explicit_y_hat = (
+        near_field_mmpsr.score_candidate_block(design, y_vec)
+    )
+    scorer = FactorizedPositionClockScorer(
+        scene, config, y_vec, {"backend": "cpu"}
+    )
+    scores, coeffs, residual_sq = scorer.score_candidates(
+        position[None, :], np.asarray([delta_t])
+    )
+    assert np.isclose(scores[0], explicit_score, rtol=1.0e-10, atol=1.0e-12)
+    assert np.allclose(coeffs[0], explicit_coeffs, rtol=1.0e-10, atol=1.0e-12)
+    assert np.isclose(
+        residual_sq[0],
+        np.linalg.norm(y_vec - explicit_y_hat) ** 2,
+        rtol=1.0e-10,
+        atol=1.0e-12,
+    )
 
 
 def test_ff_omp_explicit_cupy_raises_when_cupy_import_fails(monkeypatch):

@@ -48,10 +48,12 @@ if __package__ in (None, ""):
     from src.utils import scipy_is_available
     from src.experiments.cli_common import (
         add_io_args,
+        add_global_vp_args,
         add_mc_args,
         add_progress_args,
         add_resource_args,
         normalize_blas_threads,
+        global_vp_cli_overrides,
     )
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
@@ -78,10 +80,12 @@ else:
     from ..utils import scipy_is_available
     from .cli_common import (
         add_io_args,
+        add_global_vp_args,
         add_mc_args,
         add_progress_args,
         add_resource_args,
         normalize_blas_threads,
+        global_vp_cli_overrides,
     )
 
 
@@ -167,6 +171,14 @@ FIELDNAMES = [
     "cache_estimated_bytes",
     "scoring_time_s",
     "backend_warning",
+    "factorized_scoring",
+    "score_mode",
+    "coarse_backend",
+    "coarse_gpu_used",
+    "local_refinement_backend",
+    "local_refinement_gpu_used",
+    "wls_backend",
+    "mixed_backend",
     "selected_grid_index",
     "momp_group_omp_enabled",
     "momp_score_mode",
@@ -208,6 +220,11 @@ FIELDNAMES = [
     "rescue_requested",
     "ngc_selected_by",
     "ngc_final_unreliable",
+    "global_vp_backend",
+    "global_vp_gpu_used",
+    "global_vp_gpu_device",
+    "global_vp_objective_backend",
+    "global_vp_linear_solve_backend",
     "vp_dictionary_mode",
     "vp_dictionary_mode_requested",
     "vp_jacobian_mode",
@@ -558,6 +575,7 @@ def _config_for_trial_snr(task: dict[str, Any], snr_db: float) -> dict:
     config["baselines"]["trim_memory"] = bool(
         task.get("trim_memory", _WORKER_TRIM_MEMORY)
     )
+    config.setdefault("global_vp", {}).update(dict(task.get("global_vp", {})))
     return config
 
 
@@ -1128,6 +1146,7 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
         "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
         "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
+        "global_vp_overrides": global_vp_cli_overrides(args),
     }
 
 
@@ -1223,6 +1242,7 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
                         args.jones_anchor_prior_scale
                     ),
                 },
+                "global_vp": global_vp_cli_overrides(args),
             }
         )
     return tasks
@@ -1258,6 +1278,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reuse-incompatible-cache", action="store_true")
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--strict-ris-geometry", action="store_true")
+    add_global_vp_args(parser)
     parser.add_argument("--grid-profile", choices=("coarse", "medium", "fine"), default="medium")
     parser.add_argument(
         "--include-constrained-jones-peb",
@@ -1277,6 +1298,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--jones-anchor-prior-scale", type=float, default=1.0)
     args = parser.parse_args(argv)
+    if args.global_vp_backend in {"cupy", "auto"} and args.process_workers is None:
+        args.process_workers = 1
     normalize_blas_threads(args)
     return args
 

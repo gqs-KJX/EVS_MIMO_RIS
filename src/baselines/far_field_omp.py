@@ -22,7 +22,6 @@ from .common import (
     simple_atom_normalize,
     vectorize_raw_observation,
 )
-from ..experiments.resource_control import trim_memory
 
 
 def omp_select_from_dictionary(Phi: np.ndarray, y: np.ndarray, max_atoms: int) -> list[int]:
@@ -81,6 +80,7 @@ def _omp_over_supports(
     backend_config: BackendConfig | dict[str, Any] | None = None,
     trim_memory_enabled: bool = True,
 ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, dict[str, Any]]:
+    _ = trim_memory_enabled  # Memory trimming is intentionally method-scoped.
     backend_cfg = BackendConfig.from_value(backend_config)
     backend = get_backend(backend_cfg)
     residual = y_vec.copy()
@@ -162,8 +162,6 @@ def _omp_over_supports(
             if backend.name == "cupy":
                 del atoms_device, scores_device
             del atoms_cpu, scores, batch_supports
-            if trim_memory_enabled:
-                trim_memory()
         if best_support is None:
             break
         selected.append(dict(best_support))
@@ -248,6 +246,7 @@ def run_far_field_omp_baseline(data: dict, config: dict) -> BaselineResult:
             config.get("baselines", {}).get("trim_memory", True)
         ),
         backend_config=backend_cfg,
+        static_cache_key=cache_key,
     )
     residual = y_vec - y_hat_vec
     p_hat, delta_t, geom_diag = geometric_support_to_position_ls(scene, selected, config)

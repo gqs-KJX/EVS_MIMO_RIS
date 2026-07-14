@@ -7,17 +7,19 @@ from typing import Any
 
 import numpy as np
 
+from .backend import BackendConfig, get_backend
+from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
+from .factorized_scoring import (
+    FactorizedPositionClockScorer,
+    factorized_fit_supports,
+)
 from .common import (
     BaselineResult,
     clock_grid_from_config,
     delay_grid_from_scene,
     expand_jones_group,
     group_omp_select,
-    linear_ls_fit,
-    raw_atom_from_support,
-    simple_atom_normalize,
     supports_from_position_clock,
-    supports_to_design,
     vectorize_raw_observation,
 )
 from ..geometry import local_geometry_from_position
@@ -85,8 +87,9 @@ def _fit_near_field(
         model_variant="near_field",
     )
     expanded = [support for group in groups for support in expand_jones_group(group, 2)]
-    Phi = supports_to_design(scene, config, expanded)
-    coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+    coeffs, y_hat, residual = factorized_fit_supports(
+        scene, config, expanded, y_vec, ridge=ridge
+    )
     return coeffs, y_hat, residual, groups
 
 
@@ -178,6 +181,7 @@ def _local_search(
     p0: np.ndarray,
     dt0: float,
     selected: list[dict[str, Any]],
+    scorer: FactorizedPositionClockScorer,
     *,
     levels: int,
     position_radius_m: float,
@@ -192,9 +196,29 @@ def _local_search(
     bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
     p_best = np.clip(np.asarray(p0, dtype=float), bounds_p[:, 0], bounds_p[:, 1])
     dt_best = float(np.clip(float(dt0), bounds_dt[0], bounds_dt[1]))
-    best_value, coeffs_best, y_hat_best, residual_best, groups_best = _objective(
-        scene, config, y_vec, p_best, dt_best, selected, l1_tau_lambda
+    def penalty(position: np.ndarray, delta_t: float) -> float:
+        if float(l1_tau_lambda) <= 0.0 or not selected:
+            return 0.0
+        value = 0.0
+        for support in selected:
+            panel = int(support.get("panel", 0))
+            tau_hat = float(support.get("tau", 0.0))
+            range_m = float(
+                np.linalg.norm(
+                    np.asarray(position, dtype=float)
+                    - np.asarray(scene["ris_centers"][panel], dtype=float)
+                )
+            )
+            tau_model = (
+                range_m + scene["d_RB"][panel]
+            ) / scene["c0"] + float(delta_t)
+            value += abs(tau_hat - tau_model)
+        return float(l1_tau_lambda) * value
+
+    _, _, initial_residual_sq = scorer.score_candidates(
+        p_best[None, :], np.asarray([dt_best], dtype=float)
     )
+    best_value = float(initial_residual_sq[0]) + penalty(p_best, dt_best)
     evals = 1
     for level in range(max(0, int(levels))):
         scale = float(shrink) ** level
@@ -202,24 +226,33 @@ def _local_search(
         dt_offsets = [-clock_radius_s * scale, 0.0, clock_radius_s * scale]
         center_p = p_best.copy()
         center_dt = dt_best
+        trial_positions: list[np.ndarray] = []
+        trial_clocks: list[float] = []
         for dx in offsets:
             for dy in offsets:
                 for dz in offsets:
                     p = np.clip(center_p + np.array([dx, dy, dz]), bounds_p[:, 0], bounds_p[:, 1])
                     for dt_offset in dt_offsets:
                         dt = float(np.clip(center_dt + dt_offset, bounds_dt[0], bounds_dt[1]))
-                        value, coeffs, y_hat, residual, groups = _objective(
-                            scene, config, y_vec, p, dt, selected, l1_tau_lambda
-                        )
-                        evals += 1
-                        if value < best_value:
-                            best_value = value
-                            p_best = p
-                            dt_best = dt
-                            coeffs_best = coeffs
-                            y_hat_best = y_hat
-                            residual_best = residual
-                            groups_best = groups
+                        trial_positions.append(p)
+                        trial_clocks.append(dt)
+        _, _, residual_sq = scorer.score_candidates(
+            np.asarray(trial_positions, dtype=float),
+            np.asarray(trial_clocks, dtype=float),
+        )
+        for index, residual_value in enumerate(residual_sq):
+            value = float(residual_value) + penalty(
+                trial_positions[index], trial_clocks[index]
+            )
+            evals += 1
+            if value < best_value:
+                best_value = value
+                p_best = trial_positions[index]
+                dt_best = trial_clocks[index]
+    coeffs_best, y_hat_best, residual_best, groups_best = _fit_near_field(
+        scene, config, y_vec, p_best, dt_best
+    )
+    best_value = float(np.linalg.norm(residual_best) ** 2) + penalty(p_best, dt_best)
     return p_best, dt_best, coeffs_best, y_hat_best, residual_best, groups_best, evals, best_value
 
 
@@ -313,8 +346,26 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
     y_vec = vectorize_raw_observation(data["Y_noisy"])
     baseline_cfg = config.get("baselines", {})
     cfg = dict(baseline_cfg.get("nf_ris_groupomp_localgrid_wls", {}))
-    backend_cfg = baseline_cfg.get("backend_config")
-    groups = _coarse_groups(scene, config)
+    backend_cfg = BackendConfig.from_value(baseline_cfg.get("backend_config"))
+    backend = get_backend(backend_cfg)
+    BASELINE_CACHE.configure(
+        enabled=backend_cfg.cache_enabled,
+        memory_budget_gb=backend_cfg.cache_memory_budget_gb,
+    )
+    cache_before = BASELINE_CACHE.snapshot()
+    cache_key = baseline_cache_key(
+        "nf_ris_groupomp_localgrid_wls",
+        scene,
+        config,
+        grid_sizes=(
+            int(cfg.get("direction_grid_size", 9)),
+            int(cfg.get("delay_grid_size", 9)),
+            "far_field_direction_delay_jones_group_omp",
+        ),
+    )
+    groups = BASELINE_CACHE.get_or_create(
+        cache_key, lambda: _coarse_groups(scene, config)
+    )
     max_groups = int(cfg.get("max_groups", scene["K"]))
     selected, expanded_supports, coeffs_coarse, y_hat_coarse, omp_diag = group_omp_select(
         scene,
@@ -325,7 +376,12 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
         batch_size=int(cfg.get("batch_size", 64)),
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
         backend_config=backend_cfg,
+        static_cache_key=cache_key,
     )
+    local_scorer = FactorizedPositionClockScorer(
+        scene, config, y_vec, backend_cfg
+    )
+    local_backend = local_scorer.backend
     coarse_p, coarse_dt, ray_diag = _ray_position_clock(scene, config, selected)
     bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
     span = bounds_p[:, 1] - bounds_p[:, 0]
@@ -340,6 +396,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
         coarse_p,
         coarse_dt,
         selected,
+        local_scorer,
         levels=nf_levels if bool(cfg.get("local_refinement", True)) else 0,
         position_radius_m=auto_radius,
         clock_radius_s=clock_radius_s,
@@ -378,6 +435,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
             local_grid_p,
             local_grid_dt,
             selected,
+            local_scorer,
             levels=local_grid_levels,
             position_radius_m=local_grid_radius * (float(cfg.get("local_grid_shrink", 0.5)) ** iteration),
             clock_radius_s=clock_radius_s * (float(cfg.get("local_grid_shrink", 0.5)) ** iteration),
@@ -413,6 +471,16 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
     if bool(cfg.get("use_subris", True)):
         warning_parts.append("subris_fallback_to_physical_panel_centers")
     warning = "; ".join(part for part in warning_parts if part)
+    coarse_backend = str(omp_diag.get("backend", backend.name))
+    coarse_gpu_used = bool(omp_diag.get("gpu_used", False))
+    local_gpu_used = local_backend.name == "cupy"
+    any_gpu_used = bool(coarse_gpu_used or local_gpu_used)
+    backend_warning_parts = [str(omp_diag.get("backend_warning", ""))]
+    if any_gpu_used:
+        backend_warning_parts.append("mixed_backend_cpu_wls_and_final_fit")
+    backend_warning = "; ".join(
+        part for part in backend_warning_parts if part
+    )
     diagnostics = {
         **omp_diag,
         **ray_diag,
@@ -452,11 +520,23 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
         "coeff_norm": float(np.linalg.norm(final_coeffs)),
         "raw_coarse_objective": float(np.linalg.norm(y_vec - y_hat_coarse) ** 2),
         "raw_objective_final": float(np.linalg.norm(final_residual) ** 2 / y_vec.size),
-        "backend": "cpu",
-        "gpu_used": False,
-        "backend_warning": "cpu_local_refinement_used",
+        "backend": "mixed" if any_gpu_used else "cpu",
+        "gpu_used": any_gpu_used,
+        "gpu_device": (
+            local_backend.device
+            if local_gpu_used
+            else omp_diag.get("gpu_device", "")
+        ),
+        "coarse_backend": coarse_backend,
+        "coarse_gpu_used": coarse_gpu_used,
+        "local_refinement_backend": local_backend.name,
+        "local_refinement_gpu_used": local_gpu_used,
+        "wls_backend": "cpu" if wls_enabled else "disabled",
+        "mixed_backend": any_gpu_used,
+        "backend_warning": backend_warning,
         "warning": warning,
     }
+    diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     return BaselineResult(
         name="nf_ris_groupomp_localgrid_wls",
         p_u=final_p,

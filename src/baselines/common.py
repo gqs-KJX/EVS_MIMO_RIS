@@ -141,6 +141,16 @@ def proposed_trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
         "ngc_final_unreliable": result.get(
             "ngc_final_unreliable", final.get("ngc_final_unreliable", "")
         ),
+        "global_vp_backend": final.get("global_vp_backend", ""),
+        "global_vp_gpu_used": final.get("global_vp_gpu_used", ""),
+        "global_vp_gpu_device": final.get("global_vp_gpu_device", ""),
+        "global_vp_objective_backend": final.get(
+            "global_vp_objective_backend", ""
+        ),
+        "global_vp_linear_solve_backend": final.get(
+            "global_vp_linear_solve_backend",
+            final.get("global_vp_lstsq_backend", ""),
+        ),
         "vp_dictionary_mode": final.get("vp_dictionary_mode", ""),
         "vp_dictionary_mode_requested": final.get("vp_dictionary_mode_requested", ""),
         "vp_jacobian_mode": final.get("vp_jacobian_mode", ""),
@@ -257,6 +267,18 @@ def make_baseline_row(
         "cache_estimated_bytes": diagnostics.get("cache_estimated_bytes", 0),
         "scoring_time_s": diagnostics.get("scoring_time_s", ""),
         "backend_warning": diagnostics.get("backend_warning", ""),
+        "factorized_scoring": diagnostics.get("factorized_scoring", False),
+        "score_mode": diagnostics.get("score_mode", ""),
+        "coarse_backend": diagnostics.get("coarse_backend", ""),
+        "coarse_gpu_used": diagnostics.get("coarse_gpu_used", ""),
+        "local_refinement_backend": diagnostics.get(
+            "local_refinement_backend", ""
+        ),
+        "local_refinement_gpu_used": diagnostics.get(
+            "local_refinement_gpu_used", ""
+        ),
+        "wls_backend": diagnostics.get("wls_backend", ""),
+        "mixed_backend": diagnostics.get("mixed_backend", False),
         "selected_grid_index": json.dumps(_jsonable(diagnostics.get("selected_grid_index", "")), separators=(",", ":")),
         "momp_group_omp_enabled": diagnostics.get("momp_group_omp_enabled", ""),
         "momp_score_mode": diagnostics.get("momp_score_mode", ""),
@@ -569,23 +591,42 @@ def group_omp_select(
     ridge: float = 1.0e-10,
     trim_memory_enabled: bool = True,
     backend_config: Any | None = None,
+    static_cache_key: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], np.ndarray, np.ndarray, dict[str, Any]]:
-    """Select geometry groups by group projection energy and refit all Jones columns."""
-    from .backend import BackendConfig, get_backend
-    from ..experiments.resource_control import trim_memory
+    """Select groups by exact factorized projection energy and joint LS refits."""
+    from .backend import BackendConfig
+    from .cache import BASELINE_CACHE
+    from .factorized_scoring import (
+        FactorizedGroupScorer,
+        build_group_factor_context,
+        factorized_fit_supports,
+    )
 
-    backend_cfg = BackendConfig.from_value(backend_config)
-    backend = get_backend(backend_cfg)
+    _ = trim_memory_enabled  # Kept for CLI/API compatibility; trimming is method-scoped.
     y_vec = np.asarray(y_vec, dtype=complex).reshape(-1)
     residual = y_vec.copy()
     selected_groups: list[dict[str, Any]] = []
-    selected_keys: set[tuple[Any, ...]] = set()
     expanded_supports: list[dict[str, Any]] = []
     coeffs = np.zeros(0, dtype=complex)
     y_hat = np.zeros_like(y_vec)
     last_best_score = float("nan")
     num_batches = 0
     scoring_start = time.perf_counter()
+    context_key = (
+        f"{static_cache_key}:factorized_group_v1"
+        if static_cache_key is not None
+        else None
+    )
+    if context_key is None:
+        factor_context = build_group_factor_context(scene, config, groups)
+    else:
+        factor_context = BASELINE_CACHE.get_or_create(
+            context_key,
+            lambda: build_group_factor_context(scene, config, groups),
+        )
+    scorer = FactorizedGroupScorer(factor_context, backend_config)
+    backend = scorer.backend
+    backend_cfg = BackendConfig.from_value(backend_config)
     requested_batch_size = (
         backend_cfg.gpu_batch_size
         if backend.name == "cupy" and backend_cfg.gpu_batch_size is not None
@@ -595,66 +636,27 @@ def group_omp_select(
     )
     effective_batch_size = max(1, int(requested_batch_size))
 
-    def score_group(group: dict[str, Any], residual_vec: np.ndarray, residual_device: Any) -> float:
-        design = group_design(scene, config, group)
-        if backend.name != "cupy":
-            return group_projection_score(design, residual_vec)
-        xp = backend.xp
-        linalg_error = getattr(xp.linalg, "LinAlgError", np.linalg.LinAlgError)
-        try:
-            matrix = backend.asarray(design, dtype=xp.complex128)
-            norms = xp.linalg.norm(matrix, axis=0)
-            keep = norms > 0.0
-            if not bool(backend.to_host(xp.any(keep))):
-                return float("-inf")
-            matrix = matrix[:, keep] / norms[keep]
-            q, r = xp.linalg.qr(matrix, mode="reduced")
-            diag = xp.abs(xp.diag(r)) if r.size else xp.asarray([], dtype=xp.float64)
-            if diag.size == 0:
-                return float("-inf")
-            max_diag = float(backend.to_host(xp.max(diag)))
-            threshold = 1.0e-10 * max(max_diag, 1.0)
-            rank = int(backend.to_host(xp.sum(diag > threshold)))
-            if rank <= 0:
-                return float("-inf")
-            projection = q[:, :rank].conj().T @ residual_device
-            return float(backend.to_host(xp.linalg.norm(projection) ** 2))
-        except linalg_error:
-            return group_projection_score(design, residual_vec)
-
     for _ in range(max(0, int(max_groups))):
-        best_group = None
-        best_score = float("-inf")
-        residual_device = (
-            backend.asarray(residual, dtype=backend.xp.complex128)
-            if backend.name == "cupy"
-            else None
-        )
-        for batch_start in range(0, len(groups), effective_batch_size):
-            batch = groups[batch_start : batch_start + effective_batch_size]
-            num_batches += 1
-            for group in batch:
-                key = geometry_group_key(group)
-                if key in selected_keys:
-                    continue
-                score = score_group(group, residual, residual_device)
-                if score > best_score:
-                    best_score = score
-                    best_group = group
-            if trim_memory_enabled:
-                trim_memory()
-        if best_group is None or not np.isfinite(best_score):
+        best_index, best_score = scorer.best(residual)
+        num_batches += int(np.ceil(len(groups) / effective_batch_size))
+        if best_index < 0 or not np.isfinite(best_score):
             break
-        selected_group = dict(best_group)
+        selected_group = dict(groups[best_index])
         selected_groups.append(selected_group)
-        selected_keys.add(geometry_group_key(selected_group))
+        selected_key = geometry_group_key(selected_group)
+        scorer.exclude(
+            index
+            for index, group in enumerate(groups)
+            if geometry_group_key(group) == selected_key
+        )
         expanded_supports = [
             support
             for group in selected_groups
             for support in expand_jones_group(group, 2)
         ]
-        Phi = supports_to_design(scene, config, expanded_supports)
-        coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+        coeffs, y_hat, residual = factorized_fit_supports(
+            scene, config, expanded_supports, y_vec, ridge=ridge
+        )
         last_best_score = float(best_score)
     backend.synchronize()
 
@@ -665,6 +667,8 @@ def group_omp_select(
         "selected_group_count": len(selected_groups),
         "expanded_support_count": len(expanded_supports),
         "last_best_group_score": last_best_score,
+        "score_mode": "factorized_group_projection",
+        "factorized_scoring": True,
         "residual_norm": float(np.linalg.norm(residual)),
         "num_batches": num_batches,
         "batch_size": effective_batch_size,
