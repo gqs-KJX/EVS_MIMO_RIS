@@ -149,3 +149,30 @@ def test_one_benchmark_trial_uses_one_noisy_data_hash(monkeypatch):
         }
     )
     assert len({row["y_noisy_hash"] for row in rows}) == 1
+
+
+def test_benchmark_groups_snr_by_trial_and_preserves_legacy_noisy_data():
+    args = benchmark.parse_args(
+        [
+            "--n-trials",
+            "2",
+            "--snr-grid=-20,0",
+            "--baselines",
+            "peb",
+        ]
+    )
+    tasks = benchmark._tasks(args, [-20.0, 0.0], ["peb"])
+    assert len(tasks) == 2
+    assert tasks[0]["snr_grid"] == [-20.0, 0.0]
+
+    configs = []
+    for snr_db in (-20.0, 0.0):
+        config = _tiny_config()
+        config["SNR_dB"] = snr_db
+        configs.append(config)
+    grouped = list(benchmark._iter_shared_scene_snr_data(configs))
+    legacy = [_make_data(config) for config in configs]
+    for grouped_data, legacy_data in zip(grouped, legacy):
+        for key in ("Y_true", "Y_noisy", "Z_true", "Z_noisy"):
+            assert np.array_equal(grouped_data[key], legacy_data[key])
+        assert grouped_data["noise_variance"] == legacy_data["noise_variance"]

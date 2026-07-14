@@ -6,11 +6,14 @@ import pytest
 from src.channel_model import channel_components, generate_scene, synthesize_raw_tensor
 from src.config import apply_stage1_init_preset, default_config
 from src.estimators import (
+    _coarse_ris_factor_projection,
+    _coarse_ris_factor_projections_batched,
     _coupled_hankel_factor_initialization,
     _fit_z_model,
     _rank_one_snapshot_initialization,
     initialize_from_hankel,
 )
+from src.projections_ris import local_ris_search_config
 from src.projections_delay import (
     bq_from_poles,
     estimate_poles_aimdf_asym_tls_from_hankel,
@@ -585,6 +588,52 @@ def test_stage1_coarse_to_exact_shortlist_refines_only_selected_pairs():
     assert np.count_nonzero(refined_mask) == 2
     assert all(refined_mask[col, panel] for col, panel in enumerate(estimate["assignment"]))
     assert np.all(np.isfinite(estimate["assignment_costs_col_by_panel"]))
+
+
+def test_batched_coarse_ris_scoring_matches_scalar_selection():
+    config, scene, _ = _small_stage1_assignment_case(seed=117)
+    rng = np.random.default_rng(1117)
+    c_proxy = _complex_normal(rng, (scene["T"], scene["K"]))
+    for panel in range(scene["K"]):
+        search = local_ris_search_config(scene, config, panel)
+        batched = _coarse_ris_factor_projections_batched(
+            c_proxy,
+            scene["Omega"][panel],
+            scene["a_RB"][panel],
+            scene["ris_grid"],
+            scene["wavelength"],
+            search,
+            config["eps"],
+            {},
+        )
+        scalar_cache = {}
+        scalar = [
+            _coarse_ris_factor_projection(
+                c_proxy[:, col],
+                scene["Omega"][panel],
+                scene["a_RB"][panel],
+                scene["ris_grid"],
+                scene["wavelength"],
+                search,
+                config["eps"],
+                scalar_cache,
+            )
+            for col in range(scene["K"])
+        ]
+        for batched_projection, scalar_projection in zip(batched, scalar):
+            assert np.array_equal(
+                batched_projection["eta_local"],
+                scalar_projection["eta_local"],
+            )
+            assert batched_projection["data_residual"] == scalar_projection[
+                "data_residual"
+            ]
+            assert batched_projection["alpha"] == scalar_projection["alpha"]
+            for batched_start, scalar_start in zip(
+                batched_projection["coarse_refine_starts"],
+                scalar_projection["coarse_refine_starts"],
+            ):
+                assert np.array_equal(batched_start, scalar_start)
 
 
 def test_stage1_coarse_to_exact_matches_full_exact_when_all_permutations_shortlisted():

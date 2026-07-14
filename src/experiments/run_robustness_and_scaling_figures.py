@@ -496,10 +496,14 @@ def _data_from_scenes(
     }
 
 
-def make_calibration_mismatch_data(config: dict, std_deg: float) -> tuple[dict, dict]:
-    sequence = np.random.SeedSequence(int(config["seed"]))
-    scene_seed, mismatch_seed, noise_seed = sequence.spawn(3)
-    nominal_scene = generate_scene(config, np.random.default_rng(scene_seed))
+def _calibration_mismatch_data_from_nominal(
+    config: dict,
+    std_deg: float,
+    nominal_scene: dict,
+    mismatch_seed: np.random.SeedSequence,
+    noise_seed: np.random.SeedSequence,
+) -> tuple[dict, dict]:
+    """Build one mismatch level from a shared nominal trial scene."""
     generation_scene = inject_ris_bs_calibration_phase_error(
         nominal_scene, std_deg, np.random.default_rng(mismatch_seed)
     )
@@ -512,6 +516,19 @@ def make_calibration_mismatch_data(config: dict, std_deg: float) -> tuple[dict, 
     oracle_data = copy.copy(data)
     oracle_data["scene"] = generation_scene
     return data, oracle_data
+
+
+def make_calibration_mismatch_data(config: dict, std_deg: float) -> tuple[dict, dict]:
+    sequence = np.random.SeedSequence(int(config["seed"]))
+    scene_seed, mismatch_seed, noise_seed = sequence.spawn(3)
+    nominal_scene = generate_scene(config, np.random.default_rng(scene_seed))
+    return _calibration_mismatch_data_from_nominal(
+        config,
+        std_deg,
+        nominal_scene,
+        mismatch_seed,
+        noise_seed,
+    )
 
 
 def _slice_scene(scene: dict, k_paths: int) -> dict:
@@ -649,17 +666,14 @@ def extend_scene_preserving_true_paths(
     return extended
 
 
-def make_k_mismatch_data(
+def _k_mismatch_view_from_physical_data(
     true_config: dict,
+    physical_data: dict,
     assumed_k: int,
-    max_assumed_k: int | None = None,
 ) -> tuple[dict, dict]:
-    """Generate true-K data and return a K-hat estimator view of the same tensor."""
-    del max_assumed_k  # Compatibility with older callers; no catalog is generated.
-    true_config = copy.deepcopy(true_config)
+    """Return one assumed-K estimator view of shared physical trial data."""
     true_k = int(true_config["K"])
     assumed_k = int(assumed_k)
-    physical_data = _make_data(true_config)
     physical_scene = physical_data["scene"]
     if assumed_k < true_k:
         estimator_scene = _slice_scene(physical_scene, assumed_k)
@@ -690,6 +704,22 @@ def make_k_mismatch_data(
         min(true_k, assumed_k),
     )
     return estimator_data, physical_data
+
+
+def make_k_mismatch_data(
+    true_config: dict,
+    assumed_k: int,
+    max_assumed_k: int | None = None,
+) -> tuple[dict, dict]:
+    """Generate true-K data and return a K-hat estimator view of the same tensor."""
+    del max_assumed_k  # Compatibility with older callers; no catalog is generated.
+    true_config = copy.deepcopy(true_config)
+    physical_data = _make_data(true_config)
+    return _k_mismatch_view_from_physical_data(
+        true_config,
+        physical_data,
+        int(assumed_k),
+    )
 
 
 def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
@@ -747,7 +777,7 @@ def _common_row_fields(task: dict[str, Any], data: dict, baseline: str) -> dict[
         "achieved_delta_tau_min_ns": actual_min_delay_ns,
         "resolvability_target_abs_error_ns": abs(actual_min_delay_ns - target_val) if str(task["figure"]) == "fig11" else 0.0,
         "resolvability_geometry_valid": int(np.all(np.isfinite(ris_centers))),
-        "resolvability_bracket_valid": 1,
+        "resolvability_bracket_valid": int(actual_min_delay_ns >= target_val - 1.0e-3) if str(task["figure"]) == "fig11" else 1,
         "T": int(scene["T"]),
         "ris_side": int(scene["M_Rx"]),
         "M_R": int(scene["M_R"]),
@@ -883,7 +913,7 @@ def adjust_ris_center_for_delay(
     target_delay_s: float,
     delta_t: float,
     c0: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, bool]:
     L_target = c0 * (target_delay_s - delta_t)
     L_min = np.linalg.norm(p_u - p_B)
     if L_target < L_min:
@@ -896,6 +926,23 @@ def adjust_ris_center_for_delay(
         v = v / v_norm
     s_low = 0.0
     s_high = 100.0
+
+    c_high = p_u + s_high * v
+    L_high = s_high + np.linalg.norm(c_high - p_B)
+
+    max_s = 10000.0
+    while L_target > L_high and s_high < max_s:
+        s_high *= 2.0
+        c_high = p_u + s_high * v
+        L_high = s_high + np.linalg.norm(c_high - p_B)
+
+    bracket_valid = (L_min <= L_target <= L_high)
+    if not bracket_valid:
+        raise ValueError(
+            f"Bisection target is not bracketed: L_target={L_target}, "
+            f"L_min={L_min}, L_high={L_high}."
+        )
+
     for _ in range(50):
         s_mid = 0.5 * (s_low + s_high)
         c_mid = p_u + s_mid * v
@@ -904,7 +951,7 @@ def adjust_ris_center_for_delay(
             s_low = s_mid
         else:
             s_high = s_mid
-    return p_u + s_low * v
+    return p_u + s_low * v, bracket_valid
 
 
 def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> dict:
@@ -914,6 +961,11 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
     ris_centers = np.asarray(config["ris_centers"], dtype=float).copy()
     c0 = float(config["c0"])
     delta_t = float(config["delta_t_true"])
+
+    if len(ris_centers) != 3:
+        raise ValueError(
+            "Fig.11 resolvability experiment is defined for true_K=3."
+        )
 
     nominal_delays = []
     for k in range(len(ris_centers)):
@@ -928,10 +980,10 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
     t1 = t0 + max(nominal_delays[idx[1]] - t0, delta_tau)
     t2 = t1 + delta_tau
 
-    ris_centers[idx[1]] = adjust_ris_center_for_delay(
+    ris_centers[idx[1]], b1 = adjust_ris_center_for_delay(
         p_u, p_B, ris_centers[idx[1]], t1, delta_t, c0
     )
-    ris_centers[idx[2]] = adjust_ris_center_for_delay(
+    ris_centers[idx[2]], b2 = adjust_ris_center_for_delay(
         p_u, p_B, ris_centers[idx[2]], t2, delta_t, c0
     )
     config["ris_centers"] = ris_centers
@@ -961,7 +1013,7 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
         )
 
     geometry_valid = np.all(np.isfinite(ris_centers))
-    bracket_valid = True
+    bracket_valid = bool(b1 and b2)
 
     config["resolvability_diagnostics"] = {
         "target_delta_tau_min_ns": target_delta_tau_min_ns,
@@ -989,7 +1041,8 @@ def _failure_row(task: dict[str, Any], data: dict, baseline: str, exc: BaseExcep
     }
 
 
-def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
+def _config_for_task(task: dict[str, Any]) -> dict:
+    """Build the shared base config for one robustness/scaling task."""
     true_k = int(task["true_K"])
     config = make_config(
         int(task["seed"]),
@@ -1005,6 +1058,11 @@ def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
     baselines = copy.deepcopy(config.get("baselines", {}))
     baselines["backend_config"] = dict(task.get("backend_config", {}))
     config["baselines"] = baselines
+    return config
+
+
+def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
+    config = _config_for_task(task)
     figure = str(task["figure"])
     reference_data = None
     if figure == "fig8":
@@ -1026,10 +1084,13 @@ def _prepare_task_data(task: dict[str, Any]) -> tuple[dict, dict | None, dict]:
     return data, reference_data, config
 
 
-def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
-    """Evaluate all requested methods on one immutable noisy realization."""
-    apply_thread_limits(int(task.get("blas_threads", _WORKER_BLAS_THREADS)))
-    data, reference_data, config = _prepare_task_data(task)
+def _run_methods_on_prepared_data(
+    task: dict[str, Any],
+    data: dict,
+    reference_data: dict | None,
+    config: dict,
+) -> list[dict[str, Any]]:
+    """Evaluate all requested methods on one prepared immutable realization."""
     rows: list[dict[str, Any]] = []
     for baseline in task["baselines"]:
         rss_before = memory_snapshot_mb() if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY)) else float("nan")
@@ -1103,6 +1164,75 @@ def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
         rows.append(assert_row_is_light(row))
     validate_same_y_noisy_hash(rows)
     return rows
+
+
+def _run_grouped_robustness_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate all Fig.8/9 grid values while reusing trial-static data."""
+    figure = str(task["figure"])
+    values = list(task.get("group_values", []))
+    if figure not in {"fig8", "fig9"} or not values:
+        raise ValueError("grouped robustness tasks are supported only for Fig.8/9")
+
+    base_config = _config_for_task(task)
+    rows: list[dict[str, Any]] = []
+    if figure == "fig8":
+        sequence = np.random.SeedSequence(int(base_config["seed"]))
+        scene_seed, mismatch_seed, noise_seed = sequence.spawn(3)
+        nominal_scene = generate_scene(
+            base_config,
+            np.random.default_rng(scene_seed),
+        )
+        for value in values:
+            subtask = dict(task)
+            subtask.pop("group_values", None)
+            subtask["calibration_std_deg"] = float(value)
+            value_config = copy.deepcopy(base_config)
+            data, reference_data = _calibration_mismatch_data_from_nominal(
+                value_config,
+                float(value),
+                nominal_scene,
+                mismatch_seed,
+                noise_seed,
+            )
+            rows.extend(
+                _run_methods_on_prepared_data(
+                    subtask,
+                    data,
+                    reference_data,
+                    value_config,
+                )
+            )
+    else:
+        physical_data = _make_data(base_config)
+        for value in values:
+            assumed_k = int(value)
+            subtask = dict(task)
+            subtask.pop("group_values", None)
+            subtask["assumed_K"] = assumed_k
+            data, reference_data = _k_mismatch_view_from_physical_data(
+                base_config,
+                physical_data,
+                assumed_k,
+            )
+            assumed_config = _configure_assumed_k(base_config, assumed_k)
+            rows.extend(
+                _run_methods_on_prepared_data(
+                    subtask,
+                    data,
+                    reference_data,
+                    assumed_config,
+                )
+            )
+    return rows
+
+
+def run_shared_trial(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate all requested methods on one immutable noisy realization."""
+    apply_thread_limits(int(task.get("blas_threads", _WORKER_BLAS_THREADS)))
+    if "group_values" in task:
+        return _run_grouped_robustness_trial(task)
+    data, reference_data, config = _prepare_task_data(task)
+    return _run_methods_on_prepared_data(task, data, reference_data, config)
 
 
 def validate_same_y_noisy_hash(rows: Iterable[dict[str, Any]]) -> None:
@@ -1410,48 +1540,55 @@ def build_tasks(args: argparse.Namespace, figure: str, baselines: list[str]) -> 
     else:  # fig11
         grid = [("delta_tau_min_ns", value) for value in args.delta_tau_min_grid]
     tasks = []
-    for name, value in grid:
+
+    def make_task(trial_id: int, name: str, value: Any) -> dict[str, Any]:
+        return {
+            "figure": figure,
+            "trial_id": trial_id,
+            "seed": _trial_seed(args.seed, figure, trial_id),
+            "snr_db": args.snr_db,
+            "true_K": args.true_k,
+            "assumed_K": args.true_k,
+            "calibration_std_deg": 0.0,
+            "delta_tau_min_ns": 0.0,
+            "baselines": baselines,
+            "max_assumed_K": max(args.assumed_k_grid),
+            "grid_profile": args.grid_profile,
+            "blas_threads": args.blas_threads,
+            "profile_memory": args.profile_memory,
+            "trim_memory": bool(args.trim_memory),
+            "strict_ris_geometry": args.strict_ris_geometry,
+            "backend_config": {
+                "backend": str(args.baseline_backend),
+                "gpu_device": args.gpu_device,
+                "gpu_batch_size": args.gpu_batch_size,
+                "cpu_batch_size": args.cpu_batch_size,
+                "gpu_memory_fraction": args.gpu_memory_fraction,
+            },
+            "crb": {
+                "include_constrained_jones_peb": bool(
+                    args.include_constrained_jones_peb
+                ),
+                "include_anchored_jones_peb": bool(
+                    args.include_anchored_jones_peb
+                ),
+                "jones_anchor_prior_mode": str(args.jones_anchor_prior_mode),
+                "jones_anchor_prior_scale": float(args.jones_anchor_prior_scale),
+            },
+            name: value,
+        }
+
+    if figure in {"fig8", "fig9"}:
+        name = grid[0][0]
+        values = [value for _, value in grid]
         for trial_id in range(int(args.n_trials)):
-            task = {
-                "figure": figure,
-                "trial_id": trial_id,
-                "seed": _trial_seed(args.seed, figure, trial_id),
-                "snr_db": args.snr_db,
-                "true_K": args.true_k,
-                "assumed_K": args.true_k,
-                "calibration_std_deg": 0.0,
-                "delta_tau_min_ns": 0.0,
-                "baselines": baselines,
-                "max_assumed_K": max(args.assumed_k_grid),
-                "grid_profile": args.grid_profile,
-                "blas_threads": args.blas_threads,
-                "profile_memory": args.profile_memory,
-                "trim_memory": bool(args.trim_memory),
-                "strict_ris_geometry": args.strict_ris_geometry,
-                "backend_config": {
-                    "backend": str(args.baseline_backend),
-                    "gpu_device": args.gpu_device,
-                    "gpu_batch_size": args.gpu_batch_size,
-                    "cpu_batch_size": args.cpu_batch_size,
-                    "gpu_memory_fraction": args.gpu_memory_fraction,
-                },
-                "crb": {
-                    "include_constrained_jones_peb": bool(
-                        args.include_constrained_jones_peb
-                    ),
-                    "include_anchored_jones_peb": bool(
-                        args.include_anchored_jones_peb
-                    ),
-                    "jones_anchor_prior_mode": str(
-                        args.jones_anchor_prior_mode
-                    ),
-                    "jones_anchor_prior_scale": float(
-                        args.jones_anchor_prior_scale
-                    ),
-                },
-                name: value,
-            }
+            task = make_task(trial_id, name, values[0])
+            task["group_values"] = list(values)
             tasks.append(task)
+    else:
+        for name, value in grid:
+            for trial_id in range(int(args.n_trials)):
+                tasks.append(make_task(trial_id, name, value))
     return tasks
 
 
@@ -1551,11 +1688,26 @@ def main(argv: list[str] | None = None) -> None:
         * args.n_trials
         for figure in args.figures
     )
+    worker_task_count = sum(
+        args.n_trials
+        if figure in {"fig8", "fig9"}
+        else len(
+            args.T_grid
+            if figure == "fig10a"
+            else args.ris_side_grid
+            if figure == "fig10b"
+            else args.rue_grid
+            if figure == "fig10c"
+            else args.delta_tau_min_grid
+        )
+        * args.n_trials
+        for figure in args.figures
+    )
     args.resource_plan = resolve_hybrid_resources(
         args.jobs,
         args.process_workers,
         args.blas_threads,
-        max(all_task_count, 1),
+        max(worker_task_count, 1),
         memory_budget_gb=args.memory_budget_gb,
         memory_per_worker_gb=args.memory_per_worker_gb,
     )
@@ -1641,29 +1793,36 @@ def main(argv: list[str] | None = None) -> None:
                 try:
                     for batch in batches:
                         writer.writerows(batch)
-                        representative = batch[0] if batch else {}
-                        failed_rows = [
-                            row
-                            for row in batch
-                            if str(row.get("failed")).lower() == "true"
-                        ]
-                        progress.log(
-                            "task_failed" if failed_rows else "task_done",
-                            "failed" if failed_rows else "completed",
-                            figure=representative.get("figure", figure),
-                            baseline_or_variant=",".join(
-                                str(row.get("baseline", "")) for row in batch
-                            ),
-                            snr_db=representative.get("snr_db", ""),
-                            trial_id=representative.get("trial_id", ""),
-                            seed=representative.get("seed", ""),
-                            K=representative.get("assumed_K", ""),
-                            message="robustness/scaling trial batch completed",
-                            error="; ".join(
-                                str(row.get("error", ""))
-                                for row in failed_rows
-                            ),
-                        )
+                        x_field = X_FIELDS[figure][0]
+                        progress_groups: dict[str, list[dict[str, Any]]] = {}
+                        for row in batch:
+                            key = str(row.get(x_field, ""))
+                            progress_groups.setdefault(key, []).append(row)
+                        for progress_rows in progress_groups.values():
+                            representative = progress_rows[0] if progress_rows else {}
+                            failed_rows = [
+                                row
+                                for row in progress_rows
+                                if str(row.get("failed")).lower() == "true"
+                            ]
+                            progress.log(
+                                "task_failed" if failed_rows else "task_done",
+                                "failed" if failed_rows else "completed",
+                                figure=representative.get("figure", figure),
+                                baseline_or_variant=",".join(
+                                    str(row.get("baseline", ""))
+                                    for row in progress_rows
+                                ),
+                                snr_db=representative.get("snr_db", ""),
+                                trial_id=representative.get("trial_id", ""),
+                                seed=representative.get("seed", ""),
+                                K=representative.get("assumed_K", ""),
+                                message="robustness/scaling trial batch completed",
+                                error="; ".join(
+                                    str(row.get("error", ""))
+                                    for row in failed_rows
+                                ),
+                            )
                 finally:
                     if args.process_workers != 1:
                         pool_context.__exit__(None, None, None)
@@ -1737,4 +1896,3 @@ def write_global_summary_markdown(summary_all: list[dict[str, Any]], out_dir: pa
 
 if __name__ == "__main__":
     main()
-

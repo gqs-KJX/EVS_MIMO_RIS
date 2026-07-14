@@ -326,22 +326,18 @@ def _min_unit_pole_phase_separation(poles: np.ndarray) -> float:
     return float(np.min(np.abs(diffs)))
 
 
-def _coarse_ris_factor_projection(
-    c_tilde: np.ndarray,
+def _coarse_ris_codebook(
     omega: np.ndarray,
     a_rb: np.ndarray,
     ris_grid: np.ndarray,
     wavelength: float,
     search_config: dict,
-    eps: float,
     response_cache: dict | None = None,
-) -> dict:
-    """Coarse exact-spherical RIS codebook match without local WESVP refinement."""
-    start = time.perf_counter()
+) -> tuple[list[np.ndarray], list[np.ndarray], float]:
+    """Return the panel codebook shared by every CPD column."""
     r_grid = np.linspace(*search_config["range_bounds"], int(search_config["num_range"]))
     e_grid = np.linspace(*search_config["elev_bounds"], int(search_config["num_elev"]))
     a_grid = np.linspace(*search_config["az_bounds"], int(search_config["num_az"]))
-    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
     cache_key = int(search_config.get("panel_index", -1))
     build_start = time.perf_counter()
     cached = None if response_cache is None else response_cache.get(cache_key)
@@ -362,6 +358,88 @@ def _coarse_ris_factor_projection(
     else:
         grid_candidates, grid_responses = cached
         build_elapsed = 0.0
+    return grid_candidates, grid_responses, float(build_elapsed)
+
+
+def _coarse_ris_codebook_batched(
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    response_cache: dict | None = None,
+) -> tuple[list[np.ndarray], np.ndarray, float]:
+    """Build the same exact-spherical codebook with batched array operations."""
+    r_grid = np.linspace(*search_config["range_bounds"], int(search_config["num_range"]))
+    e_grid = np.linspace(*search_config["elev_bounds"], int(search_config["num_elev"]))
+    a_grid = np.linspace(*search_config["az_bounds"], int(search_config["num_az"]))
+    cache_key = ("batched", int(search_config.get("panel_index", -1)))
+    build_start = time.perf_counter()
+    cached = None if response_cache is None else response_cache.get(cache_key)
+    if cached is not None:
+        grid_candidates, response_matrix = cached
+        return grid_candidates, response_matrix, 0.0
+
+    grid_candidates = [
+        np.array([range_m, elevation, azimuth], dtype=float)
+        for range_m in r_grid
+        for elevation in e_grid
+        for azimuth in a_grid
+    ]
+    eta_matrix = np.asarray(grid_candidates, dtype=float)
+    response_matrix = np.empty((eta_matrix.shape[0], omega.shape[0]), dtype=complex)
+    omega_a_rb = np.asarray(omega, dtype=complex) * np.asarray(a_rb, dtype=complex)[
+        None, :
+    ]
+    batch_size = max(1, int(search_config.get("coarse_response_batch_size", 256)))
+    wavenumber = 2.0 * np.pi / float(wavelength)
+    for first in range(0, eta_matrix.shape[0], batch_size):
+        last = min(first + batch_size, eta_matrix.shape[0])
+        eta_batch = eta_matrix[first:last]
+        ranges = eta_batch[:, 0]
+        elevations = eta_batch[:, 1]
+        azimuths = eta_batch[:, 2]
+        cos_elev = np.cos(elevations)
+        unit_vectors = np.column_stack(
+            [
+                cos_elev * np.cos(azimuths),
+                cos_elev * np.sin(azimuths),
+                np.sin(elevations),
+            ]
+        )
+        q_local = ranges[:, None] * unit_vectors
+        distance_offsets = (
+            np.linalg.norm(q_local[:, None, :] - ris_grid[None, :, :], axis=2)
+            - ranges[:, None]
+        )
+        spherical = np.exp(-1j * wavenumber * distance_offsets)
+        response_matrix[first:last] = spherical @ omega_a_rb.T
+    if response_cache is not None:
+        response_cache[cache_key] = (grid_candidates, response_matrix)
+    return grid_candidates, response_matrix, float(time.perf_counter() - build_start)
+
+
+def _coarse_ris_factor_projection(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float,
+    response_cache: dict | None = None,
+) -> dict:
+    """Coarse exact-spherical RIS codebook match without local WESVP refinement."""
+    start = time.perf_counter()
+    c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
+    grid_candidates, grid_responses, build_elapsed = _coarse_ris_codebook(
+        omega,
+        a_rb,
+        ris_grid,
+        wavelength,
+        search_config,
+        response_cache,
+    )
 
     candidates = []
     for eta_local, h_model in zip(grid_candidates, grid_responses):
@@ -389,6 +467,101 @@ def _coarse_ris_factor_projection(
         ),
         "stage1_time_ris_projection_refine": 0.0,
     }
+
+
+def _coarse_ris_factor_projections_batched(
+    c_proxy: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    eps: float,
+    response_cache: dict | None = None,
+) -> list[dict]:
+    """Evaluate one panel codebook against all CPD columns in a batch."""
+    assert c_proxy.ndim == 2, "c_proxy must have shape T x K"
+    grid_candidates, response_matrix, build_elapsed = _coarse_ris_codebook_batched(
+        omega,
+        a_rb,
+        ris_grid,
+        wavelength,
+        search_config,
+        response_cache,
+    )
+    correlation_start = time.perf_counter()
+    denominators = np.einsum(
+        "gt,gt->g",
+        response_matrix.conj(),
+        response_matrix,
+        optimize=True,
+    ) + eps
+    numerators = response_matrix.conj() @ np.asarray(c_proxy, dtype=complex)
+    alphas = numerators / denominators[:, None]
+    num_refine_starts = max(1, int(search_config.get("num_exact_refine_starts", 1)))
+    projections: list[dict] = []
+    for col in range(c_proxy.shape[1]):
+        c_tilde = np.asarray(c_proxy[:, col], dtype=complex)
+        residuals = c_tilde[None, :] - alphas[:, col, None] * response_matrix
+        values = np.sum(np.abs(residuals) ** 2, axis=1)
+        order = np.argsort(values, kind="mergesort")
+
+        cutoff_index = min(num_refine_starts, order.size) - 1
+        cutoff = float(values[order[cutoff_index]])
+        scale = max(float(np.linalg.norm(c_tilde) ** 2), abs(cutoff), 1.0)
+        roundoff_guard = (
+            256.0
+            * np.finfo(float).eps
+            * max(int(c_tilde.size), 1)
+            * scale
+        )
+        guarded = order[values[order] <= cutoff + roundoff_guard]
+        exact_ranked = []
+        for candidate_index in guarded:
+            exact_response = compressed_exact_response(
+                grid_candidates[int(candidate_index)],
+                omega,
+                a_rb,
+                ris_grid,
+                wavelength,
+            )
+            value, alpha = scaled_residual(
+                c_tilde,
+                exact_response,
+                eps,
+            )
+            exact_ranked.append(
+                (float(value), int(candidate_index), alpha, exact_response)
+            )
+        exact_ranked.sort(key=lambda item: (item[0], item[1]))
+        value, best_index, alpha, h_model = exact_ranked[0]
+        c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
+        projections.append(
+            {
+                "c": alpha * h_model,
+                "eta_local": grid_candidates[best_index],
+                "alpha": alpha,
+                "data_residual": value,
+                "relative_residual": float(np.sqrt(value / c_norm_sq)),
+                "selected_model": "coarse_correlation",
+                "coarse_refine_starts": [
+                    np.asarray(grid_candidates[item[1]], dtype=float)
+                    for item in exact_ranked[:num_refine_starts]
+                ],
+                "stage1_time_ris_codebook_build": (
+                    float(build_elapsed) if col == 0 else 0.0
+                ),
+                "stage1_time_ris_correlation": 0.0,
+                "stage1_time_ris_projection_refine": 0.0,
+            }
+        )
+    correlation_elapsed = time.perf_counter() - correlation_start
+    if projections:
+        projections[0]["stage1_time_ris_correlation"] = float(
+            max(correlation_elapsed, 0.0)
+        )
+        projections[0]["stage1_time_ris_codebook_build"] = float(build_elapsed)
+    return projections
 
 
 def _rank_assignment_permutations(
@@ -527,6 +700,21 @@ def _assignment_by_projection(
     }
     assignment_start = time.perf_counter()
     coarse_response_cache: dict = {}
+    batched_ris_projections: dict[int, list[dict]] = {}
+
+    if geometry_mode in ("coarse_correlation", "coarse_to_exact_assignment"):
+        for ris in range(k_paths):
+            ris_search = local_ris_search_config(scene, config, ris)
+            batched_ris_projections[ris] = _coarse_ris_factor_projections_batched(
+                c_proxy,
+                scene["Omega"][ris],
+                scene["a_RB"][ris],
+                scene["ris_grid"],
+                scene["wavelength"],
+                ris_search,
+                eps,
+                coarse_response_cache,
+            )
 
     for col in range(k_paths):
         for ris in range(k_paths):
@@ -535,25 +723,18 @@ def _assignment_by_projection(
                 a_proxy[:, col], scene["v_B"][ris], scene["Theta"][ris], eps
             )
             timing["stage1_time_assignment_evs"] += time.perf_counter() - evs_start
-            ris_search = local_ris_search_config(scene, config, ris)
             if geometry_mode in ("coarse_correlation", "coarse_to_exact_assignment"):
-                ris_start = time.perf_counter()
-                ris_proj = _coarse_ris_factor_projection(
-                    c_proxy[:, col],
-                    scene["Omega"][ris],
-                    scene["a_RB"][ris],
-                    scene["ris_grid"],
-                    scene["wavelength"],
-                    ris_search,
-                    eps,
-                    coarse_response_cache,
+                ris_proj = batched_ris_projections[ris][col]
+                ris_elapsed = float(
+                    ris_proj.get("stage1_time_ris_codebook_build", 0.0)
+                    + ris_proj.get("stage1_time_ris_correlation", 0.0)
                 )
-                ris_elapsed = time.perf_counter() - ris_start
                 timing["stage1_time_assignment_ris"] += ris_elapsed
                 timing["stage1_time_ris_codebook_build"] += float(
                     ris_proj.get("stage1_time_ris_codebook_build", ris_elapsed)
                 )
             elif geometry_mode in ("exact_projection", "legacy_fast_projection"):
+                ris_search = local_ris_search_config(scene, config, ris)
                 ris_search["projection_mode"] = "exact"
                 ris_start = time.perf_counter()
                 ris_proj = project_ris_factor(

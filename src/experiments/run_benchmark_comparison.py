@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import csv
 import json
@@ -29,9 +30,11 @@ if __package__ in (None, ""):
     from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
+    from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from src.config import default_config
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
     from src.metrics import relative_nmse, position_rmse
+    from src.tensor_utils import hankelize_frequency
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from src.experiments.resource_control import (
         apply_thread_limits,
@@ -57,9 +60,11 @@ else:
     from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
+    from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from ..config import default_config
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
     from ..metrics import relative_nmse, position_rmse
+    from ..tensor_utils import hankelize_frequency
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from .resource_control import (
         apply_thread_limits,
@@ -539,19 +544,11 @@ def _failure_row(
     }
 
 
-def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
-    apply_thread_limits(
-        int(task.get("blas_threads", _WORKER_BLAS_THREADS)),
-        respect_existing=bool(
-            task.get(
-                "respect_existing_blas_env",
-                _WORKER_RESPECT_EXISTING_BLAS_ENV,
-            )
-        ),
-    )
+def _config_for_trial_snr(task: dict[str, Any], snr_db: float) -> dict:
+    """Build one SNR-specific config without changing trial-static settings."""
     config = make_config(
         seed=int(task["seed"]),
-        snr_db=float(task["snr_db"]),
+        snr_db=float(snr_db),
         paper_k=int(task["paper_k"]),
         grid_profile=str(task["grid_profile"]),
         strict_ris_geometry=bool(task.get("strict_ris_geometry", False)),
@@ -561,7 +558,68 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
     config["baselines"]["trim_memory"] = bool(
         task.get("trim_memory", _WORKER_TRIM_MEMORY)
     )
-    data = _make_data(config)
+    return config
+
+
+def _iter_shared_scene_snr_data(configs: list[dict[str, Any]]):
+    """Yield the legacy per-SNR data while generating trial-static arrays once."""
+    if not configs:
+        return
+    reference = configs[0]
+    data_start = time.perf_counter()
+    rng = np.random.default_rng(int(reference["seed"]))
+    scene = generate_scene(reference, rng)
+    true_components = channel_components(
+        scene,
+        scene["p_u_true"],
+        scene["delta_t_true"],
+        scene["gamma_true"],
+        scene["eta_true"],
+    )
+    y_true = synthesize_raw_tensor(true_components, scene["beta_true"])
+    noise_rng_state = copy.deepcopy(rng.bit_generator.state)
+    static_generation_s = time.perf_counter() - data_start
+
+    hankel_start = time.perf_counter()
+    z_true = hankelize_frequency(y_true, scene["P"])
+    static_hankelization_s = time.perf_counter() - hankel_start
+    for index, config in enumerate(configs):
+        noise_start = time.perf_counter()
+        noise_rng = np.random.default_rng()
+        noise_rng.bit_generator.state = copy.deepcopy(noise_rng_state)
+        y_noisy, noise_variance = add_awgn(
+            y_true,
+            float(config["SNR_dB"]),
+            noise_rng,
+            active_mask=scene.get("evs_observation_mask"),
+        )
+        noise_generation_s = time.perf_counter() - noise_start
+        noisy_hankel_start = time.perf_counter()
+        z_noisy = hankelize_frequency(y_noisy, scene["P"])
+        noisy_hankelization_s = time.perf_counter() - noisy_hankel_start
+        yield {
+            "scene": scene,
+            "true_components": true_components,
+            "Y_true": y_true,
+            "Y_noisy": y_noisy,
+            "Z_true": z_true,
+            "Z_noisy": z_noisy,
+            "noise_variance": noise_variance,
+            "timing": {
+                "data_generation": noise_generation_s
+                + (static_generation_s if index == 0 else 0.0),
+                "hankelization": noisy_hankelization_s
+                + (static_hankelization_s if index == 0 else 0.0),
+            },
+        }
+
+
+def _run_trial_methods(
+    task: dict[str, Any],
+    config: dict,
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Evaluate all requested methods on one SNR-specific realization."""
     rows: list[dict[str, Any]] = []
     for baseline in task["baselines"]:
         rss_before = (
@@ -605,9 +663,32 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
         row["rss_mb_before"] = rss_before
         row["rss_mb_after"] = rss_after
         rows.append(assert_row_is_light(row))
-    del data
-    if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
-        trim_memory()
+    return rows
+
+
+def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
+    apply_thread_limits(
+        int(task.get("blas_threads", _WORKER_BLAS_THREADS)),
+        respect_existing=bool(
+            task.get(
+                "respect_existing_blas_env",
+                _WORKER_RESPECT_EXISTING_BLAS_ENV,
+            )
+        ),
+    )
+    snr_grid = [float(value) for value in task.get("snr_grid", [task["snr_db"]])]
+    configs = [_config_for_trial_snr(task, snr_db) for snr_db in snr_grid]
+    if "snr_grid" in task:
+        data_iter = _iter_shared_scene_snr_data(configs)
+    else:
+        data_iter = (_make_data(configs[0]),)
+
+    rows: list[dict[str, Any]] = []
+    for config, data in zip(configs, data_iter):
+        rows.extend(_run_trial_methods(task, config, data))
+        del data
+        if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
+            trim_memory()
     return rows
 
 
@@ -1099,51 +1180,51 @@ def _metadata_matches(metadata: dict[str, Any] | None, args: argparse.Namespace,
 
 def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]) -> list[dict[str, Any]]:
     tasks = []
-    for snr_db in snr_grid:
-        for trial_id in range(int(args.n_trials)):
-            tasks.append(
-                {
-                    "trial_id": int(trial_id),
-                    "seed": _trial_seed(int(args.seed), int(trial_id)),
-                    "snr_db": float(snr_db),
-                    "paper_k": int(args.paper_k),
-                    "baselines": list(baselines),
-                    "grid_profile": str(args.grid_profile),
-                    "blas_threads": (
-                        1
-                        if str(args.blas_threads).lower() == "auto"
-                        else int(args.blas_threads)
+    for trial_id in range(int(args.n_trials)):
+        tasks.append(
+            {
+                "trial_id": int(trial_id),
+                "seed": _trial_seed(int(args.seed), int(trial_id)),
+                "snr_db": float(snr_grid[0]),
+                "snr_grid": [float(value) for value in snr_grid],
+                "paper_k": int(args.paper_k),
+                "baselines": list(baselines),
+                "grid_profile": str(args.grid_profile),
+                "blas_threads": (
+                    1
+                    if str(args.blas_threads).lower() == "auto"
+                    else int(args.blas_threads)
+                ),
+                "respect_existing_blas_env": bool(args.respect_existing_blas_env),
+                "trim_memory": bool(args.trim_memory),
+                "profile_memory": bool(args.profile_memory),
+                "strict_ris_geometry": bool(args.strict_ris_geometry),
+                "backend_config": {
+                    "backend": str(args.baseline_backend),
+                    "gpu_device": args.gpu_device,
+                    "gpu_batch_size": args.gpu_batch_size,
+                    "cpu_batch_size": args.cpu_batch_size,
+                    "cache_enabled": bool(args.cache_baseline_grids),
+                    "cache_memory_budget_gb": args.cache_memory_budget_gb,
+                    "gpu_memory_fraction": args.gpu_memory_fraction,
+                    "dtype": "complex128",
+                },
+                "crb": {
+                    "include_constrained_jones_peb": bool(
+                        args.include_constrained_jones_peb
                     ),
-                    "respect_existing_blas_env": bool(args.respect_existing_blas_env),
-                    "trim_memory": bool(args.trim_memory),
-                    "profile_memory": bool(args.profile_memory),
-                    "strict_ris_geometry": bool(args.strict_ris_geometry),
-                    "backend_config": {
-                        "backend": str(args.baseline_backend),
-                        "gpu_device": args.gpu_device,
-                        "gpu_batch_size": args.gpu_batch_size,
-                        "cpu_batch_size": args.cpu_batch_size,
-                        "cache_enabled": bool(args.cache_baseline_grids),
-                        "cache_memory_budget_gb": args.cache_memory_budget_gb,
-                        "gpu_memory_fraction": args.gpu_memory_fraction,
-                        "dtype": "complex128",
-                    },
-                    "crb": {
-                        "include_constrained_jones_peb": bool(
-                            args.include_constrained_jones_peb
-                        ),
-                        "include_anchored_jones_peb": bool(
-                            args.include_anchored_jones_peb
-                        ),
-                        "jones_anchor_prior_mode": str(
-                            args.jones_anchor_prior_mode
-                        ),
-                        "jones_anchor_prior_scale": float(
-                            args.jones_anchor_prior_scale
-                        ),
-                    },
-                }
-            )
+                    "include_anchored_jones_peb": bool(
+                        args.include_anchored_jones_peb
+                    ),
+                    "jones_anchor_prior_mode": str(
+                        args.jones_anchor_prior_mode
+                    ),
+                    "jones_anchor_prior_scale": float(
+                        args.jones_anchor_prior_scale
+                    ),
+                },
+            }
+        )
     return tasks
 
 
@@ -1263,7 +1344,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"baseline=proposed {_proposed_policy_log_fragment(preview_config)}")
     tasks = _tasks(args, snr_grid, baselines)
     progress = ProgressLogger(
-        progress_path, len(tasks), "run_benchmark_comparison"
+        progress_path,
+        len(tasks) * len(snr_grid),
+        "run_benchmark_comparison",
     )
     if not args.quiet_progress:
         print(f"Progress log: {progress_path}")
@@ -1342,28 +1425,32 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 for row_batch in row_batches:
                     writer.writerows(row_batch)
-                    representative = row_batch[0] if row_batch else {}
-                    failed_rows = [
-                        row
-                        for row in row_batch
-                        if str(row.get("failed")).lower() == "true"
-                    ]
-                    progress.log(
-                        "task_failed" if failed_rows else "task_done",
-                        "failed" if failed_rows else "completed",
-                        figure="fig7",
-                        baseline_or_variant=",".join(
-                            str(row.get("baseline", "")) for row in row_batch
-                        ),
-                        snr_db=representative.get("snr_db", ""),
-                        trial_id=representative.get("trial_id", ""),
-                        seed=representative.get("seed", ""),
-                        K=representative.get("K", ""),
-                        message="benchmark trial batch completed",
-                        error="; ".join(
-                            str(row.get("error", "")) for row in failed_rows
-                        ),
-                    )
+                    progress_groups: dict[float, list[dict[str, Any]]] = {}
+                    for row in row_batch:
+                        progress_groups.setdefault(_to_float(row.get("snr_db")), []).append(row)
+                    for snr_db, progress_rows in progress_groups.items():
+                        representative = progress_rows[0] if progress_rows else {}
+                        failed_rows = [
+                            row
+                            for row in progress_rows
+                            if str(row.get("failed")).lower() == "true"
+                        ]
+                        progress.log(
+                            "task_failed" if failed_rows else "task_done",
+                            "failed" if failed_rows else "completed",
+                            figure="fig7",
+                            baseline_or_variant=",".join(
+                                str(row.get("baseline", "")) for row in progress_rows
+                            ),
+                            snr_db=snr_db,
+                            trial_id=representative.get("trial_id", ""),
+                            seed=representative.get("seed", ""),
+                            K=representative.get("K", ""),
+                            message="benchmark trial batch completed",
+                            error="; ".join(
+                                str(row.get("error", "")) for row in failed_rows
+                            ),
+                        )
                     for row in row_batch:
                         if str(row.get("failed")).lower() == "true":
                             continue

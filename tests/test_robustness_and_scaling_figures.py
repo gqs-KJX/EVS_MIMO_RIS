@@ -69,6 +69,78 @@ def test_trim_memory_cli_is_recorded_in_robustness_tasks_and_metadata():
     assert metadata["trim_memory"] is False
 
 
+@pytest.mark.parametrize(
+    ("figure", "grid_flag", "grid_value", "expected"),
+    [
+        ("fig8", "--calibration-std-grid", "0,5", [0.0, 5.0]),
+        ("fig9", "--assumed-k-grid", "1,2", [1, 2]),
+    ],
+)
+def test_fig8_fig9_tasks_are_grouped_by_trial(
+    figure, grid_flag, grid_value, expected
+):
+    args = figures.parse_args(
+        [
+            "--figures",
+            figure,
+            "--n-trials",
+            "2",
+            "--baselines",
+            "ff_omp",
+            grid_flag,
+            grid_value,
+        ]
+    )
+    tasks = figures.build_tasks(args, figure, ["ff_omp"])
+    assert len(tasks) == 2
+    assert tasks[0]["group_values"] == expected
+
+
+def test_grouped_fig8_fig9_data_match_legacy_generation():
+    config = _tiny_config(k_paths=1)
+
+    sequence = np.random.SeedSequence(int(config["seed"]))
+    scene_seed, mismatch_seed, noise_seed = sequence.spawn(3)
+    nominal_scene = figures.generate_scene(
+        config, np.random.default_rng(scene_seed)
+    )
+    for std_deg in (0.0, 5.0):
+        grouped, grouped_oracle = figures._calibration_mismatch_data_from_nominal(
+            config,
+            std_deg,
+            nominal_scene,
+            mismatch_seed,
+            noise_seed,
+        )
+        legacy, legacy_oracle = figures.make_calibration_mismatch_data(
+            config, std_deg
+        )
+        for grouped_data, legacy_data in (
+            (grouped, legacy),
+            (grouped_oracle, legacy_oracle),
+        ):
+            assert np.array_equal(grouped_data["Y_noisy"], legacy_data["Y_noisy"])
+            assert figures.scene_hash(grouped_data["scene"]) == figures.scene_hash(
+                legacy_data["scene"]
+            )
+
+    physical_data = _make_data(config)
+    for assumed_k in (1, 2):
+        grouped, grouped_physical = figures._k_mismatch_view_from_physical_data(
+            config, physical_data, assumed_k
+        )
+        legacy, legacy_physical = figures.make_k_mismatch_data(
+            config, assumed_k
+        )
+        assert np.array_equal(grouped["Y_noisy"], legacy["Y_noisy"])
+        assert np.array_equal(
+            grouped_physical["Y_noisy"], legacy_physical["Y_noisy"]
+        )
+        assert figures.scene_hash(grouped["scene"]) == figures.scene_hash(
+            legacy["scene"]
+        )
+
+
 def test_calibration_phase_error_changes_generation_response_only():
     data = _make_data(_tiny_config())
     nominal = data["scene"]["a_RB"].copy()
