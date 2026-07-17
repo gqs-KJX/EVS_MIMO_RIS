@@ -7,6 +7,22 @@ of the final selector; their reproducibility code is archived under
 
 ## Experiments
 
+The authoritative paper commands are version controlled in
+[`scripts/paper_commands.sh`](scripts/paper_commands.sh). Each formal target
+has a fixed seed, grid, trial count, bootstrap count, and output directory.
+The script refuses a dirty worktree, a commit other than the annotated paper
+freeze tag, or an existing result directory. Before any server run, use:
+
+```bash
+bash scripts/paper_commands.sh preflight
+bash scripts/paper_commands.sh list
+PAPER_DRY_RUN=1 bash scripts/paper_commands.sh components_paper400
+```
+
+Run `smoke_ablation` and `smoke_robustness` before their corresponding formal
+targets. The script deliberately has no `all` target, so a typo cannot launch
+every Monte Carlo suite.
+
 Run one deterministic realization of the frozen route from the project root:
 
 ```bash
