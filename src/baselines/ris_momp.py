@@ -286,6 +286,7 @@ def run_ris_momp_baseline(data: dict, config: dict) -> BaselineResult:
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
         backend_config=backend_cfg,
         static_cache_key=cache_key,
+        unique_panels=bool(cfg.get("unique_panel_groups", True)),
     )
     residual = y_vec - y_hat
     coarse_residual_norm = float(np.linalg.norm(residual))

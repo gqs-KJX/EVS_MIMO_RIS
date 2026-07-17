@@ -431,6 +431,26 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
     best_supports = list(best["supports"])
     residual = y_vec - best_y_hat
     best_index = tuple(int(v) for v in best.get("selected_grid_index", [-1, -1]))
+    coefficient_threshold = 1.0e-6 * max(
+        float(np.max(np.abs(best_coeffs))) if best_coeffs.size else 0.0,
+        1.0e-15,
+    )
+    active_coefficient_count = int(
+        np.sum(np.abs(best_coeffs) > coefficient_threshold)
+    )
+    panel_norms = np.asarray(
+        [
+            np.linalg.norm(best_coeffs[2 * panel : 2 * panel + 2])
+            for panel in range(int(scene["K"]))
+        ],
+        dtype=float,
+    )
+    active_panel_count = int(
+        np.sum(
+            panel_norms
+            > 1.0e-6 * max(float(np.max(panel_norms)), 1.0e-15)
+        )
+    )
     diagnostics = {
         "dictionary_mode": "near_field_spherical_grid_mmpsr_refined",
         "model_variant": "near_field_mmpsr",
@@ -451,6 +471,9 @@ def run_near_field_mmpsr_baseline(data: dict, config: dict) -> BaselineResult:
         "selected_grid_index": list(best_index),
         "selected_delta_t": float(best_delta_t),
         "coeff_norm": float(np.linalg.norm(best_coeffs)),
+        "active_coefficient_count": active_coefficient_count,
+        "active_panel_count": active_panel_count,
+        "active_coefficient_relative_threshold": 1.0e-6,
         "expanded_supports": [
             support for group in best_supports for support in expand_jones_group(group, 2)
         ],

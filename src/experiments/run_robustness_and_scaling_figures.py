@@ -50,6 +50,11 @@ if __package__ in (None, ""):
         global_vp_cli_overrides,
     )
     from src.experiments.run_benchmark_comparison import _apply_grid_profile
+    from src.experiments.final_mksc_ccop_common import (
+        Stage1Cache,
+        apply_final_paper_options,
+        run_paper_variant,
+    )
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic, run_stage1_only
     from src.estimators import reconstruct_raw_tensor_from_structured_estimate, estimate_position_from_local_ris
@@ -84,6 +89,11 @@ else:
         global_vp_cli_overrides,
     )
     from .run_benchmark_comparison import _apply_grid_profile
+    from .final_mksc_ccop_common import (
+        Stage1Cache,
+        apply_final_paper_options,
+        run_paper_variant,
+    )
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic, run_stage1_only
     from ..estimators import reconstruct_raw_tensor_from_structured_estimate, estimate_position_from_local_ris
@@ -95,7 +105,10 @@ else:
 
 FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c", "fig11"]
 DEFAULT_FIGURES = ",".join(FIGURE_ORDER)
-DEFAULT_BASELINES = "proposed,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,constrained_jones_peb"
+DEFAULT_BASELINES = (
+    "proposed,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,"
+    "peb,constrained_jones_peb"
+)
 ESTIMATOR_BASELINES = (
     "proposed",
     "ff_omp",
@@ -103,6 +116,7 @@ ESTIMATOR_BASELINES = (
     "nf_mmpsr",
     "nf_ris_groupomp_localgrid_wls",
     "stage1_only",
+    "mksc_ccop",
 )
 REFERENCE_BASELINES = (
     "peb",
@@ -112,11 +126,12 @@ REFERENCE_BASELINES = (
 )
 BASELINE_LABELS = {
     "proposed": "Proposed NGC–LG-RDC",
-    "ff_omp": "FF-OMP",
-    "ris_momp": "RIS-MOMP",
-    "nf_mmpsr": "NF-MMPSR",
-    "nf_ris_groupomp_localgrid_wls": "NF-RIS GroupOMP+Local-WLS",
+    "ff_omp": "FF-OMP (Adapted)",
+    "ris_momp": "RIS-GOMP (MOMP-Inspired)",
+    "nf_mmpsr": "NF-CC Grid (MMPSR-Inspired)",
+    "nf_ris_groupomp_localgrid_wls": "Adapted NF-RIS Group OMP + Local-Grid + WLS",
     "stage1_only": "Stage-I Only",
+    "mksc_ccop": "Proposed MKSC-GI-balanced + CCOP-JVP",
     "peb": "Data-only Free-Jones PEB",
     "constrained_jones_peb": "Constrained-Jones PEB",
     "oracle_calibrated_peb": "Oracle-calibrated PEB (reference)",
@@ -236,6 +251,13 @@ FIELDNAMES = [
     "local_refinement_gpu_used",
     "wls_backend",
     "mixed_backend",
+    "selected_group_count",
+    "selected_panel_count",
+    "selected_panels",
+    "unique_panel_constraint",
+    "expanded_support_count",
+    "active_coefficient_count",
+    "active_panel_count",
     "k_mismatch_scene_mode",
     "true_scene_hash",
     "estimator_scene_hash",
@@ -249,6 +271,13 @@ FIELDNAMES = [
     "rescue_requested",
     "ngc_selected_by",
     "ngc_final_unreliable",
+    "ngc_direct_cert_status",
+    "ngc_direct_cert_reason",
+    "ngc_direct_position_boundary_hit",
+    "ngc_direct_position_boundary_axis",
+    "ngc_direct_position_boundary_distance_m",
+    "ngc_direct_stage1_displacement_m",
+    "ngc_direct_normalized_position_step",
     "global_vp_backend",
     "global_vp_gpu_used",
     "global_vp_gpu_device",
@@ -391,9 +420,25 @@ def _proposed_policy_log_fragment(config: dict) -> str:
 
 def _git_commit() -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        ).strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def _git_dirty() -> bool:
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        )
+        return bool(status.strip())
+    except (OSError, subprocess.SubprocessError):
+        return True
 
 
 def _array_hash(value: Any) -> str:
@@ -447,6 +492,19 @@ def ue_position_on_centroid_ray(config: dict, r_ue_m: float) -> np.ndarray:
     return centroid + float(r_ue_m) * direction
 
 
+def translated_ue_bounds(config: dict, new_position: np.ndarray) -> np.ndarray:
+    """Translate the UE search box with the truth while preserving its shape."""
+    old_position = np.asarray(config["p_u_true"], dtype=float).reshape(3)
+    bounds = np.asarray(config["ue_bounds"], dtype=float)
+    if bounds.shape != (3, 2) or np.any(bounds[:, 0] >= bounds[:, 1]):
+        raise ValueError("ue_bounds must contain three ordered lower/upper pairs")
+    translated = bounds + (np.asarray(new_position, dtype=float).reshape(3) - old_position)[:, None]
+    truth = np.asarray(new_position, dtype=float).reshape(3)
+    if not np.all((truth > translated[:, 0]) & (truth < translated[:, 1])):
+        raise ValueError("translated ue_bounds do not strictly contain p_u_true")
+    return translated
+
+
 def default_rue_grid(config: dict) -> list[float]:
     centers = np.asarray(config["ris_centers"], dtype=float)[: int(config["K"])]
     r0 = float(np.linalg.norm(np.asarray(config["p_u_true"], dtype=float) - np.mean(centers, axis=0)))
@@ -490,7 +548,12 @@ def make_config(
     if ris_side is not None:
         config["ris_shape"] = (int(ris_side), int(ris_side))
     if r_ue_m is not None:
-        config["p_u_true"] = ue_position_on_centroid_ray(config, float(r_ue_m))
+        position = ue_position_on_centroid_ray(config, float(r_ue_m))
+        config["ue_bounds"] = translated_ue_bounds(config, position)
+        config["p_u_true"] = position
+        bounds = np.asarray(config["ue_bounds"], dtype=float)
+        assert np.all(position > bounds[:, 0])
+        assert np.all(position < bounds[:, 1])
     _apply_grid_profile(config, grid_profile)
     return config
 
@@ -852,6 +915,47 @@ def _proposed_result_row(data: dict, config: dict, task: dict[str, Any]) -> dict
     )
 
 
+def _mksc_ccop_result_row(
+    data: dict,
+    config: dict,
+    task: dict[str, Any],
+    cache: Stage1Cache | None = None,
+) -> dict[str, Any]:
+    """Run the frozen final route without activating legacy Stage-II rescue."""
+    final_config = apply_final_paper_options(config)
+    route = run_paper_variant(
+        "proposed",
+        data=data,
+        config=final_config,
+        cache=cache,
+        suite=str(task["figure"]),
+        x_name=X_FIELDS[str(task["figure"])][0],
+        x_value=task.get(X_FIELDS[str(task["figure"])][0], ""),
+        trial_id=int(task["trial_id"]),
+    )
+    if bool(route["failed"]):
+        raise RuntimeError(str(route["error"]))
+    return {
+        "baseline": "mksc_ccop",
+        "trial_id": int(task["trial_id"]),
+        "seed": int(task["seed"]),
+        "snr_db": float(task["snr_db"]),
+        "position_rmse_m": float(route["position_error_m"]),
+        "y_nmse": float(route["channel_nmse"]),
+        "raw_objective_final": float(route["raw_objective_final"]),
+        "runtime_s": float(route["deployment_runtime_s"]),
+        "failed": False,
+        "error": "",
+        "dictionary_mode": "mksc_gi_balanced_ccop_jvp",
+        "clock_error_ns": float(route["clock_error_ns"]),
+        "clock_certified": route["clock_certified"],
+        "stage1_runtime_s": float(route["stage1_runtime_s"]),
+        "global_vp_runtime_s": float(route["stage3_runtime_s"]),
+        "total_runtime_s": float(route["deployment_runtime_s"]),
+        "warning": "",
+    }
+
+
 
 
 def _peb_result_row(
@@ -1019,6 +1123,38 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
     )
     config["ris_centers"] = ris_centers
 
+    # Moving the panels changes the physically admissible UE-to-RIS ranges.
+    # Expand the estimator range coverage before Stage-I builds panel-local
+    # bounds; otherwise the intersection can be empty (the former 20 ns bug).
+    ue_bounds = np.asarray(config["ue_bounds"], dtype=float)
+    corners = np.array(
+        [
+            [x, y, z]
+            for x in ue_bounds[0]
+            for y in ue_bounds[1]
+            for z in ue_bounds[2]
+        ],
+        dtype=float,
+    )
+    coverage_ranges = np.asarray(
+        [np.linalg.norm(corner - center) for center in ris_centers for corner in corners],
+        dtype=float,
+    )
+    ris_search = dict(config["ris_search"])
+    old_lower, old_upper = map(float, ris_search["range_bounds"])
+    range_margin = float(ris_search.get("local_range_margin", 0.35))
+    ris_search["range_bounds"] = (
+        max(1.0e-6, min(old_lower, float(np.min(coverage_ranges)) - range_margin)),
+        max(old_upper, float(np.max(coverage_ranges)) + range_margin),
+    )
+    config["ris_search"] = ris_search
+    true_ranges = np.linalg.norm(ris_centers - p_u[None, :], axis=1)
+    if not np.all(
+        (true_ranges > ris_search["range_bounds"][0])
+        & (true_ranges < ris_search["range_bounds"][1])
+    ):
+        raise ValueError("Fig.11 true UE-to-RIS range lies outside RIS search bounds")
+
     # Recompute actual delays
     final_delays = []
     for k in range(len(ris_centers)):
@@ -1125,12 +1261,21 @@ def _run_methods_on_prepared_data(
 ) -> list[dict[str, Any]]:
     """Evaluate all requested methods on one prepared immutable realization."""
     rows: list[dict[str, Any]] = []
+    final_cache = (
+        Stage1Cache(data, apply_final_paper_options(config))
+        if "mksc_ccop" in task["baselines"]
+        else None
+    )
     for baseline in task["baselines"]:
         rss_before = memory_snapshot_mb() if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY)) else float("nan")
         try:
             with thread_limit_context(int(task.get("blas_threads", _WORKER_BLAS_THREADS))):
                 if baseline == "proposed":
                     row = _proposed_result_row(data, config, task)
+                elif baseline == "mksc_ccop":
+                    row = _mksc_ccop_result_row(
+                        data, config, task, cache=final_cache
+                    )
                 elif baseline in BASELINE_RUNNERS:
                     result = BASELINE_RUNNERS[baseline](data, config)
                     row = make_baseline_row(
@@ -1348,7 +1493,11 @@ def summarize_rows(rows: Iterable[dict[str, Any]], figure: str) -> list[dict[str
         
         # Outlier calculation: error > 0.1m
         outliers = [row for row in successful if _to_float(row.get("position_rmse_m")) > 0.1]
-        outlier_rate = len(outliers) / max(len(successful), 1) if baseline not in REFERENCE_BASELINES else float("nan")
+        outlier_rate = (
+            len(outliers) / len(successful)
+            if baseline not in REFERENCE_BASELINES and successful
+            else float("nan")
+        )
         
         runtimes = np.asarray([_to_float(row.get("runtime_s")) for row in successful], dtype=float)
         runtimes = runtimes[np.isfinite(runtimes)]
@@ -1385,7 +1534,13 @@ def summarize_rows(rows: Iterable[dict[str, Any]], figure: str) -> list[dict[str
     return summary
 
 
-def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Path) -> None:
+def plot_summary(
+    summary: list[dict[str, Any]],
+    figure: str,
+    out_dir: pathlib.Path,
+    *,
+    runtime_profile: bool = False,
+) -> None:
     mpl_dir = out_dir / ".matplotlib"
     mpl_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
@@ -1397,6 +1552,7 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
 
     styles = {
         "proposed": ("o", "-"),
+        "mksc_ccop": ("o", "-"),
         "ff_omp": ("s", "-"),
         "ris_momp": ("^", "-"),
         "nf_mmpsr": ("D", "-"),
@@ -1410,7 +1566,13 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
 
     # Left plot: Accuracy (RMSE / PEB)
     for baseline in BASELINE_LABELS:
-        selected = [row for row in summary if row["baseline"] == baseline]
+        selected = [
+            row
+            for row in summary
+            if row["baseline"] == baseline
+            and float(row.get("success_rate", 0.0)) > 0.0
+            and np.isfinite(float(row.get("rmse_m", np.nan)))
+        ]
         if not selected:
             continue
         selected.sort(key=lambda row: float(row["x_value"]))
@@ -1431,11 +1593,16 @@ def plot_summary(summary: list[dict[str, Any]], figure: str, out_dir: pathlib.Pa
     ax_left.set_title("Estimation Accuracy")
 
     # Right plot: Runtime or Outlier rate
-    plot_runtime = figure in {"fig10a", "fig10b"}
+    plot_runtime = runtime_profile and figure in {"fig10a", "fig10b"}
     for baseline in BASELINE_LABELS:
         if baseline in REFERENCE_BASELINES:
             continue
-        selected = [row for row in summary if row["baseline"] == baseline]
+        selected = [
+            row
+            for row in summary
+            if row["baseline"] == baseline
+            and float(row.get("success_rate", 0.0)) > 0.0
+        ]
         if not selected:
             continue
         selected.sort(key=lambda row: float(row["x_value"]))
@@ -1512,6 +1679,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "delta_tau_min_grid": list(args.delta_tau_min_grid),
         "baselines": list(baselines),
         "git_commit": _git_commit(),
+        "git_dirty": _git_dirty(),
         "seed": int(args.seed),
         "baseline_backend": str(args.baseline_backend),
         "gpu_device": args.gpu_device,
@@ -1519,6 +1687,7 @@ def _metadata_signature(args: argparse.Namespace, figure: str, baselines: list[s
         "cpu_batch_size": args.cpu_batch_size,
         "gpu_memory_fraction": args.gpu_memory_fraction,
         "trim_memory": bool(args.trim_memory),
+        "runtime_profile": bool(args.runtime_profile),
         "grid_profile": str(args.grid_profile),
         "include_constrained_jones_peb": bool(args.include_constrained_jones_peb),
         "include_anchored_jones_peb": bool(args.include_anchored_jones_peb),
@@ -1683,6 +1852,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         include_trim_memory=True,
     )
     parser.add_argument("--strict-ris-geometry", action="store_true")
+    parser.add_argument(
+        "--runtime-profile",
+        action="store_true",
+        help="publish runtime scaling from a dedicated single-process run",
+    )
     add_progress_args(parser)
     args = parser.parse_args(argv)
     args.figures = parse_figures(args.figures)
@@ -1751,11 +1925,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     args.process_workers = args.resource_plan["process_workers"]
     args.blas_threads = args.resource_plan["blas_threads"]
-    if args.baseline_backend in {"cupy", "auto"} and args.process_workers > 2:
-        print(
-            "Multiple worker processes may contend for one GPU; prefer "
-            "--process-workers 1 or 2."
+    gpu_requested = (
+        args.baseline_backend in {"cupy", "auto"}
+        or args.global_vp_backend in {"cupy", "auto"}
+    )
+    if gpu_requested and args.process_workers != 1:
+        raise ValueError(
+            "one --gpu-device supports exactly one worker process; use "
+            "--process-workers 1 or split jobs across GPU devices"
         )
+    if args.runtime_profile and args.process_workers != 1:
+        raise ValueError("--runtime-profile requires --process-workers 1")
     apply_thread_limits(args.blas_threads)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     progress_path = (
@@ -1870,11 +2050,17 @@ def main(argv: list[str] | None = None) -> None:
             metadata_path.write_text(json.dumps(_metadata(args, figure, baselines), indent=2))
         summary_all.extend(summary)
         if not args.no_plots:
-            plot_summary(summary, figure, args.out_dir)
+            plot_summary(
+                summary,
+                figure,
+                args.out_dir,
+                runtime_profile=bool(args.runtime_profile),
+            )
         write_summary_markdown(summary, figure, args.out_dir)
         print(f"{figure}: wrote {trial_path.name}, {summary_path.name}")
 
-    write_table2_scaling_runtime(summary_all, args.out_dir)
+    if args.runtime_profile:
+        write_table2_scaling_runtime(summary_all, args.out_dir)
     write_global_summary_markdown(summary_all, args.out_dir)
 
     progress.log(

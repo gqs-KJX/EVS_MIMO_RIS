@@ -3,8 +3,10 @@ import os
 import numpy as np
 
 from src.experiments.resource_control import (
+    PeakRssSampler,
     apply_thread_limits,
     assert_row_is_light,
+    memory_snapshot_mb,
     resolve_hybrid_resources,
 )
 
@@ -51,3 +53,12 @@ def test_apply_thread_limits_sets_environment(monkeypatch):
 def test_assert_row_is_light_removes_ndarrays():
     row = assert_row_is_light({"metric": 1.0, "diag": np.arange(3)})
     assert not any(isinstance(value, np.ndarray) for value in row.values())
+
+
+def test_peak_rss_sampler_records_current_process_memory():
+    before = memory_snapshot_mb()
+    with PeakRssSampler(True, interval_s=0.001) as sampler:
+        _ = np.ones(1024, dtype=float)
+    assert np.isfinite(before)
+    assert np.isfinite(sampler.peak_mb)
+    assert sampler.peak_mb >= before - 1.0

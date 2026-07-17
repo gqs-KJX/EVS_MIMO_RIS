@@ -551,6 +551,7 @@ def _apply_main_single_defaults(config: dict) -> dict:
     config.setdefault("stage2_delay_sigma_floor_ns", 0.5)
     config.setdefault("stage2_ris_normalization_scale", 1.0e-4)
     config.setdefault("stage2_lambda_ris_normalized", 1.0)
+    config.setdefault("stage2_position_polish_enabled", True)
     config.setdefault("stage2_pllg_max_projection_distance_m", 0.05)
     config.setdefault("stage2_pllg_legacy_fallback", True)
     config.setdefault("stage2_force_run_for_diagnostics", False)
@@ -2368,6 +2369,11 @@ def _ngc_certificate(
         f"ngc_{prefix}_ris_score": float("nan"),
         f"ngc_{prefix}_ris_score_norm": float("nan"),
         f"ngc_{prefix}_ris_available": False,
+        f"ngc_{prefix}_position_boundary_hit": False,
+        f"ngc_{prefix}_position_boundary_axis": "",
+        f"ngc_{prefix}_position_boundary_distance_m": float("nan"),
+        f"ngc_{prefix}_stage1_displacement_m": float("nan"),
+        f"ngc_{prefix}_normalized_position_step": float("nan"),
         f"ngc_{prefix}_total_score": float("nan"),
         f"ngc_{prefix}_cert_status": "",
         f"ngc_{prefix}_cert_reason": "candidate_unavailable",
@@ -2390,6 +2396,33 @@ def _ngc_certificate(
         return base
 
     p_u = np.asarray(final["p_u"], dtype=float).reshape(3)
+    position_bounds = np.asarray(config["ue_bounds"], dtype=float)
+    boundary = distance_to_box_boundary(
+        p_u,
+        position_bounds,
+        float(dict(config.get("global_vp", {})).get("boundary_tol_m", 0.02)),
+    )
+    stage1_position = np.full(3, np.nan)
+    init_name = str(final.get("global_vp_init_selected_candidate", ""))
+    for candidate in final.get("global_vp_init_candidate_scores", []):
+        if str(candidate.get("name", "")) == init_name:
+            value = np.asarray(candidate.get("p_u", []), dtype=float).reshape(-1)
+            if value.size == 3 and np.all(np.isfinite(value)):
+                stage1_position = np.clip(
+                    value, position_bounds[:, 0], position_bounds[:, 1]
+                )
+            break
+    if np.all(np.isfinite(stage1_position)):
+        displacement_m = float(np.linalg.norm(p_u - stage1_position))
+        normalized_step = float(
+            np.linalg.norm(
+                (p_u - stage1_position)
+                / np.maximum(position_bounds[:, 1] - position_bounds[:, 0], 1.0e-12)
+            )
+        )
+    else:
+        displacement_m = float("nan")
+        normalized_step = float("nan")
     tau_stage1, _, _, _ = _stage1_clock_panel_order(stage1_estimate, scene)
     sigmas_s, sigma_source = _ngc_clock_sigmas_s(
         stage1_estimate,
@@ -2452,6 +2485,9 @@ def _ngc_certificate(
             status = "green"
         else:
             status = "gray"
+    if bool(boundary["boundary_hit"]):
+        status = "red"
+        reasons.append("position_boundary_hit")
     if not reasons:
         reasons.append(f"clock_{status}")
     base.update(
@@ -2464,6 +2500,17 @@ def _ngc_certificate(
             f"ngc_{prefix}_ris_score": ris_score,
             f"ngc_{prefix}_ris_score_norm": ris_score_norm,
             f"ngc_{prefix}_ris_available": ris_available,
+            f"ngc_{prefix}_position_boundary_hit": bool(
+                boundary["boundary_hit"]
+            ),
+            f"ngc_{prefix}_position_boundary_axis": str(
+                boundary["boundary_hit_axis"]
+            ),
+            f"ngc_{prefix}_position_boundary_distance_m": float(
+                boundary["distance_to_position_box_boundary_m"]
+            ),
+            f"ngc_{prefix}_stage1_displacement_m": displacement_m,
+            f"ngc_{prefix}_normalized_position_step": normalized_step,
             f"ngc_{prefix}_total_score": total_score,
             f"ngc_{prefix}_cert_status": status,
             f"ngc_{prefix}_cert_reason": ",".join(reasons),
@@ -2949,18 +2996,11 @@ def run_from_existing_stage1(
     direct_z_rescue_rerun_executed = False
     direct_z_rescue_rerun_skipped = False
     direct_z_rescue_skip_reason = ""
-    direct_probe_z_rescue_disabled = bool(stage1_geometry_trigger and stage2_rescue_enabled)
+    # The direct candidate is defined before NGC/Stage-II routing.  Its
+    # numerical path must therefore be independent of whether Stage-II is
+    # enabled; otherwise Fig.1/2/5 variants do not share the same direct VP.
+    direct_probe_z_rescue_disabled = False
     direct_probe_config = config
-    if direct_probe_z_rescue_disabled:
-        direct_probe_config = copy.deepcopy(config)
-        direct_probe_config["global_vp"] = dict(direct_probe_config.get("global_vp", {}))
-        direct_probe_config["global_vp"]["enable_z_rescue_multistart"] = False
-        if progress_printed:
-            print(
-                "direct_probe_z_rescue_disabled = True "
-                "reason=stage1_geometry_trigger_rescue_path",
-                flush=True,
-            )
 
     # Good initialization: avoid unnecessary factor-domain projection.
     direct_probe_start = time.perf_counter()
@@ -2984,21 +3024,7 @@ def run_from_existing_stage1(
         and not bool(direct_result["final"].get("z_rescue_triggered", False))
         and not bool(direct_vp_quality.get("good", False))
     )
-    skip_direct_z_rescue_for_geometry = bool(
-        direct_z_rescue_rerun_requested
-        and stage2_rescue_enabled
-        and stage1_geometry_trigger
-    )
-    if direct_z_rescue_rerun_requested and skip_direct_z_rescue_for_geometry:
-        direct_z_rescue_rerun_skipped = True
-        direct_z_rescue_skip_reason = "stage1_geometry_trigger_rescue_path"
-        if progress_printed:
-            print(
-                "skipping_direct_forced_z_rescue_rerun = True "
-                f"reason={direct_z_rescue_skip_reason}",
-                flush=True,
-            )
-    elif direct_z_rescue_rerun_requested:
+    if direct_z_rescue_rerun_requested:
         rescue_config = copy.deepcopy(config)
         rescue_config["_global_vp_force_z_rescue"] = True
         forced_direct_start = time.perf_counter()

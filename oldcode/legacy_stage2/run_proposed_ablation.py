@@ -22,9 +22,9 @@ if __package__ in (None, ""):
     from src.main_single_proposed import run_single_proposed_diagnostic
     from src.metrics import position_rmse, relative_nmse
 else:
-    from ..config import default_config
-    from ..main_single_proposed import run_single_proposed_diagnostic
-    from ..metrics import position_rmse, relative_nmse
+    from src.config import default_config
+    from src.main_single_proposed import run_single_proposed_diagnostic
+    from src.metrics import position_rmse, relative_nmse
 
 
 ABLATION_GROUPS = ("vp_family", "stage2_gate", "jones_lambda")
@@ -80,6 +80,11 @@ FIELDNAMES = [
     "ngc_direct_clock_std_ns",
     "ngc_direct_ris_score_norm",
     "ngc_direct_ris_available",
+    "ngc_direct_position_boundary_hit",
+    "ngc_direct_position_boundary_axis",
+    "ngc_direct_position_boundary_distance_m",
+    "ngc_direct_stage1_displacement_m",
+    "ngc_direct_normalized_position_step",
     "ngc_direct_total_score",
     "ngc_direct_cert_status",
     "ngc_rescue_requested",
@@ -511,6 +516,21 @@ def _extract_row(
             ),
             "ngc_direct_ris_available": bool(
                 result.get("ngc_direct_ris_available", False)
+            ),
+            "ngc_direct_position_boundary_hit": bool(
+                result.get("ngc_direct_position_boundary_hit", False)
+            ),
+            "ngc_direct_position_boundary_axis": str(
+                result.get("ngc_direct_position_boundary_axis", "")
+            ),
+            "ngc_direct_position_boundary_distance_m": _finite_float(
+                result.get("ngc_direct_position_boundary_distance_m")
+            ),
+            "ngc_direct_stage1_displacement_m": _finite_float(
+                result.get("ngc_direct_stage1_displacement_m")
+            ),
+            "ngc_direct_normalized_position_step": _finite_float(
+                result.get("ngc_direct_normalized_position_step")
             ),
             "ngc_direct_total_score": _finite_float(
                 result.get("ngc_direct_total_score")

@@ -35,6 +35,7 @@ def test_default_config_matches_single_diagnostic_defaults():
     # only as an ablation knob, so it must stay disabled by default.
     assert config["stage2_pllg_pseudorange_block_weight"] == 0.0
     assert config["stage2_clock_estimator"] == "decoupled_robust"
+    assert config["stage2_position_polish_enabled"] is True
     assert config["stage2_clock_sigma_range_m"] == 0.12
     assert config["stage2_clock_outlier_kappa"] == 3.0
     assert config["jnpp_use_confidence_weights"] is True

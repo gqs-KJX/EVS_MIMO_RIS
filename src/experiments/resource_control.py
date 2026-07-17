@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -108,15 +109,68 @@ def thread_limit_context(blas_threads: int) -> Iterator[None]:
 
 
 def memory_snapshot_mb() -> float:
-    """Return current-process RSS in MiB when psutil is available."""
+    """Return current-process RSS in MiB, with a Linux /proc fallback."""
     try:
         import psutil
     except ImportError:
-        return float("nan")
+        psutil = None
+    if psutil is not None:
+        try:
+            return float(psutil.Process(os.getpid()).memory_info().rss / (1024.0**2))
+        except Exception:
+            pass
     try:
-        return float(psutil.Process(os.getpid()).memory_info().rss / (1024.0**2))
-    except Exception:
-        return float("nan")
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except (OSError, IndexError, TypeError, ValueError):
+        pass
+    return float("nan")
+
+
+class PeakRssSampler:
+    """Sample current-process RSS while a bounded experiment block runs."""
+
+    def __init__(self, enabled: bool, interval_s: float = 0.01):
+        self.enabled = bool(enabled)
+        self.interval_s = float(interval_s)
+        self.peak_mb = float("nan")
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        self.peak_mb = memory_snapshot_mb()
+
+        def sample() -> None:
+            while not self._stop.wait(self.interval_s):
+                value = memory_snapshot_mb()
+                if np.isfinite(value):
+                    self.peak_mb = (
+                        float(value)
+                        if not np.isfinite(self.peak_mb)
+                        else max(float(self.peak_mb), float(value))
+                    )
+
+        self._thread = threading.Thread(target=sample, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(0.1, 2.0 * self.interval_s))
+        value = memory_snapshot_mb()
+        if np.isfinite(value):
+            self.peak_mb = (
+                float(value)
+                if not np.isfinite(self.peak_mb)
+                else max(float(self.peak_mb), float(value))
+            )
 
 
 def release_gpu_memory_pools() -> None:

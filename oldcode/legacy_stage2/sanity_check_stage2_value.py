@@ -22,7 +22,7 @@ if __package__ in (None, ""):
         refine_global_raw,
         structured_refinement,
     )
-    from src.experiments.exp_stage2_as_vp_initialization import (
+    from oldcode.legacy_stage2.exp_stage2_as_vp_initialization import (
         PIPELINE_STAGE1,
         PIPELINE_STAGE1_STAGE2,
         PIPELINE_STAGE1_STAGE2_VP,
@@ -42,12 +42,12 @@ if __package__ in (None, ""):
     from src.tensor_utils import reconstruct_z, z_design_column
     from src.utils import solve_lstsq
 else:
-    from ..estimators import initialize_from_hankel, refine_global_raw, structured_refinement
-    from ..metrics import relative_nmse
-    from ..projections_delay import bq_from_poles
-    from ..projections_ris import local_ris_search_config
-    from ..tensor_utils import reconstruct_z, z_design_column
-    from ..utils import solve_lstsq
+    from src.estimators import initialize_from_hankel, refine_global_raw, structured_refinement
+    from src.metrics import relative_nmse
+    from src.projections_delay import bq_from_poles
+    from src.projections_ris import local_ris_search_config
+    from src.tensor_utils import reconstruct_z, z_design_column
+    from src.utils import solve_lstsq
     from .exp_stage2_as_vp_initialization import (
         PIPELINE_STAGE1,
         PIPELINE_STAGE1_STAGE2,

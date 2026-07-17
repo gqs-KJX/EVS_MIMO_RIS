@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import time
 from typing import Any
 
@@ -349,6 +350,272 @@ def _match_training_factor_to_geometry(
     return best_support
 
 
+def _training_assignment_at_position(
+    training_factor: np.ndarray,
+    scene: dict,
+    position: np.ndarray,
+    *,
+    taus: np.ndarray | None = None,
+    clock_scale_s: float = 0.5e-9,
+    clock_weight: float = 1.0,
+) -> tuple[float, list[tuple[int, int]], np.ndarray, dict[str, float]]:
+    """Match CP components to distinct physical panels at one common UE point."""
+    factors = np.asarray(training_factor, dtype=complex)
+    targets = np.column_stack(
+        [simple_atom_normalize(factors[:, comp]) for comp in range(factors.shape[1])]
+    )
+    atoms = np.column_stack(
+        [
+            simple_atom_normalize(
+                training_response_from_position(scene, panel, position)
+            )
+            for panel in range(int(scene["K"]))
+        ]
+    )
+    scores = np.abs(targets.conj().T @ atoms) ** 2
+    count = min(scores.shape)
+    if taus is None:
+        try:
+            from scipy.optimize import linear_sum_assignment
+
+            rows, columns = linear_sum_assignment(-scores)
+            assignments = [
+                [
+                    (int(component), int(panel))
+                    for component, panel in zip(rows, columns)
+                ]
+            ]
+        except (ImportError, ValueError):
+            assignments = []
+    else:
+        component_subsets = itertools.combinations(range(scores.shape[0]), count)
+        assignments = [
+            list(zip(components, panels))
+            for components in component_subsets
+            for panels in itertools.permutations(range(scores.shape[1]), count)
+        ]
+    if not assignments:
+        assignments = [[]]
+        used_components: set[int] = set()
+        used_panels: set[int] = set()
+        for flat_index in np.argsort(scores, axis=None)[::-1]:
+            component, panel = np.unravel_index(int(flat_index), scores.shape)
+            if component in used_components or panel in used_panels:
+                continue
+            assignments[0].append((int(component), int(panel)))
+            used_components.add(int(component))
+            used_panels.add(int(panel))
+            if len(assignments[0]) == count:
+                break
+
+    best_total = float("-inf")
+    best_assignment: list[tuple[int, int]] = []
+    best_metrics = {
+        "factor_score": float("nan"),
+        "clock_penalty": float("nan"),
+        "clock_std_s": float("nan"),
+    }
+    taus_array = None if taus is None else np.asarray(taus, dtype=float)
+    position_array = np.asarray(position, dtype=float)
+    for assignment in assignments:
+        factor_score = float(
+            sum(scores[component, panel] for component, panel in assignment)
+        )
+        if taus_array is None or len(assignment) < 2:
+            clock_penalty = 0.0
+            clock_std_s = float("nan")
+        else:
+            replicas = np.asarray(
+                [
+                    taus_array[component]
+                    - (
+                        np.linalg.norm(
+                            position_array
+                            - np.asarray(scene["ris_centers"][panel], dtype=float)
+                        )
+                        + float(scene["d_RB"][panel])
+                    )
+                    / float(scene["c0"])
+                    for component, panel in assignment
+                ],
+                dtype=float,
+            )
+            centered = replicas - float(np.mean(replicas))
+            clock_std_s = float(np.std(replicas))
+            clock_penalty = float(
+                np.sum((centered / max(float(clock_scale_s), 1.0e-15)) ** 2)
+            )
+        total = float(factor_score - float(clock_weight) * clock_penalty)
+        if total > best_total:
+            best_total = total
+            best_assignment = [
+                (int(component), int(panel)) for component, panel in assignment
+            ]
+            best_metrics = {
+                "factor_score": factor_score,
+                "clock_penalty": clock_penalty,
+                "clock_std_s": clock_std_s,
+            }
+    return best_total, best_assignment, scores, best_metrics
+
+
+def _joint_match_training_factors_to_geometry(
+    training_factor: np.ndarray,
+    taus: np.ndarray,
+    scene: dict,
+    config: dict,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Use one common UE position and a one-to-one CP-component/panel map."""
+    baseline_cfg = dict(config.get("baselines", {}).get("als_cpd", {}))
+    grid_shape = tuple(
+        int(value)
+        for value in baseline_cfg.get("position_grid_shape", (5, 5, 3))
+    )
+    candidates = position_grid_from_config(config, grid_shape)
+    top_count = max(1, int(baseline_cfg.get("geometry_refinement_starts", 4)))
+    clock_scale_s = (
+        float(
+            baseline_cfg.get(
+                "geometry_clock_scale_ns",
+                config.get("ngc_clock_sigma_floor_ns", 0.5),
+            )
+        )
+        * 1.0e-9
+    )
+    clock_weight = float(
+        baseline_cfg.get("geometry_clock_consistency_weight", 1.0)
+    )
+    ranked: list[dict[str, Any]] = []
+    for position in candidates:
+        score, assignment, _, metrics = _training_assignment_at_position(
+            training_factor,
+            scene,
+            position,
+            taus=taus,
+            clock_scale_s=clock_scale_s,
+            clock_weight=clock_weight,
+        )
+        ranked.append(
+            {
+                "position": np.asarray(position, dtype=float),
+                "score": float(score),
+                "assignment": assignment,
+                "metrics": metrics,
+            }
+        )
+    ranked.sort(key=lambda item: float(item["score"]), reverse=True)
+    coarse = dict(ranked[0])
+    best = dict(coarse)
+    refinement_evals = 0
+    refinement_success = False
+    if bool(baseline_cfg.get("geometry_offgrid_refinement", True)):
+        try:
+            from scipy.optimize import minimize
+
+            bounds = [
+                (float(row[0]), float(row[1]))
+                for row in np.asarray(config["ue_bounds"], dtype=float)
+            ]
+            for start in ranked[:top_count]:
+                def objective(value: np.ndarray) -> float:
+                    nonlocal refinement_evals
+                    refinement_evals += 1
+                    joint_score, _, _, _ = _training_assignment_at_position(
+                        training_factor,
+                        scene,
+                        np.asarray(value, dtype=float),
+                        taus=taus,
+                        clock_scale_s=clock_scale_s,
+                        clock_weight=clock_weight,
+                    )
+                    return -float(joint_score)
+
+                result = minimize(
+                    objective,
+                    np.asarray(start["position"], dtype=float),
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options={
+                        "maxiter": int(
+                            baseline_cfg.get("geometry_refinement_maxiter", 60)
+                        ),
+                        "ftol": 1.0e-12,
+                    },
+                )
+                position = np.asarray(result.x, dtype=float)
+                score, assignment, _, metrics = _training_assignment_at_position(
+                    training_factor,
+                    scene,
+                    position,
+                    taus=taus,
+                    clock_scale_s=clock_scale_s,
+                    clock_weight=clock_weight,
+                )
+                if np.isfinite(score) and score > float(best["score"]):
+                    best = {
+                        "position": position,
+                        "score": float(score),
+                        "assignment": assignment,
+                        "metrics": metrics,
+                    }
+                    refinement_success = True
+        except (ImportError, TypeError, ValueError, np.linalg.LinAlgError):
+            refinement_success = False
+
+    position = np.asarray(best["position"], dtype=float)
+    supports: list[dict[str, Any]] = []
+    for component, panel in best["assignment"]:
+        range_m, elev, az, _ = scene_geometry(scene, panel, position)
+        supports.append(
+            {
+                "panel": int(panel),
+                "component": int(component),
+                "position": position.copy(),
+                "tau": float(taus[component]),
+                "range": float(range_m),
+                "elevation": float(elev),
+                "azimuth": float(az),
+                "score": float(best["score"]),
+            }
+        )
+    diagnostics = {
+        "als_geometry_mapping": "joint_common_position_unique_panel_assignment",
+        "als_geometry_coarse_position": np.asarray(
+            coarse["position"], dtype=float
+        ).copy(),
+        "als_geometry_refined_position": position.copy(),
+        "als_geometry_coarse_score": float(coarse["score"]),
+        "als_geometry_refined_score": float(best["score"]),
+        "als_geometry_coarse_factor_score": float(
+            coarse["metrics"]["factor_score"]
+        ),
+        "als_geometry_refined_factor_score": float(
+            best["metrics"]["factor_score"]
+        ),
+        "als_geometry_coarse_clock_std_ns": float(
+            coarse["metrics"]["clock_std_s"] * 1.0e9
+        ),
+        "als_geometry_refined_clock_std_ns": float(
+            best["metrics"]["clock_std_s"] * 1.0e9
+        ),
+        "als_geometry_clock_scale_ns": float(clock_scale_s * 1.0e9),
+        "als_geometry_clock_consistency_weight": clock_weight,
+        "als_geometry_assignment": [
+            [int(component), int(panel)]
+            for component, panel in best["assignment"]
+        ],
+        "als_geometry_unique_panel_count": len(
+            {int(panel) for _, panel in best["assignment"]}
+        ),
+        "als_geometry_refinement_used": bool(
+            baseline_cfg.get("geometry_offgrid_refinement", True)
+        ),
+        "als_geometry_refinement_success": bool(refinement_success),
+        "als_geometry_refinement_evals": int(refinement_evals),
+    }
+    return supports, diagnostics
+
+
 def scene_geometry(scene: dict, panel: int, position: np.ndarray) -> tuple[float, float, float, np.ndarray]:
     from ..geometry import local_geometry_from_position
 
@@ -388,17 +655,26 @@ def run_als_cpd_baseline(data: dict, config: dict) -> BaselineResult:
         sigma2=float(baseline_cfg.get("sigma2", baseline_cfg.get("reg", 1.0e-8))),
     )
     y_hat = reconstruct_cp_tensor(factors, weights)
-    supports: list[dict[str, Any]] = []
-    for comp in range(rank):
-        tau = _tau_from_delay_factor(factors[1][:, comp], scene["delta_f"])
-        support = _match_training_factor_to_geometry(factors[2][:, comp], scene, config, tau)
-        support["component"] = int(comp)
-        supports.append(support)
+    taus = np.asarray(
+        [
+            _tau_from_delay_factor(factors[1][:, comp], scene["delta_f"])
+            for comp in range(rank)
+        ],
+        dtype=float,
+    )
+    supports, geometry_mapping_diag = _joint_match_training_factors_to_geometry(
+        factors[2], taus, scene, config
+    )
     p_hat, delta_t, geom_diag = geometric_support_to_position_ls(scene, supports, config)
     diagnostics.update(geom_diag)
+    diagnostics.update(geometry_mapping_diag)
     diagnostics.update(
         {
             "dictionary_mode": "als_cpd_tensor",
+            "adaptation_note": (
+                "CP-ALS channel factors with adapted joint common-position, "
+                "one-component-per-panel geometry mapping"
+            ),
             "grid_size": int(np.prod(config.get("baselines", {}).get("als_cpd", {}).get("position_grid_shape", (5, 5, 3))) * scene["K"]),
         }
     )

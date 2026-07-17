@@ -157,6 +157,22 @@ def test_legacy_position_seed_averages_only_screened_valid_fixes():
     )
 
 
+def test_legacy_position_seed_can_be_reported_without_position_polish():
+    config = default_config()
+    config["stage2_position_polish_enabled"] = False
+    position = np.array([1.25, 0.55, 0.75])
+    state, scene = _state(position, 5.0e-9)
+    state.local_fix_records[0]["position"] = position + np.array([-0.2, 0.0, 0.0])
+    state.local_fix_records[2]["position"] = position + np.array([0.2, 0.0, 0.0])
+
+    result = solve_stage2_legacy_multistart(state, scene, config)
+
+    np.testing.assert_allclose(result["position"], position, rtol=0.0, atol=1.0e-15)
+    assert result["diagnostics"]["position_polish_enabled"] is False
+    assert result["diagnostics"]["polish_skipped_reason"] == "disabled"
+    assert result["diagnostics"]["polish_accepted"] is False
+
+
 def test_legacy_position_seed_is_unavailable_without_valid_fixes():
     config = default_config()
     state, scene = _state(np.array([1.25, 0.55, 0.75]), 5.0e-9)

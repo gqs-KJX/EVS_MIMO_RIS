@@ -22,10 +22,10 @@ if __package__ in (None, ""):
     from src.estimators import initialize_from_hankel, refine_global_raw, structured_refinement
     from src.tensor_utils import hankelize_frequency
 else:
-    from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
-    from ..config import default_config
-    from ..estimators import initialize_from_hankel, refine_global_raw, structured_refinement
-    from ..tensor_utils import hankelize_frequency
+    from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
+    from src.config import default_config
+    from src.estimators import initialize_from_hankel, refine_global_raw, structured_refinement
+    from src.tensor_utils import hankelize_frequency
 
 
 def _time_block(label: str, timings: list[tuple[str, float]], fn):

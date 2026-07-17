@@ -15,15 +15,15 @@ from typing import Any
 import numpy as np
 
 if __package__ in (None, ""):
-    project_root = pathlib.Path(__file__).resolve().parents[1]
+    project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
     from src.config import default_config
     from src.main_single_proposed import _final_raw_objective, run_single_proposed_diagnostic
     from src.metrics import position_rmse, relative_nmse
 else:
-    from .config import default_config
-    from .main_single_proposed import _final_raw_objective, run_single_proposed_diagnostic
-    from .metrics import position_rmse, relative_nmse
+    from src.config import default_config
+    from src.main_single_proposed import _final_raw_objective, run_single_proposed_diagnostic
+    from src.metrics import position_rmse, relative_nmse
 
 
 RAW_FIELDS = [

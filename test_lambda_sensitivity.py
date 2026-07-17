@@ -7,7 +7,10 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.main_lambda_sensitivity import parse_lambda_list, extract_metrics_from_result
+from oldcode.legacy_stage2.main_lambda_sensitivity import (
+    extract_metrics_from_result,
+    parse_lambda_list,
+)
 
 def test_parse_lambda_list():
     """Test lambda list parsing."""

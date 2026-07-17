@@ -88,6 +88,96 @@ def test_fig1_adaptive_variant_dispatch_matches_main_single():
         assert fig_metrics[key] == main_metrics[key], message
     assert result_fig1["variant_diagnostics"]["used_main_single_proposed_path"]
 
+    no_rescue_spec = figures._variant_specs(figures.FIG1_FIG2_SHARED_FIGURE)[
+        "adaptive_jones_no_rescue"
+    ]
+    no_rescue_config = figures.apply_nested_update(
+        copy.deepcopy(config), no_rescue_spec
+    )
+    result_no_rescue = figures.run_final_vp_from_shared_stage1(
+        copy.deepcopy(data),
+        copy.deepcopy(stage1),
+        no_rescue_config,
+        no_rescue_spec,
+        allow_stage2=False,
+    )
+    proposed_direct = result_fig1["branches"]["direct_vp"]["final"]
+    no_rescue_direct = result_no_rescue["branches"]["direct_vp"]["final"]
+    np.testing.assert_allclose(
+        proposed_direct["p_u"], no_rescue_direct["p_u"], rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        proposed_direct["delta_t"],
+        no_rescue_direct["delta_t"],
+        rtol=1e-12,
+        atol=1e-15,
+    )
+    np.testing.assert_allclose(
+        proposed_direct["raw_objective_final"],
+        no_rescue_direct["raw_objective_final"],
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    for coefficient_key in ("x_hat", "beta_raw"):
+        if proposed_direct.get(coefficient_key) is not None:
+            np.testing.assert_allclose(
+                proposed_direct[coefficient_key],
+                no_rescue_direct[coefficient_key],
+                rtol=1e-12,
+                atol=1e-12,
+            )
+
+
+def test_ngc_rejects_position_boundary_candidate(monkeypatch):
+    from src import main_single_proposed as proposed
+
+    monkeypatch.setattr(
+        proposed,
+        "_stage1_clock_panel_order",
+        lambda *args: (np.zeros(3), np.ones(3), True, [0, 1, 2]),
+    )
+    monkeypatch.setattr(
+        proposed,
+        "_ngc_clock_sigmas_s",
+        lambda *args, **kwargs: (np.ones(3), "test"),
+    )
+    monkeypatch.setattr(
+        proposed,
+        "robust_jnpp_geometry_consistency_score",
+        lambda *args, **kwargs: {
+            "available": True,
+            "score": 0.0,
+            "score_norm": 0.0,
+        },
+    )
+    config = default_config()
+    branch = {
+        "final": {
+            "p_u": np.array([1.25, 0.55, config["ue_bounds"][2, 1]]),
+            "global_vp_init_selected_candidate": "all_panel_mean",
+            "global_vp_init_candidate_scores": [
+                {
+                    "name": "all_panel_mean",
+                    "p_u": np.array([1.25, 0.55, 0.75]),
+                }
+            ],
+        }
+    }
+    scene = {
+        "K": 3,
+        "c0": config["c0"],
+        "ris_centers": np.zeros((3, 3)),
+        "d_RB": np.zeros(3),
+    }
+    diagnostics = proposed._ngc_certificate(
+        "direct", branch, {}, scene, config
+    )
+    assert diagnostics["ngc_direct_cert_status"] == "red"
+    assert diagnostics["ngc_direct_position_boundary_hit"] is True
+    assert diagnostics["ngc_direct_position_boundary_axis"] == "z"
+    assert "position_boundary_hit" in diagnostics["ngc_direct_cert_reason"]
+    assert np.isclose(diagnostics["ngc_direct_stage1_displacement_m"], 0.7)
+
 
 def test_fig1_grouped_execution_does_not_reuse_final_result(monkeypatch):
     data = {
@@ -208,4 +298,4 @@ def test_proposed_plotted_last(tmp_path, monkeypatch):
         ],
         tmp_path,
     )
-    assert labels[-1] == "NGC proposed"
+    assert labels[-1] == "Proposed NGC–LG-RDC"

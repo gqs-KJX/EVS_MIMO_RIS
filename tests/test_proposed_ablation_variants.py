@@ -1,4 +1,4 @@
-from src.experiments import run_proposed_ablation as ablation
+from oldcode.legacy_stage2 import run_proposed_ablation as ablation
 
 
 def test_import_run_proposed_ablation():

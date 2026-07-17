@@ -45,27 +45,27 @@ if __package__ in (None, ""):
     from src.tensor_utils import hankelize_frequency, reconstruct_z, z_design_column
     from src.utils import scipy_is_available, solve_lstsq
 else:
-    from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
-    from ..config import default_config
-    from ..diagnostics import estimate_position_from_ris_eta
-    from ..estimators import (
+    from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
+    from src.config import default_config
+    from src.diagnostics import estimate_position_from_ris_eta
+    from src.estimators import (
         initialize_from_hankel,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
         structured_refinement,
     )
-    from ..geometry import polarization_vector, position_from_local_geometry
-    from ..metrics import position_rmse, relative_nmse
-    from ..projections_delay import bq_from_poles, pole_from_tau, tau_from_pole
-    from ..projections_evs import project_evs_factor
-    from ..projections_ris import (
+    from src.geometry import polarization_vector, position_from_local_geometry
+    from src.metrics import position_rmse, relative_nmse
+    from src.projections_delay import bq_from_poles, pole_from_tau, tau_from_pole
+    from src.projections_evs import project_evs_factor
+    from src.projections_ris import (
         compressed_exact_response,
         local_ris_search_config,
         project_ris_factor,
         scaled_residual,
     )
-    from ..tensor_utils import hankelize_frequency, reconstruct_z, z_design_column
-    from ..utils import scipy_is_available, solve_lstsq
+    from src.tensor_utils import hankelize_frequency, reconstruct_z, z_design_column
+    from src.utils import scipy_is_available, solve_lstsq
 
 
 PIPELINE_STAGE1 = "Stage-I only"

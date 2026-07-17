@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from src.config import default_config
+from src.experiments import final_mksc_ccop_common as final_common
 from src.experiments import run_paper_ablation_figures as figures
+from src.experiments import run_final_evs_resolvability as final_resolution
+from src.experiments import run_final_mksc_ccop_ablation as final_ablation
 
 
 def test_import_run_paper_ablation_figures():
@@ -31,7 +34,7 @@ def test_fig1_variant_specs_are_exact():
         "stage1_only",
         "fixed_pol_vp",
         "free_jones_vp",
-        "regularized_jones_vp",
+        "adaptive_jones_no_rescue",
         "adaptive_jones_vp_proposed",
     ]
     assert specs["adaptive_jones_vp_proposed"]["proposed_stage2_policy"] == "ngc_certified_ris_only"
@@ -115,8 +118,13 @@ def test_variant_filter_does_not_apply_outside_fig1_fig2():
         "scalar_peb",
         "dual_pol_peb",
         "full_6d_evs_peb",
-        "full_6d_constrained_jones_peb",
     ]
+    diagnostics = figures._variants_for_figure(
+        "fig4",
+        None,
+        include_diagnostic_variants=True,
+    )
+    assert "full_6d_constrained_jones_peb" in diagnostics
 
 
 def test_fig3_variant_specs_include_receiver_modes():
@@ -234,23 +242,17 @@ def test_fig5_variant_specs_include_gate_variants():
     assert specs["oracle_init_vp"]["_runner"] == "oracle_init_vp"
 
 
-def test_figure6_k_grid():
-    assert figures.FIGURE6_K_GRID == [1, 2, 3, 4]
-
-
-def test_fig6_vp_family_proposed_uses_ngc():
+def test_fig6_stage2_seed_variants_use_shared_ngc_pipeline():
     specs = figures._variant_specs("fig6")
-    adaptive_no_rescue = specs["adaptive_jones_no_rescue"]
-    assert adaptive_no_rescue["global_vp"]["mode"] == "adaptive_jones"
-    assert adaptive_no_rescue["_allow_stage2"] is False
-    proposed = specs["adaptive_jones_vp_proposed"]
-    assert proposed["global_vp"]["mode"] == "adaptive_jones"
-    assert proposed["stage2_adaptive"] is True
-    assert proposed["stage2_rescue_type"] == "ris_only"
-    assert proposed["proposed_stage2_policy"] == "ngc_certified_ris_only"
-    assert proposed["_allow_stage2"] is True
-    assert proposed["rescue_accept_min_rel_improvement"] == 0.0
-    assert proposed["rescue_accept_min_abs_improvement"] == 1.0e-8
+    assert list(specs) == [
+        "stage2_weighted_mean_clock",
+        "stage2_lg_no_polish",
+        "stage2_lg_rdc",
+    ]
+    assert all(spec["stage2_force_run_for_diagnostics"] for spec in specs.values())
+    assert specs["stage2_weighted_mean_clock"]["stage2_clock_estimator"] == "weighted_mean"
+    assert specs["stage2_lg_rdc"]["stage2_clock_estimator"] == "decoupled_robust"
+    assert specs["stage2_lg_no_polish"]["stage2_position_polish_enabled"] is False
 
 
 def test_default_paper_k_is_three():
@@ -271,23 +273,21 @@ def test_fig1_to_fig5_config_generation_applies_paper_k():
         assert config["K"] == 3
 
 
-def test_fig6_uses_k_grid_and_ignores_paper_k():
+def test_fig6_uses_snr_grid_and_preserves_paper_k():
     args = figures.parse_args([])
-    assert args.k_grid_values == [1, 2, 3, 4]
-    assert figures._figure_x_grid("fig6", [-30.0], args.k_grid_values) == (
-        "K",
-        [1.0, 2.0, 3.0, 4.0],
+    assert figures._figure_x_grid("fig6", [-30.0, -20.0], args.k_grid_values) == (
+        "snr_db",
+        [-30.0, -20.0],
     )
     config = figures._config_for_point(
         figure="fig6",
         variant_updates={},
         seed=1,
         snr_db=-30.0,
-        x_value=4.0,
+        x_value=-30.0,
         paper_k=3,
     )
-    assert config["K"] == 4
-    assert config["ris_centers"].shape[0] >= 4
+    assert config["K"] == 3
 
 
 def test_task_rows_expose_requested_and_effective_k(tmp_path):
@@ -307,13 +307,15 @@ def test_task_rows_expose_requested_and_effective_k(tmp_path):
     fig6_tasks = figures._tasks_for_figure(
         figure="fig6",
         grouped_group=None,
-        x_name="K",
-        x_values=[4.0],
-        variants={"fixed_pol_vp": figures._variant_specs("fig6")["fixed_pol_vp"]},
+        x_name="snr_db",
+        x_values=[0.0],
+        variants={
+            "stage2_lg_rdc": figures._variant_specs("fig6")["stage2_lg_rdc"]
+        },
         trial_seeds=[123],
         args=args,
     )
-    assert fig6_tasks[0]["effective_K"] == int(fig6_tasks[0]["x_value"]) == 4
+    assert fig6_tasks[0]["effective_K"] == fig6_tasks[0]["paper_k"] == 3
 
 
 def test_grouped_fig1_task_records_filtered_variants(tmp_path):
@@ -348,7 +350,10 @@ def test_peb_variants_map_to_peb_position():
     row = {"failed": False, "peb_position_m": "1.0"}
     assert figures.get_plot_metric(row, "fig1", "PEB") == "peb_position_m"
     assert figures.get_plot_metric(row, "fig3", "full_6d_evs_peb") == "peb_position_m"
-    assert figures.get_plot_metric(row, "fig6", "proposed_peb") == "peb_position_m"
+    assert (
+        figures.get_plot_metric(row, "fig6", "stage2_lg_rdc")
+        == "stage2_seed_clock_error_ns"
+    )
 
 
 def test_fig4_peb_variants_map_to_specific_fields():
@@ -607,3 +612,77 @@ def test_jobs_cli_default_and_override():
     assert figures.parse_args([]).jobs == 10
     assert figures.parse_args(["--jobs", "1"]).jobs == 1
     assert figures.parse_args(["--max-workers", "2"]).max_workers == 2
+
+
+def test_final_component_ablation_is_compact_and_keeps_ccop_evidence():
+    args = final_ablation.parse_args([])
+    assert args.component_variants == [
+        "scaled_4d",
+        "old_stage1_ccop",
+        "mksc_delay_ccop",
+        "mksc_gi_1_no_refresh_ccop",
+        "mksc_gi_4_no_refresh_ccop",
+        "proposed",
+    ]
+    assert args.paired_reference == "scaled_4d"
+    assert args.paired_candidate == "proposed"
+
+
+def test_final_summary_keeps_failures_in_catastrophic_denominator():
+    rows = [
+        {
+            "suite": "snr",
+            "x_name": "snr_db",
+            "x_value": -10,
+            "variant": "proposed",
+            "failed": False,
+            "outlier": False,
+            "position_error_m": 0.01,
+            "clock_error_ns": 0.2,
+            "channel_nmse": 0.1,
+            "deployment_runtime_s": 1.0,
+        },
+        {
+            "suite": "snr",
+            "x_name": "snr_db",
+            "x_value": -10,
+            "variant": "proposed",
+            "failed": True,
+            "outlier": True,
+        },
+    ]
+    summary = final_common.summarize_rows(rows)[0]
+    assert summary["success_rate"] == 0.5
+    assert summary["conditional_outlier_rate"] == 0.0
+    assert summary["catastrophic_rate"] == 0.5
+    assert summary["clock_rmse_ns"] == pytest.approx(0.2)
+    assert summary["channel_nmse_p95"] == pytest.approx(0.1)
+
+
+def test_evs_resolution_requires_path_count_pairing_accuracy_and_no_collapse():
+    good = {
+        "failed": False,
+        "estimated_path_count": 3,
+        "stage1_panel_pairing_correct": True,
+        "stage1_delay_max_abs_error_ns": 0.2,
+        "stage1_min_delay_separation_ns": 0.4,
+    }
+    assert final_resolution._resolution_failure_reason(good, 3, 0.5, 0.05) == ""
+    assert (
+        final_resolution._resolution_failure_reason(
+            {**good, "estimated_path_count": 2}, 3, 0.5, 0.05
+        )
+        == "path_count_error"
+    )
+    assert (
+        final_resolution._resolution_failure_reason(
+            {**good, "stage1_panel_pairing_correct": False}, 3, 0.5, 0.05
+        )
+        == "panel_pairing_error"
+    )
+    assert (
+        final_resolution._resolution_failure_reason(
+            {**good, "stage1_min_delay_separation_ns": 0.01}, 3, 0.5, 0.05
+        )
+        == "pole_collapse"
+    )

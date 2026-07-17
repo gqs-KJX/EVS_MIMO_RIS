@@ -125,20 +125,19 @@ def test_grouped_fig1_task_returns_vp_family_rows(monkeypatch):
         "stage1_only",
         "fixed_pol_vp",
         "free_jones_vp",
-        "regularized_jones_vp",
+        "adaptive_jones_no_rescue",
         "adaptive_jones_vp_proposed",
     }.issubset(variants)
     assert {row["effective_K"] for row in rows} == {3}
     assert {row["paper_k"] for row in rows} == {3}
 
 
-def test_grouped_fig6_rows_use_x_value_as_effective_k(monkeypatch):
+def test_grouped_fig6_rows_preserve_paper_k(monkeypatch):
     _install_fast_grouped_fakes(monkeypatch)
     task = _group_task("fig6")
-    task.update({"x_name": "K", "x_value": 4.0, "K": 4})
     rows, _ = figures._run_grouped_task(task)
     assert rows
-    assert {row["effective_K"] for row in rows} == {4}
+    assert {row["effective_K"] for row in rows} == {3}
     assert {row["paper_k"] for row in rows} == {3}
 
 

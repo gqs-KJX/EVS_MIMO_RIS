@@ -152,7 +152,7 @@ def default_config() -> dict:
 
     config = {
         "seed": 821394406,
-        "trials": 10,
+        "trials": 1,
         "SNR_dB": -10.0,
         "enable_global_vp": True,
         "stage2_mode": "none",
@@ -286,6 +286,7 @@ def default_config() -> dict:
         "stage2_delay_sigma_floor_ns": 0.5,
         "stage2_ris_normalization_scale": 1.0e-4,
         "stage2_lambda_ris_normalized": 1.0,
+        "stage2_position_polish_enabled": True,
         # Exported Stage-II clock: "decoupled_robust" uses the position-free
         # m_k - r_k replicas with a median/MAD screen; "weighted_mean" restores
         # the previous non-robust closed-form clock of Phi_S2.

@@ -912,7 +912,13 @@ def _apply_physical_order(
     )
 
 
-def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> dict:
+def initialize_from_hankel(
+    z_tensor: np.ndarray,
+    scene: dict,
+    config: dict,
+    *,
+    delay_z_tensor: np.ndarray | None = None,
+) -> dict:
     """A-IMDF-inspired RIS-EVS initializer.
 
     This is an A-IMDF-inspired RIS-EVS initializer. It follows the A-IMDF
@@ -923,6 +929,16 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
     column-panel pairs.
     """
     assert z_tensor.shape == (scene["I"], scene["P"], scene["L"], scene["T"])
+    if delay_z_tensor is None:
+        delay_observation = z_tensor
+    else:
+        delay_observation = np.asarray(delay_z_tensor, dtype=complex)
+        assert delay_observation.ndim == 4
+        assert delay_observation.shape[1:] == (
+            scene["P"],
+            scene["L"],
+            scene["T"],
+        )
     stage1_total_start = time.perf_counter()
     stage1_timing: dict[str, float] = {
         "stage1_time_delay_estimation": 0.0,
@@ -945,7 +961,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
     delay_start = time.perf_counter()
     if delay_method == "aimdf_fullfreq_tls":
         poles_raw, delay_diagnostics = estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
-            z_tensor,
+            delay_observation,
             scene["K"],
             forward_backward=forward_backward,
             tls=tls,
@@ -954,7 +970,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         )
     elif delay_method == "aimdf_asym_tls":
         poles_raw, delay_diagnostics = estimate_poles_aimdf_asym_tls_from_hankel(
-            z_tensor,
+            delay_observation,
             scene["K"],
             forward_backward=forward_backward,
             tls=tls,
@@ -964,7 +980,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
             subspace_solver=config.get("stage1_delay_subspace_solver", "svd"),
         )
     elif delay_method == "esprit_ls":
-        poles_raw = estimate_poles_esprit_from_hankel(z_tensor, scene["K"])
+        poles_raw = estimate_poles_esprit_from_hankel(delay_observation, scene["K"])
         delay_diagnostics = {
             "delay_method": "esprit_ls",
             "singular_values": np.array([], dtype=float),
@@ -1135,6 +1151,7 @@ def initialize_from_hankel(z_tensor: np.ndarray, scene: dict, config: dict) -> d
         "stage1_forward_backward": forward_backward,
         "stage1_tls": tls,
         "stage1_snapshot_sketch_dim": delay_diagnostics.get("snapshot_sketch_dim"),
+        "stage1_delay_observation_shape": tuple(int(v) for v in delay_observation.shape),
         "stage1_ris_geometry_mode": config.get(
             "stage1_ris_geometry_mode", "coarse_correlation"
         ),

@@ -5,6 +5,7 @@ import pytest
 
 from src.baselines.common import BaselineResult, y_noisy_hash
 from src.config import default_config
+from src.experiments import run_final_mksc_ccop_robustness as final_robustness
 from src.experiments import run_robustness_and_scaling_figures as figures
 from src.main_single_proposed import _make_data
 
@@ -304,6 +305,45 @@ def test_rue_sweep_stays_on_fixed_centroid_ray():
         assert np.allclose(displacement / np.linalg.norm(displacement), original_direction)
 
 
+def test_rue_sweep_translates_bounds_and_strictly_contains_truth():
+    config = default_config()
+    original_span = np.diff(np.asarray(config["ue_bounds"], dtype=float), axis=1)
+    for radius in figures.default_rue_grid(config):
+        varied = figures.make_config(1234, 0.0, 3, r_ue_m=radius)
+        truth = np.asarray(varied["p_u_true"], dtype=float)
+        bounds = np.asarray(varied["ue_bounds"], dtype=float)
+        assert np.all(truth > bounds[:, 0])
+        assert np.all(truth < bounds[:, 1])
+        np.testing.assert_allclose(np.diff(bounds, axis=1), original_span)
+
+
+def test_resolvability_expands_ris_range_bounds_for_20ns():
+    config = figures.make_config(4006735837, 0.0, 3)
+    varied = figures.adjust_config_for_resolvability(config, 20.0)
+    truth = np.asarray(varied["p_u_true"], dtype=float)
+    centers = np.asarray(varied["ris_centers"], dtype=float)
+    ranges = np.linalg.norm(centers - truth[None, :], axis=1)
+    lower, upper = varied["ris_search"]["range_bounds"]
+    assert np.all(ranges > lower)
+    assert np.all(ranges < upper)
+    assert upper > 9.5
+
+
+def test_failed_only_summary_reports_nan_outlier_rate():
+    rows = [
+        {
+            "baseline": "proposed",
+            "achieved_delta_tau_min_ns": 20.0,
+            "failed": True,
+            "position_rmse_m": np.nan,
+            "runtime_s": np.nan,
+        }
+    ]
+    summary = figures.summarize_rows(rows, "fig11")
+    assert summary[0]["success_rate"] == 0.0
+    assert np.isnan(summary[0]["outlier_rate"])
+
+
 def test_calibration_data_keeps_nominal_estimator_scene(monkeypatch):
     config = _tiny_config()
     original = copy.deepcopy(config)
@@ -353,3 +393,52 @@ def test_reference_peb_rows_record_reference_model(monkeypatch):
     assert row["warning"] == (
         "Oracle-calibrated PEB reference only; not a CRB for mismatched estimators."
     )
+
+
+@pytest.mark.parametrize(
+    ("mismatch_type", "value"),
+    [
+        ("evs_phase_deg", 2.0),
+        ("evs_gain_std", 0.05),
+        ("ris_bs_angle_deg", 0.5),
+        ("bs_sensor_position_std_mm", 0.2),
+    ],
+)
+def test_final_mismatch_data_keeps_nominal_estimator_model(mismatch_type, value):
+    config = _tiny_config(k_paths=1)
+    nominal_config = copy.deepcopy(config)
+    data, leakage = final_robustness._mismatch_data(config, mismatch_type, value)
+    np.testing.assert_array_equal(config["ris_centers"], nominal_config["ris_centers"])
+    assert data["scene"]["K"] == 1
+    assert np.isfinite(leakage)
+    assert 0.0 <= leakage <= 1.0 + 1.0e-12
+
+
+def test_final_robustness_routes_use_claim_specific_variants():
+    args = final_robustness.parse_args(
+        [
+            "--suites",
+            "subspace_mismatch,positions",
+            "--phase-grid",
+            "0",
+            "--gain-grid",
+            "0",
+            "--ris-bs-angle-grid",
+            "0",
+            "--bs-sensor-position-mm-grid",
+            "0",
+            "--positions",
+            "1.5:0.05:0.9",
+            "--n-trials",
+            "1",
+        ]
+    )
+    tasks = final_robustness._tasks(args)
+    mismatch = [task for task in tasks if task["scenario"] == "subspace_mismatch"]
+    positions = [task for task in tasks if task["scenario"] == "positions"]
+    assert mismatch and all(
+        task["variants"] == ["raw_delay_gi_ccop", "proposed"]
+        for task in mismatch
+    )
+    assert positions and positions[0]["variants"] == ["scaled_4d", "proposed"]
+    assert positions[0]["position_peb"] is True

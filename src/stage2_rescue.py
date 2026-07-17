@@ -313,6 +313,9 @@ def polish_stage2_seed(
         "seed_clock_s": float(seed_clock_s),
         "projected_position": projected.copy(),
         "pllg_projection_distance_m": projection_distance,
+        "position_polish_enabled": bool(
+            config.get("stage2_position_polish_enabled", True)
+        ),
         "polish_accepted": False,
     }
     if not np.all(np.isfinite(projected)) or not np.isfinite(seed_clock_s):
@@ -338,34 +341,52 @@ def polish_stage2_seed(
         diagnostics[f"before_{key}"] = before[key]
     position = projected.copy()
     after = before
-    try:
-        from scipy.optimize import minimize
+    if not diagnostics["position_polish_enabled"]:
+        diagnostics["polish_skipped_reason"] = "disabled"
+    else:
+        try:
+            from scipy.optimize import minimize
 
-        polish_bounds = None if bounds is None else [(float(row[0]), float(row[1])) for row in bounds]
-        result = minimize(
-            lambda value: _terms(value, state, scene, config)["phi_stage2_normalized"],
-            projected,
-            method="L-BFGS-B",
-            bounds=polish_bounds,
-            options={"ftol": 1.0e-12, "gtol": 1.0e-8},
-        )
-        candidate = np.asarray(result.x, dtype=float)
-        candidate_terms = _terms(candidate, state, scene, config)
-        tolerance = 1.0e-10 * max(1.0, abs(float(before["phi_stage2_normalized"])))
-        diagnostics["polish_optimizer_success"] = bool(result.success)
-        accepted = bool(
-            np.all(np.isfinite(candidate))
-            and np.isfinite(candidate_terms["phi_stage2_normalized"])
-            and candidate_terms["phi_stage2_normalized"] <= before["phi_stage2_normalized"] + tolerance
-        )
-        if accepted:
-            position = candidate
-            after = candidate_terms
-            diagnostics["polish_accepted"] = True
-        else:
+            polish_bounds = (
+                None
+                if bounds is None
+                else [(float(row[0]), float(row[1])) for row in bounds]
+            )
+            result = minimize(
+                lambda value: _terms(value, state, scene, config)[
+                    "phi_stage2_normalized"
+                ],
+                projected,
+                method="L-BFGS-B",
+                bounds=polish_bounds,
+                options={"ftol": 1.0e-12, "gtol": 1.0e-8},
+            )
+            candidate = np.asarray(result.x, dtype=float)
+            candidate_terms = _terms(candidate, state, scene, config)
+            tolerance = 1.0e-10 * max(
+                1.0, abs(float(before["phi_stage2_normalized"]))
+            )
+            diagnostics["polish_optimizer_success"] = bool(result.success)
+            accepted = bool(
+                np.all(np.isfinite(candidate))
+                and np.isfinite(candidate_terms["phi_stage2_normalized"])
+                and candidate_terms["phi_stage2_normalized"]
+                <= before["phi_stage2_normalized"] + tolerance
+            )
+            if accepted:
+                position = candidate
+                after = candidate_terms
+                diagnostics["polish_accepted"] = True
+            else:
+                diagnostics["polish_failure_reason"] = "polish_failure"
+        except (
+            ImportError,
+            TypeError,
+            ValueError,
+            np.linalg.LinAlgError,
+            FloatingPointError,
+        ):
             diagnostics["polish_failure_reason"] = "polish_failure"
-    except (ImportError, TypeError, ValueError, np.linalg.LinAlgError, FloatingPointError):
-        diagnostics["polish_failure_reason"] = "polish_failure"
     for key in ("clock_term_raw_s2", "clock_term_normalized", "ris_term_raw", "ris_term_mean", "ris_term_normalized", "phi_stage2_normalized"):
         diagnostics[f"after_{key}"] = after[key]
 
@@ -397,6 +418,7 @@ def polish_stage2_seed(
             clock_s = float(decoupled["clock_s"])
 
     diagnostics["final_clock_s"] = clock_s
+    diagnostics["final_seed_position"] = position.copy()
     diagnostics["rescue_available"] = bool(np.all(np.isfinite(position)) and np.isfinite(clock_s))
     diagnostics["pllg_projected_x_m"] = float(projected[0])
     diagnostics["pllg_projected_y_m"] = float(projected[1])

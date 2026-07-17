@@ -28,13 +28,13 @@ if __package__ in (None, ""):
     from src.projections_delay import tau_from_pole
     from src.tensor_utils import hankelize_frequency, reconstruct_z
 else:
-    from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
-    from ..config import default_config
-    from ..diagnostics import estimate_position_from_ris_eta
-    from ..estimators import initialize_from_hankel, refine_global_raw, structured_refinement
-    from ..metrics import position_rmse
-    from ..projections_delay import tau_from_pole
-    from ..tensor_utils import hankelize_frequency, reconstruct_z
+    from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
+    from src.config import default_config
+    from src.diagnostics import estimate_position_from_ris_eta
+    from src.estimators import initialize_from_hankel, refine_global_raw, structured_refinement
+    from src.metrics import position_rmse
+    from src.projections_delay import tau_from_pole
+    from src.tensor_utils import hankelize_frequency, reconstruct_z
 
 
 FIELDNAMES = [

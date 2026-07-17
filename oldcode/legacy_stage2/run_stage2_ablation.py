@@ -33,17 +33,17 @@ if __package__ in (None, ""):
     from src.projections_delay import tau_from_pole
     from src.tensor_utils import hankelize_frequency
 else:
-    from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
-    from ..config import default_config
-    from ..estimators import (
+    from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
+    from src.config import default_config
+    from src.estimators import (
         estimate_position_from_local_ris,
         initialize_from_hankel,
         reconstruct_raw_tensor_from_structured_estimate,
         refine_global_raw,
         structured_refinement,
     )
-    from ..projections_delay import tau_from_pole
-    from ..tensor_utils import hankelize_frequency
+    from src.projections_delay import tau_from_pole
+    from src.tensor_utils import hankelize_frequency
 
 
 FIELDNAMES = [
@@ -73,7 +73,7 @@ FIELDNAMES = [
 LEGACY_WARNING = (
     "WARNING: run_stage2_ablation.py is a legacy structured-refinement ablation. "
     "For the revised adaptive Jones-VP paper algorithm, use python -m "
-    "src.experiments.run_proposed_ablation."
+    "oldcode.legacy_stage2.run_proposed_ablation."
 )
 
 

@@ -377,6 +377,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> Base
         trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
         backend_config=backend_cfg,
         static_cache_key=cache_key,
+        unique_panels=bool(cfg.get("unique_panel_groups", True)),
     )
     local_scorer = FactorizedPositionClockScorer(
         scene, config, y_vec, backend_cfg

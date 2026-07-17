@@ -141,6 +141,23 @@ def proposed_trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
         "ngc_final_unreliable": result.get(
             "ngc_final_unreliable", final.get("ngc_final_unreliable", "")
         ),
+        "ngc_direct_cert_status": result.get("ngc_direct_cert_status", ""),
+        "ngc_direct_cert_reason": result.get("ngc_direct_cert_reason", ""),
+        "ngc_direct_position_boundary_hit": result.get(
+            "ngc_direct_position_boundary_hit", ""
+        ),
+        "ngc_direct_position_boundary_axis": result.get(
+            "ngc_direct_position_boundary_axis", ""
+        ),
+        "ngc_direct_position_boundary_distance_m": result.get(
+            "ngc_direct_position_boundary_distance_m", ""
+        ),
+        "ngc_direct_stage1_displacement_m": result.get(
+            "ngc_direct_stage1_displacement_m", ""
+        ),
+        "ngc_direct_normalized_position_step": result.get(
+            "ngc_direct_normalized_position_step", ""
+        ),
         "global_vp_backend": final.get("global_vp_backend", ""),
         "global_vp_gpu_used": final.get("global_vp_gpu_used", ""),
         "global_vp_gpu_device": final.get("global_vp_gpu_device", ""),
@@ -247,6 +264,48 @@ def make_baseline_row(
         "refinement_objective": diagnostics.get("refinement_objective", ""),
         "model_variant": diagnostics.get("model_variant", ""),
         "selected_support": json.dumps(_jsonable(selected_support), separators=(",", ":")),
+        "selected_group_count": diagnostics.get("selected_group_count", ""),
+        "selected_panel_count": diagnostics.get("selected_panel_count", ""),
+        "selected_panels": json.dumps(
+            _jsonable(diagnostics.get("selected_panels", "")), separators=(",", ":")
+        ),
+        "unique_panel_constraint": diagnostics.get(
+            "unique_panel_constraint", ""
+        ),
+        "expanded_support_count": diagnostics.get("expanded_support_count", ""),
+        "active_coefficient_count": diagnostics.get(
+            "active_coefficient_count", ""
+        ),
+        "active_panel_count": diagnostics.get("active_panel_count", ""),
+        "als_geometry_mapping": diagnostics.get("als_geometry_mapping", ""),
+        "als_geometry_assignment": json.dumps(
+            _jsonable(diagnostics.get("als_geometry_assignment", "")),
+            separators=(",", ":"),
+        ),
+        "als_geometry_unique_panel_count": diagnostics.get(
+            "als_geometry_unique_panel_count", ""
+        ),
+        "als_geometry_coarse_score": diagnostics.get(
+            "als_geometry_coarse_score", ""
+        ),
+        "als_geometry_refined_score": diagnostics.get(
+            "als_geometry_refined_score", ""
+        ),
+        "als_geometry_refined_factor_score": diagnostics.get(
+            "als_geometry_refined_factor_score", ""
+        ),
+        "als_geometry_refined_clock_std_ns": diagnostics.get(
+            "als_geometry_refined_clock_std_ns", ""
+        ),
+        "als_geometry_refinement_used": diagnostics.get(
+            "als_geometry_refinement_used", ""
+        ),
+        "als_geometry_refinement_success": diagnostics.get(
+            "als_geometry_refinement_success", ""
+        ),
+        "als_geometry_refinement_evals": diagnostics.get(
+            "als_geometry_refinement_evals", ""
+        ),
         "peb_position_m": _finite_float(diagnostics.get("peb_position_m")),
         "peb_is_data_only": diagnostics.get("peb_is_data_only", ""),
         "peb_uses_regularization": diagnostics.get("peb_uses_regularization", ""),
@@ -317,6 +376,23 @@ def make_baseline_row(
         "rescue_requested": diagnostics.get("rescue_requested", ""),
         "ngc_selected_by": diagnostics.get("ngc_selected_by", ""),
         "ngc_final_unreliable": diagnostics.get("ngc_final_unreliable", ""),
+        "ngc_direct_cert_status": diagnostics.get("ngc_direct_cert_status", ""),
+        "ngc_direct_cert_reason": diagnostics.get("ngc_direct_cert_reason", ""),
+        "ngc_direct_position_boundary_hit": diagnostics.get(
+            "ngc_direct_position_boundary_hit", ""
+        ),
+        "ngc_direct_position_boundary_axis": diagnostics.get(
+            "ngc_direct_position_boundary_axis", ""
+        ),
+        "ngc_direct_position_boundary_distance_m": diagnostics.get(
+            "ngc_direct_position_boundary_distance_m", ""
+        ),
+        "ngc_direct_stage1_displacement_m": diagnostics.get(
+            "ngc_direct_stage1_displacement_m", ""
+        ),
+        "ngc_direct_normalized_position_step": diagnostics.get(
+            "ngc_direct_normalized_position_step", ""
+        ),
         "vp_dictionary_mode": diagnostics.get("vp_dictionary_mode", ""),
         "vp_dictionary_mode_requested": diagnostics.get(
             "vp_dictionary_mode_requested", ""
@@ -592,6 +668,7 @@ def group_omp_select(
     trim_memory_enabled: bool = True,
     backend_config: Any | None = None,
     static_cache_key: str | None = None,
+    unique_panels: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], np.ndarray, np.ndarray, dict[str, Any]]:
     """Select groups by exact factorized projection energy and joint LS refits."""
     from .backend import BackendConfig
@@ -644,10 +721,15 @@ def group_omp_select(
         selected_group = dict(groups[best_index])
         selected_groups.append(selected_group)
         selected_key = geometry_group_key(selected_group)
+        selected_panel = int(selected_group.get("panel", -1))
         scorer.exclude(
             index
             for index, group in enumerate(groups)
             if geometry_group_key(group) == selected_key
+            or (
+                unique_panels
+                and int(group.get("panel", -2)) == selected_panel
+            )
         )
         expanded_supports = [
             support
@@ -665,6 +747,13 @@ def group_omp_select(
         "selected_groups": selected_groups,
         "expanded_supports": expanded_supports,
         "selected_group_count": len(selected_groups),
+        "selected_panel_count": len(
+            {int(group.get("panel", -1)) for group in selected_groups}
+        ),
+        "selected_panels": [
+            int(group.get("panel", -1)) for group in selected_groups
+        ],
+        "unique_panel_constraint": bool(unique_panels),
         "expanded_support_count": len(expanded_supports),
         "last_best_group_score": last_best_score,
         "score_mode": "factorized_group_projection",

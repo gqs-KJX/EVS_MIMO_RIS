@@ -1,84 +1,75 @@
 # RIS-EVS-OFDM simulation
 
+The frozen paper estimator is **MKSC-GI-balanced -> CCOP-JVP**.  CP-NGC,
+conditional assignment rescue, and the older Stage-II/JNPP routes are not part
+of the final selector; their reproducibility code is archived under
+[`oldcode/`](oldcode/README.md).
+
 ## Experiments
 
-Run one small fixed-SNR proposed-method demo from the project root:
+Run one deterministic realization of the frozen route from the project root:
 
 ```bash
-python -m src.main_single_proposed
+python -m src.experiments.run_final_mksc_ccop_ablation \
+  --suites components \
+  --component-variants proposed \
+  --n-trials 1 \
+  --snr-grid=-10 \
+  --diagnostic-mode fast \
+  --jobs 1 \
+  --blas-threads 1 \
+  --out-dir results/final_mksc_ccop/readme_smoke1
 ```
 
-The single diagnostic run generates one synthetic RIS-EVS-OFDM channel sample,
-builds the Hankelized tensor for Stage-I initialization, applies the current
-NGC-certified RIS-only rescue policy when triggered, and runs the current
-proposed final refinement: adaptive Stage-I-regularized Jones-VP in the raw
-OFDM domain.
+This route generates the noisy observation once, runs four-start MKSC-GI with
+one Jones-anchor refresh, and then runs independent three-dimensional
+CCOP-JVP. It does not call CP-NGC or rescue.
 
-Run the current proposed ablation entry point with one ablation group at a time:
+The pre-MKSC ablation runner remains available only for historical
+reproducibility:
 
 ```bash
-python -m src.experiments.run_proposed_ablation --ablation vp_family --n-trials 20 --snr-db -20 --out results/vp_family_ablation.csv
-python -m src.experiments.run_proposed_ablation --ablation stage2_gate --n-trials 20 --snr-db -20 --out results/stage2_gate_ablation.csv
-python -m src.experiments.run_proposed_ablation --ablation jones_lambda --n-trials 20 --snr-db -20 --out results/jones_lambda_ablation.csv
+python -m oldcode.legacy_stage2.run_proposed_ablation --help
 ```
-
-The VP-family ablation modes are `fixed_pol`, `jones_free`,
-`jones_regularized`, and `adaptive_jones`. The `run_stage2_ablation.py` script
-is legacy and studies the older EVS/delay/RIS Stage-II projection modules; it
-is not the main ablation entry point for the revised adaptive Jones-VP paper
-algorithm.
 
 ## Paper ablation figures
 
-Generate the revised paper ablation CSVs, logs, metadata, summaries, and PDF
-figures with:
+Generate the final paired component-ablation CSVs, hashes, summaries, and
+confidence intervals with:
 
 ```bash
-python -m src.experiments.run_paper_ablation_figures \
-  --figures all \
+python -m src.experiments.run_final_mksc_ccop_ablation \
+  --suites components \
+  --component-variants scaled_4d,old_stage1_ccop,mksc_delay_ccop,mksc_gi_1_no_refresh_ccop,mksc_gi_4_no_refresh_ccop,proposed \
   --n-trials 100 \
-  --paper-k 3 \
-  --snr-grid "-10,-5,0,5,10,15,20" \
-  --jobs 1 \
-  --process-workers 1 \
-  --blas-threads 4 \
-  --global-vp-backend cupy \
-  --include-constrained-jones-peb \
-  --out-dir results/ablation_paper_final_n100_gpu \
-  --force-rerun
+  --snr-grid=-20,-15,-10,-5,0,5,10,15,20 \
+  --diagnostic-mode performance \
+  --jobs 24 \
+  --blas-threads 1 \
+  --out-dir results/final_mksc_ccop/ablation_paper100
 ```
 
-The paper figure runner targets the revised pipeline: Stage-I initialization,
-NGC-certified conditional RIS-only rescue, and adaptive Stage-I-regularized
-Jones-VP. Figures 1--5 use `K=3` by default through the actual simulation
-configuration. Figure 5 is the final NGC rescue ablation and plots both
-outlier probability and rescue trigger rate. Figure 6 ignores `--paper-k` and
-sweeps `K=1,2,3,4` at 0 dB. Figure 6 should be interpreted as the complete NGC
-proposed system versus reduced polarization-model variants. It also includes
-an adaptive-Jones VP without rescue arm to separate polarization modeling from
-the NGC rescue mechanism.
-PEB curves include the existing data-only Free-Jones EFIM/CRB reference and,
-by default, a Constrained-Jones oracle polarimetric-anchor reference. The older
-`run_stage2_ablation.py` entry point remains available only for legacy
-structured-refinement module ablations.
+All variants inside a paired task share the same generated observation and
+trial seed. The older large figure runner remains in `src` because the
+benchmark and robustness entry points use its common PEB and model-order
+helpers; it is not the final estimator entry point.
 
-Figures 3 and 4 use a nested-receiver fixed-noise convention for the
-scalar/dual/full EVS comparison. The displayed SNR is referenced to the
-full-6D EVS observation, and all three receiver modes share the same
-per-component noise variance and underlying full-6D noise realization.
-Scalar and dual observations are masks of that common realization. This is
-the convention used for the EFIM information-ordering comparison.
+The compact main-text table intentionally starts from scale-normalized 4-D VP.
+The unscaled 4-D route, seven-start route, and oracle initialization remain
+available as appendix diagnostics through explicit `--component-variants`.
 
-The paper runner defaults to `--jobs 10`, `--task-grouping grouped`, and
-`--blas-threads auto`. Grouped execution reuses data generation and Stage-I
-initialization within each Monte Carlo trial before evaluating the requested
-VP/NGC variants; it does not change the estimator or physical channel model.
+The same runner also provides:
 
-`--jobs` is the total CPU-slot budget. `--process-workers` controls the number
-of memory-heavy worker processes, and `--blas-threads` controls native compute
-threads per worker. For a higher-CPU run when memory permits, use
-`--jobs 30 --process-workers 6 --blas-threads 5`. Avoid many processes with
-`--blas-threads 1` when memory is already near capacity.
+```bash
+# Position/clock/channel/tail versus SNR.
+python -m src.experiments.run_final_mksc_ccop_ablation --suites snr --help
+
+# Nested scalar/dual-pol/full-EVS estimator and matched-PEB comparison.
+python -m src.experiments.run_final_mksc_ccop_ablation --suites receiver --help
+
+# Raw-delay versus MKSC single-factor comparison.
+python -m src.experiments.run_final_mksc_ccop_ablation --suites compression --help
+```
 
 ## Benchmark comparison figures
 
@@ -89,7 +80,7 @@ python -m src.experiments.run_benchmark_comparison \
   --n-trials 50 \
   --paper-k 3 \
   --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" \
-  --baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb" \
+  --baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb,constrained_jones_peb" \
   --grid-profile medium \
   --baseline-backend cupy \
   --gpu-device 0 \
@@ -115,13 +106,12 @@ The benchmark figure contains:
 - `NF-RIS-GroupOMP-LocalGrid-WLS`: an adapted near-field RIS
   localization/synchronization baseline using group-OMP coarse estimation,
   deterministic local-grid refinement, and geometry WLS:
-  `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,proposed,peb"`.
-- `NGC-Jones-VP`: the only curve using the current NGC-certified adaptive
-  Jones-VP proposed pipeline.
+  `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb"`.
+- `mksc_ccop`: the frozen MKSC-GI-balanced -> CCOP-JVP paper estimator.
 - `PEB`: the data-only Free-Jones EFIM/CRB reference curve. Plots that show
   this curve also include a Constrained-Jones PEB reference unless disabled.
 
-All non-proposed baselines use the same generated noisy data for each
+All non-MKSC baselines use the same generated noisy data for each
 seed/SNR/K and are restricted to discrete dictionaries, CP factorization,
 linear LS over selected atoms, and neutral geometry LS post-processing.
 
@@ -139,7 +129,7 @@ python -m src.experiments.run_robustness_and_scaling_figures \
   --assumed-k-grid "2,3,4,5" \
   --T-grid "64,128,256,512" \
   --ris-side-grid "16,24,32,48,64" \
-  --baselines "proposed,ff_omp,ris_momp,nf_mmpsr,peb" \
+  --baselines "mksc_ccop,ff_omp,ris_momp,nf_mmpsr,peb" \
   --baseline-backend cupy \
   --gpu-device 0 \
   --include-constrained-jones-peb \
@@ -166,3 +156,19 @@ Figures 10(a)--10(c) are matched-model scaling studies and include the ordinary
 matched-model, data-only Free-Jones PEB by default. All PEB calculations
 explicitly Schur-eliminate clock before computing the position PEB. The optional
 Anchored-Jones PEB path is disabled by default.
+
+The final-route robustness runner covers physical generation-side
+Maxwell/calibration mismatch, paired multi-position generalization with a
+free-Jones geometry PEB, and system scaling:
+
+```bash
+python -m src.experiments.run_final_mksc_ccop_robustness --help
+```
+
+The delay--polarization resolution experiment uses nested receiver masks of one
+full-EVS noisy realization and a predeclared success rule (path count, panel
+pairing, delay tolerance, and no pole collapse):
+
+```bash
+python -m src.experiments.run_final_evs_resolvability --help
+```

@@ -4,6 +4,11 @@ import numpy as np
 import pytest
 
 from src.channel_model import channel_components, generate_scene, synthesize_raw_tensor
+from src.ccop_stage1_initializer import (
+    apply_ccop_stage1_preset,
+    compress_hankel_evs_observation,
+    known_evs_union_basis,
+)
 from src.config import apply_stage1_init_preset, default_config
 from src.estimators import (
     _coarse_ris_factor_projection,
@@ -61,6 +66,93 @@ def test_aimdf_tls_recovers_noiseless_delay_poles_up_to_permutation():
 
     assert estimated.shape == (k_paths,)
     assert _best_phase_error(estimated, poles) < 1.0e-8
+
+
+def test_known_evs_union_is_orthonormal_and_contains_physical_signal():
+    rng = np.random.default_rng(119)
+    config = default_config()
+    config.update(
+        {
+            "K": 3,
+            "M_A": 4,
+            "ris_shape": (4, 4),
+            "N": 9,
+            "P": 5,
+            "T": 12,
+            "ris_centers": config["ris_centers"][:3].copy(),
+        }
+    )
+    scene = generate_scene(config, rng)
+    components = channel_components(
+        scene,
+        scene["p_u_true"],
+        scene["delta_t_true"],
+        scene["gamma_true"],
+        scene["eta_true"],
+    )
+
+    basis, diagnostics = known_evs_union_basis(scene)
+    physical_factors = components["a_EVS"].T
+    residual = physical_factors - basis @ (basis.conj().T @ physical_factors)
+
+    np.testing.assert_allclose(
+        basis.conj().T @ basis,
+        np.eye(basis.shape[1]),
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+    assert np.linalg.norm(residual) / np.linalg.norm(physical_factors) < 1.0e-12
+    assert diagnostics["stage1_evs_union_rank"] <= 2 * scene["K"]
+
+
+def test_evs_sufficient_compression_preserves_noiseless_tensor_and_delay_poles():
+    rng = np.random.default_rng(120)
+    config = default_config()
+    config.update(
+        {
+            "K": 3,
+            "M_A": 4,
+            "ris_shape": (4, 4),
+            "N": 9,
+            "P": 5,
+            "T": 12,
+            "ris_centers": config["ris_centers"][:3].copy(),
+        }
+    )
+    scene = generate_scene(config, rng)
+    components = channel_components(
+        scene,
+        scene["p_u_true"],
+        scene["delta_t_true"],
+        scene["gamma_true"],
+        scene["eta_true"],
+    )
+    y_tensor = synthesize_raw_tensor(components, scene["beta_true"])
+    z_tensor = hankelize_frequency(y_tensor, scene["P"])
+
+    compressed, diagnostics = compress_hankel_evs_observation(z_tensor, scene)
+    estimated = estimate_poles_aimdf_tls_from_hankel(
+        compressed,
+        scene["K"],
+        forward_backward=True,
+        tls=True,
+    )
+
+    assert diagnostics["stage1_evs_orthogonal_energy_fraction"] < 1.0e-24
+    assert _best_phase_error(estimated, components["poles"]) < 1.0e-8
+
+
+def test_ccop_stage1_balanced_preset_is_independent_and_uses_four_starts():
+    config = default_config()
+    resolved = apply_ccop_stage1_preset(config, "balanced")
+
+    assert "ccop_stage1_joint_geometry" not in config
+    assert resolved["ccop_stage1_initializer"] == (
+        "evs_sufficient_joint_position_geometry"
+    )
+    assert resolved["ccop_stage1_joint_geometry"]["num_starts"] == 4
+    assert resolved["ccop_stage1_joint_geometry"]["use_leave_one_out"] is False
+    assert resolved["ccop_stage1_refresh_jones_anchor"] is True
 
 
 def test_stage1_asym_tls_noiseless_poles():

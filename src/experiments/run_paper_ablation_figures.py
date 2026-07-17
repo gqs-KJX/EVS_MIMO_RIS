@@ -176,6 +176,7 @@ VARIANT_LABELS = {
     "adaptive_jones_vp_proposed_force_lower_raw": "Proposed w/ always-run rescue",
     "adaptive_jones_vp_proposed_old_gated": "Proposed w/ GoF-gated rescue",
     "stage2_weighted_mean_clock": "LG + Weighted-Mean Clock",
+    "stage2_lg_no_polish": "LG Fusion (No Position Polish)",
     "stage2_lg_rdc": "Proposed LG-RDC",
     "stage2_pllg_joint_seed": "Joint PLLG Seed + RDC",
     "stage2_legacy_multistart": "LG-RDC Diagnostic",
@@ -410,6 +411,11 @@ FIELDNAMES = [
     "ngc_direct_ris_score",
     "ngc_direct_ris_score_norm",
     "ngc_direct_ris_available",
+    "ngc_direct_position_boundary_hit",
+    "ngc_direct_position_boundary_axis",
+    "ngc_direct_position_boundary_distance_m",
+    "ngc_direct_stage1_displacement_m",
+    "ngc_direct_normalized_position_step",
     "ngc_direct_total_score",
     "ngc_direct_cert_status",
     "ngc_direct_cert_reason",
@@ -423,6 +429,11 @@ FIELDNAMES = [
     "ngc_rescue_ris_score",
     "ngc_rescue_ris_score_norm",
     "ngc_rescue_ris_available",
+    "ngc_rescue_position_boundary_hit",
+    "ngc_rescue_position_boundary_axis",
+    "ngc_rescue_position_boundary_distance_m",
+    "ngc_rescue_stage1_displacement_m",
+    "ngc_rescue_normalized_position_step",
     "ngc_rescue_total_score",
     "ngc_rescue_cert_status",
     "ngc_rescue_cert_reason",
@@ -702,10 +713,6 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
             "scalar_peb": {"receiver_mode": "scalar", "_runner": "peb_only"},
             "dual_pol_peb": {"receiver_mode": "dual_pol", "_runner": "peb_only"},
             "full_6d_evs_peb": {"receiver_mode": "full_6d", "_runner": "peb_only"},
-            "full_6d_constrained_jones_peb": {
-                "receiver_mode": "full_6d",
-                "_runner": "peb_only",
-            },
         }
     if figure == "fig5":
         return {
@@ -740,18 +747,18 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "stage2_rescue_impl": "legacy_multistart",
                 "stage2_clock_estimator": "weighted_mean",
             },
+            "stage2_lg_no_polish": {
+                **_proposed_ngc_spec(allow_stage2=True),
+                "stage2_force_run_for_diagnostics": True,
+                "stage2_rescue_impl": "legacy_multistart",
+                "stage2_clock_estimator": "decoupled_robust",
+                "stage2_position_polish_enabled": False,
+            },
             "stage2_lg_rdc": {
                 **_proposed_ngc_spec(allow_stage2=True),
                 "stage2_force_run_for_diagnostics": True,
                 "stage2_rescue_impl": "legacy_multistart",
                 "stage2_clock_estimator": "decoupled_robust",
-            },
-            "stage2_pllg_joint_seed": {
-                **_proposed_ngc_spec(allow_stage2=True),
-                "stage2_force_run_for_diagnostics": True,
-                "stage2_rescue_impl": "pllg",
-                "stage2_clock_estimator": "decoupled_robust",
-                "stage2_pllg_pseudorange_block_weight": 1.0,
             },
         }
     raise ValueError(f"unknown figure {figure!r}")
@@ -760,10 +767,6 @@ def _variant_specs(figure: str) -> dict[str, dict[str, Any]]:
 def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {
-            "PEB": {
-                "receiver_mode": "full_6d",
-                "_runner": "peb_only",
-            },
             "free_jones_vp_gated_rescue": {
                 "enable_global_vp": True,
                 "global_vp": {"mode": "jones_free"},
@@ -823,12 +826,23 @@ def _diagnostic_variant_specs(figure: str) -> dict[str, dict[str, Any]]:
                 "stage2_pllg_pseudorange_block_weight": 1.0,
             },
         }
+    if figure == "fig4":
+        return {
+            "full_6d_constrained_jones_peb": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
+        }
     return {}
 
 
 def _extra_peb_specs(figure: str) -> dict[str, dict[str, Any]]:
     if _is_fig1_fig2(figure):
         return {
+            "PEB": {
+                "receiver_mode": "full_6d",
+                "_runner": "peb_only",
+            },
             "constrained_jones_peb": {
                 "receiver_mode": "full_6d",
                 "_runner": "peb_only",
@@ -2395,6 +2409,21 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             "ngc_direct_ris_available": bool(
                 result.get("ngc_direct_ris_available", False)
             ),
+            "ngc_direct_position_boundary_hit": bool(
+                result.get("ngc_direct_position_boundary_hit", False)
+            ),
+            "ngc_direct_position_boundary_axis": str(
+                result.get("ngc_direct_position_boundary_axis", "")
+            ),
+            "ngc_direct_position_boundary_distance_m": _finite_float(
+                result.get("ngc_direct_position_boundary_distance_m")
+            ),
+            "ngc_direct_stage1_displacement_m": _finite_float(
+                result.get("ngc_direct_stage1_displacement_m")
+            ),
+            "ngc_direct_normalized_position_step": _finite_float(
+                result.get("ngc_direct_normalized_position_step")
+            ),
             "ngc_direct_total_score": _finite_float(
                 result.get("ngc_direct_total_score")
             ),
@@ -2429,6 +2458,21 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
             ),
             "ngc_rescue_ris_available": bool(
                 result.get("ngc_rescue_ris_available", False)
+            ),
+            "ngc_rescue_position_boundary_hit": bool(
+                result.get("ngc_rescue_position_boundary_hit", False)
+            ),
+            "ngc_rescue_position_boundary_axis": str(
+                result.get("ngc_rescue_position_boundary_axis", "")
+            ),
+            "ngc_rescue_position_boundary_distance_m": _finite_float(
+                result.get("ngc_rescue_position_boundary_distance_m")
+            ),
+            "ngc_rescue_stage1_displacement_m": _finite_float(
+                result.get("ngc_rescue_stage1_displacement_m")
+            ),
+            "ngc_rescue_normalized_position_step": _finite_float(
+                result.get("ngc_rescue_normalized_position_step")
             ),
             "ngc_rescue_total_score": _finite_float(
                 result.get("ngc_rescue_total_score")
@@ -3822,8 +3866,8 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
     if figure == "fig6":
         preferred = [
             "stage2_weighted_mean_clock",
+            "stage2_lg_no_polish",
             "stage2_lg_rdc",
-            "stage2_pllg_joint_seed",
         ]
         variants = [variant for variant in preferred if variant in variants]
         fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.0), sharex=True)
@@ -3832,15 +3876,19 @@ def _plot_figure(figure: str, summary_rows: list[dict[str, Any]], out_dir: pathl
                 axes[0],
                 "stage2_seed_clock_error_ns_p95",
                 "95th-percentile Stage-II clock-seed error (ns)",
+                {"stage2_weighted_mean_clock", "stage2_lg_rdc"},
             ),
             (
                 axes[1],
                 "stage2_seed_position_error_m_p95",
                 "95th-percentile Stage-II position-seed error (m)",
+                {"stage2_lg_no_polish", "stage2_lg_rdc"},
             ),
         ]
-        for ax, field, ylabel in panels:
-            for idx, variant in enumerate(variants):
+        for ax, field, ylabel, panel_variants in panels:
+            for idx, variant in enumerate(
+                item for item in variants if item in panel_variants
+            ):
                 rows = [row for row in summary_rows if row["variant"] == variant]
                 xs = np.asarray([_to_float(row["x_value"]) for row in rows], dtype=float)
                 ys = np.asarray([_to_float(row.get(field)) for row in rows], dtype=float)
@@ -4038,6 +4086,7 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
             getattr(args, "include_diagnostic_variants", False)
         ),
         "git_commit": _git_commit_hash(),
+        "git_dirty": _git_dirty(),
         "receiver_noise_convention": RECEIVER_NOISE_CONVENTION,
         "receiver_mode_convention": RECEIVER_MODE_CONVENTION,
         "debug_compare_main_single_proposed": bool(
@@ -4078,9 +4127,25 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], figures: l
 
 def _git_commit_hash() -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
+
+
+def _git_dirty() -> bool:
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        )
+        return bool(status.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return True
 
 
 def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str]) -> dict[str, Any]:
@@ -4089,6 +4154,7 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
     global_vp_overrides = global_vp_cli_overrides(args)
     metadata = {
         "git_commit": commit,
+        "git_dirty": _git_dirty(),
         "timestamp": timestamp,
         "timestamp_utc": timestamp,
         "command_line": str(getattr(args, "command_line", " ".join(sys.argv))),
@@ -4112,8 +4178,9 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], figures: list[str
         "paper_k": int(args.paper_k),
         "figures": figures,
         "fig6_interpretation": (
-            "forced_stage2_seed_diagnostics_lg_weighted_mean_vs_lg_rdc_vs_"
-            "joint_pllg_rdc;reports_p95_absolute_seed_errors"
+            "forced_stage2_seed_diagnostics;clock_panel_compares_weighted_mean_"
+            "vs_rdc;position_panel_compares_lg_fusion_vs_bounded_polish;"
+            "reports_p95_absolute_seed_errors"
         ),
         "seed": int(args.seed),
         "include_diagnostic_variants": bool(
@@ -5081,7 +5148,7 @@ def _run_grouped_task(task: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
                 peb_config = apply_nested_update(
                     copy.deepcopy(base_config),
                     (
-                        _diagnostic_variant_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"]
+                        _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)["PEB"]
                         if peb_variant == "PEB"
                         else _extra_peb_specs(FIG1_FIG2_SHARED_FIGURE)[
                             "constrained_jones_peb"

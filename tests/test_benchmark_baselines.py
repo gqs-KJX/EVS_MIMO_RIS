@@ -76,7 +76,8 @@ def test_benchmark_default_baselines_include_targeted_nf_and_constrained_peb():
         "ris_momp",
         "nf_mmpsr",
         "nf_ris_groupomp_localgrid_wls",
-        "proposed",
+        "scaled_4d",
+        "mksc_ccop",
         "peb",
         "constrained_jones_peb",
     ]
@@ -207,6 +208,52 @@ def test_mttkrp_updates_match_explicit_khatri_rao_updates():
         assert np.allclose(mttkrp, explicit, rtol=1.0e-11, atol=1.0e-12)
 
 
+def test_als_geometry_mapping_uses_common_position_and_unique_panels():
+    config = _tiny_config()
+    config["K"] = 2
+    config["ris_centers"] = np.array(
+        [[4.2, -2.2, 1.05], [4.3, 2.1, 1.15]], dtype=float
+    )
+    config["baselines"]["als_cpd"].update(
+        {
+            "position_grid_shape": (3, 3, 3),
+            "geometry_offgrid_refinement": False,
+        }
+    )
+    scene = _make_data(config)["scene"]
+    truth = np.asarray(config["p_u_true"], dtype=float)
+    training_factor = np.column_stack(
+        [
+            common.training_response_from_position(scene, 1, truth),
+            common.training_response_from_position(scene, 0, truth),
+        ]
+    )
+    taus = np.asarray(
+        [
+            (
+                np.linalg.norm(truth - scene["ris_centers"][panel])
+                + scene["d_RB"][panel]
+            )
+            / scene["c0"]
+            + 5.0e-9
+            for panel in (1, 0)
+        ],
+        dtype=float,
+    )
+    supports, diagnostics = als_cpd._joint_match_training_factors_to_geometry(
+        training_factor,
+        taus,
+        scene,
+        config,
+    )
+
+    assert [support["panel"] for support in supports] == [1, 0]
+    assert all(np.array_equal(support["position"], truth) for support in supports)
+    assert diagnostics["als_geometry_unique_panel_count"] == 2
+    assert diagnostics["als_geometry_mapping"].startswith("joint_common_position")
+    assert diagnostics["als_geometry_refined_clock_std_ns"] < 1.0e-6
+
+
 def test_ff_omp_selects_known_atom_in_tiny_dictionary():
     Phi = np.eye(4, dtype=complex)
     y = 2.0 * Phi[:, 2]
@@ -230,6 +277,23 @@ def test_ff_omp_recovers_known_far_field_support():
     assert result.diagnostics["offgrid_refinement"] is True
     assert result.diagnostics["refinement_objective"] == "data_domain_ls"
     assert len(result.diagnostics["expanded_supports"]) == 2 * len(result.selected_support)
+
+
+def test_adapted_group_omp_selects_at_most_one_group_per_panel():
+    config = _tiny_config()
+    config["K"] = 2
+    config["ris_centers"] = np.array(
+        [[4.2, -2.2, 1.05], [4.3, 2.1, 1.15]], dtype=float
+    )
+    config["baselines"]["ff_omp"].update(
+        {"max_atoms": 2, "offgrid_refinement": False}
+    )
+    data = _make_data(config)
+    result = far_field_omp.run_far_field_omp_baseline(data, config)
+    panels = result.diagnostics["selected_panels"]
+    assert result.diagnostics["unique_panel_constraint"] is True
+    assert len(panels) == 2
+    assert len(set(panels)) == len(panels)
 
 
 def test_ris_momp_recovers_known_multidimensional_support():

@@ -36,7 +36,13 @@ if __package__ in (None, ""):
     from src.metrics import relative_nmse, position_rmse
     from src.tensor_utils import hankelize_frequency
     from src.experiments.run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
+    from src.experiments.final_mksc_ccop_common import (
+        Stage1Cache,
+        apply_final_paper_options,
+        run_paper_variant,
+    )
     from src.experiments.resource_control import (
+        PeakRssSampler,
         apply_thread_limits,
         assert_row_is_light,
         memory_snapshot_mb,
@@ -68,7 +74,13 @@ else:
     from ..metrics import relative_nmse, position_rmse
     from ..tensor_utils import hankelize_frequency
     from .run_paper_ablation_figures import _peb_from_efim, set_number_of_ris_paths
+    from .final_mksc_ccop_common import (
+        Stage1Cache,
+        apply_final_paper_options,
+        run_paper_variant,
+    )
     from .resource_control import (
+        PeakRssSampler,
         apply_thread_limits,
         assert_row_is_light,
         memory_snapshot_mb,
@@ -92,13 +104,16 @@ else:
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10,15,20"
 DEFAULT_BASELINES = (
     "als_cpd,ff_omp,ris_momp,nf_mmpsr,"
-    "nf_ris_groupomp_localgrid_wls,proposed,constrained_jones_peb"
+    "nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb,"
+    "constrained_jones_peb"
 )
 TRIAL_CSV = "benchmark_trials.csv"
 SUMMARY_CSV = "benchmark_summary.csv"
 RMSE_PDF = "fig7_benchmark_rmse_vs_snr.pdf"
 NMSE_PDF = "fig7_benchmark_nmse_vs_snr.pdf"
 OUTLIER_PDF = "fig7_benchmark_outlier_vs_snr.pdf"
+POSITION_P95_PDF = "fig7_benchmark_position_p95_vs_snr.pdf"
+NMSE_P95_PDF = "fig7_benchmark_nmse_p95_vs_snr.pdf"
 RUNTIME_MEMORY_CSV = "table1_runtime_memory.csv"
 SUMMARY_MD = "benchmark_summary.md"
 FIELDNAMES = [
@@ -116,7 +131,14 @@ FIELDNAMES = [
     "y_nmse",
     "range_rmse_m",
     "tau_rmse_s",
+    "clock_error_ns",
+    "clock_certified",
     "raw_objective_final",
+    "stage1_runtime_s",
+    "global_vp_runtime_s",
+    "total_runtime_s",
+    "stage1_output_hash",
+    "candidate_hash",
     "support_size",
     "grid_size",
     "dictionary_mode",
@@ -125,6 +147,23 @@ FIELDNAMES = [
     "refinement_objective",
     "model_variant",
     "selected_support",
+    "selected_group_count",
+    "selected_panel_count",
+    "selected_panels",
+    "unique_panel_constraint",
+    "expanded_support_count",
+    "active_coefficient_count",
+    "active_panel_count",
+    "als_geometry_mapping",
+    "als_geometry_assignment",
+    "als_geometry_unique_panel_count",
+    "als_geometry_coarse_score",
+    "als_geometry_refined_score",
+    "als_geometry_refined_factor_score",
+    "als_geometry_refined_clock_std_ns",
+    "als_geometry_refinement_used",
+    "als_geometry_refinement_success",
+    "als_geometry_refinement_evals",
     "peb_position_m",
     "peb_free_jones_m",
     "peb_constrained_jones_m",
@@ -211,6 +250,7 @@ FIELDNAMES = [
     "subris_fallback_used",
     "adaptation_note",
     "rss_mb_before",
+    "rss_mb_peak",
     "rss_mb_after",
     "warning",
     "selected_branch",
@@ -242,12 +282,14 @@ FIELDNAMES = [
     "vp_matrix_free_debug_rel_gradient_diff",
 ]
 BASELINE_LABELS = {
-    "als_cpd": "ALS-CPD",
-    "ff_omp": "FF-OMP",
-    "ris_momp": "RIS-MOMP",
-    "nf_mmpsr": "NF-MMPSR",
-    "nf_ris_groupomp_localgrid_wls": "NF-RIS Group-OMP + Local WLS",
-    "proposed": "Proposed NGC–LG-RDC",
+    "als_cpd": "ALS-CPD + Joint Mapping (Adapted)",
+    "ff_omp": "FF-OMP (Adapted)",
+    "ris_momp": "RIS-GOMP (MOMP-Inspired)",
+    "nf_mmpsr": "NF-CC Grid (MMPSR-Inspired)",
+    "nf_ris_groupomp_localgrid_wls": "Adapted NF-RIS Group OMP + Local-Grid + WLS",
+    "proposed": "Legacy NGC–LG-RDC (archived comparator)",
+    "scaled_4d": "Scale-normalized 4-D Jones-VP",
+    "mksc_ccop": "Proposed MKSC-GI-balanced + CCOP-JVP",
     "constrained_jones_peb": "Constrained-Jones PEB",
     "peb": "Data-only Free-Jones PEB",
 }
@@ -336,7 +378,11 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
     if profile == "coarse":
         baselines.update(
             {
-                "als_cpd": {"position_grid_shape": (3, 3, 2)},
+                "als_cpd": {
+                    "position_grid_shape": (3, 3, 2),
+                    "geometry_refinement_starts": 2,
+                    "geometry_refinement_maxiter": 30,
+                },
                 "ff_omp": {"angle_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
                 "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "local_refinement": False, "refinement_levels": 0, "refinement_shrink": 0.5, "offgrid_refinement": False, "batch_size": 64, "max_batch_memory_mb": 64.0},
                 "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "top_candidates": 2, "local_refinement": True, "refinement_levels": 1, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 3, "offgrid_refinement": True, "batch_size": 16, "max_batch_memory_mb": 64.0},
@@ -346,7 +392,11 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
     elif profile == "medium":
         baselines.update(
             {
-                "als_cpd": {"position_grid_shape": (5, 5, 3)},
+                "als_cpd": {
+                    "position_grid_shape": (5, 5, 3),
+                    "geometry_refinement_starts": 4,
+                    "geometry_refinement_maxiter": 60,
+                },
                 "ff_omp": {"angle_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
                 "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 2, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
                 "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "top_candidates": 8, "local_refinement": True, "refinement_levels": 3, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
@@ -356,7 +406,11 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
     elif profile == "fine":
         baselines.update(
             {
-                "als_cpd": {"position_grid_shape": (7, 7, 5)},
+                "als_cpd": {
+                    "position_grid_shape": (7, 7, 5),
+                    "geometry_refinement_starts": 8,
+                    "geometry_refinement_maxiter": 80,
+                },
                 "ff_omp": {"angle_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
                 "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 3, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
                 "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "top_candidates": 16, "local_refinement": True, "refinement_levels": 4, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
@@ -430,6 +484,66 @@ def _proposed_row(data: dict, config: dict, trial_id: int, baseline: str) -> dic
         seed=int(config["seed"]),
         snr_db=float(config["SNR_dB"]),
     )
+
+
+def _final_mksc_ccop_row(
+    data: dict,
+    config: dict,
+    trial_id: int,
+    baseline: str,
+    cache: Stage1Cache | None = None,
+) -> dict[str, Any]:
+    """Evaluate one frozen final-paper route on the shared benchmark data."""
+    final_config = apply_final_paper_options(config)
+    variant = "scaled_4d" if baseline == "scaled_4d" else "proposed"
+    route_row = run_paper_variant(
+        variant,
+        data=data,
+        config=final_config,
+        cache=cache,
+        suite="external_benchmark",
+        x_name="snr_db",
+        x_value=float(config["SNR_dB"]),
+        trial_id=int(trial_id),
+    )
+    if bool(route_row["failed"]):
+        raise RuntimeError(str(route_row["error"]))
+    return {
+        "baseline": baseline,
+        "trial_id": int(trial_id),
+        "seed": int(config["seed"]),
+        "snr_db": float(config["SNR_dB"]),
+        "K": int(config["K"]),
+        "data_hash": data_hash(data),
+        "y_noisy_hash": y_noisy_hash(data),
+        "failed": False,
+        "error": "",
+        "runtime_s": float(route_row["deployment_runtime_s"]),
+        "position_rmse_m": float(route_row["position_error_m"]),
+        "y_nmse": float(route_row["channel_nmse"]),
+        "range_rmse_m": float("nan"),
+        "tau_rmse_s": float("nan"),
+        "raw_objective_final": float(route_row["raw_objective_final"]),
+        "support_size": int(2 * config["K"]),
+        "grid_size": "",
+        "dictionary_mode": (
+            "scaled_4d_jones_vp"
+            if baseline == "scaled_4d"
+            else "mksc_gi_balanced_ccop_jvp"
+        ),
+        "selected_support": "",
+        "reference_algorithm": "frozen_final_paper_route",
+        "global_vp_backend": "numpy_cpu",
+        "global_vp_gpu_used": False,
+        "clock_error_ns": float(route_row["clock_error_ns"]),
+        "clock_certified": route_row["clock_certified"],
+        "stage1_runtime_s": float(route_row["stage1_runtime_s"]),
+        "global_vp_runtime_s": float(route_row["stage3_runtime_s"]),
+        "total_runtime_s": float(route_row["deployment_runtime_s"]),
+        "stage1_output_hash": str(route_row["stage1_output_hash"]),
+        "candidate_hash": str(route_row["candidate_hash"]),
+        "warning": "",
+    }
 
 
 def _peb_row(
@@ -639,46 +753,68 @@ def _run_trial_methods(
 ) -> list[dict[str, Any]]:
     """Evaluate all requested methods on one SNR-specific realization."""
     rows: list[dict[str, Any]] = []
+    final_cache = (
+        Stage1Cache(data, apply_final_paper_options(config))
+        if any(name in {"scaled_4d", "mksc_ccop"} for name in task["baselines"])
+        else None
+    )
     for baseline in task["baselines"]:
+        profile_memory = bool(
+            task.get("profile_memory", _WORKER_PROFILE_MEMORY)
+        )
         rss_before = (
             _benchmark_memory_snapshot_mb()
-            if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY))
+            if profile_memory
             else float("nan")
         )
-        try:
-            with thread_limit_context(
-                int(task.get("blas_threads", _WORKER_BLAS_THREADS))
-            ):
-                if baseline in BASELINE_RUNNERS:
-                    result = BASELINE_RUNNERS[baseline](data, config)
-                    row = make_baseline_row(
-                        result,
-                        data,
-                        config,
-                        baseline=baseline,
-                        trial_id=int(task["trial_id"]),
-                        seed=int(config["seed"]),
-                        snr_db=float(config["SNR_dB"]),
-                    )
-                    del result
-                elif baseline == "proposed":
-                    row = _proposed_row(data, config, int(task["trial_id"]), baseline)
-                elif baseline in {"peb", "constrained_jones_peb"}:
-                    row = _peb_row(
-                        data, config, int(task["trial_id"]), baseline=baseline
-                    )
-                else:
-                    raise ValueError(f"unknown baseline {baseline!r}")
-        except Exception as exc:  # noqa: BLE001 - failed baseline becomes CSV row.
-            row = _failure_row(baseline, int(task["trial_id"]), config, exc, data)
+        with PeakRssSampler(profile_memory) as memory_sampler:
+            try:
+                with thread_limit_context(
+                    int(task.get("blas_threads", _WORKER_BLAS_THREADS))
+                ):
+                    if baseline in BASELINE_RUNNERS:
+                        result = BASELINE_RUNNERS[baseline](data, config)
+                        row = make_baseline_row(
+                            result,
+                            data,
+                            config,
+                            baseline=baseline,
+                            trial_id=int(task["trial_id"]),
+                            seed=int(config["seed"]),
+                            snr_db=float(config["SNR_dB"]),
+                        )
+                        del result
+                    elif baseline == "proposed":
+                        row = _proposed_row(
+                            data, config, int(task["trial_id"]), baseline
+                        )
+                    elif baseline in {"scaled_4d", "mksc_ccop"}:
+                        row = _final_mksc_ccop_row(
+                            data,
+                            config,
+                            int(task["trial_id"]),
+                            baseline,
+                            cache=final_cache,
+                        )
+                    elif baseline in {"peb", "constrained_jones_peb"}:
+                        row = _peb_row(
+                            data, config, int(task["trial_id"]), baseline=baseline
+                        )
+                    else:
+                        raise ValueError(f"unknown baseline {baseline!r}")
+            except Exception as exc:  # noqa: BLE001 - failure is an MC outcome.
+                row = _failure_row(
+                    baseline, int(task["trial_id"]), config, exc, data
+                )
         if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
             trim_memory()
         rss_after = (
             _benchmark_memory_snapshot_mb()
-            if bool(task.get("profile_memory", _WORKER_PROFILE_MEMORY))
+            if profile_memory
             else float("nan")
         )
         row["rss_mb_before"] = rss_before
+        row["rss_mb_peak"] = memory_sampler.peak_mb
         row["rss_mb_after"] = rss_after
         rows.append(assert_row_is_light(row))
     return rows
@@ -776,6 +912,8 @@ def summarize_csv(
                     "success": 0,
                     "rmse": [],
                     "nmse": [],
+                    "clock": [],
+                    "clock_certificate": [],
                     "peb": [],
                     "runtime": [],
                 },
@@ -786,6 +924,10 @@ def summarize_csv(
             group["success"] += 1
             group["rmse"].append(_to_float(row.get("position_rmse_m")))
             group["nmse"].append(_to_float(row.get("y_nmse")))
+            group["clock"].append(_to_float(row.get("clock_error_ns")))
+            certificate = str(row.get("clock_certified", "")).lower()
+            if certificate in {"true", "false"}:
+                group["clock_certificate"].append(certificate == "true")
             group["peb"].append(_to_float(row.get("peb_position_m")))
             group["runtime"].append(_to_float(row.get("runtime_s")))
 
@@ -793,27 +935,53 @@ def summarize_csv(
     for (baseline, snr_db), group in sorted(groups.items()):
         rmse_stats = _summary_stats(group["rmse"])
         nmse_stats = _summary_stats(group["nmse"])
+        clock_stats = _summary_stats(group["clock"])
         peb_stats = _summary_stats(group["peb"])
         runtime_stats = _summary_stats(group["runtime"], percentiles=False)
         finite_rmse = np.asarray(group["rmse"], dtype=float)
         finite_rmse = finite_rmse[np.isfinite(finite_rmse)]
         outlier_rate = float("nan")
+        outlier_count = 0
         if outlier_threshold_m is not None and finite_rmse.size:
-            outlier_rate = float(
-                np.mean(finite_rmse > float(outlier_threshold_m))
+            outlier_count = int(
+                np.sum(finite_rmse > float(outlier_threshold_m))
             )
+            outlier_rate = float(
+                outlier_count / finite_rmse.size
+            )
+        outlier_ci_low, outlier_ci_high, outlier_ci_method = _binomial_interval(
+            outlier_count, int(finite_rmse.size)
+        )
+        catastrophic_count = int(group["n"] - group["success"] + outlier_count)
+        catastrophic_low, catastrophic_high, catastrophic_method = _binomial_interval(
+            catastrophic_count, int(group["n"])
+        )
         row_summary = {
             "baseline": baseline,
             "snr_db": snr_db,
             "n": int(group["n"]),
             "success_rate": float(group["success"] / max(group["n"], 1)),
             "outlier_rate": outlier_rate,
+            "outlier_ci_low": outlier_ci_low,
+            "outlier_ci_high": outlier_ci_high,
+            "outlier_ci_method": outlier_ci_method,
+            "catastrophic_rate": float(catastrophic_count / max(group["n"], 1)),
+            "catastrophic_ci_low": catastrophic_low,
+            "catastrophic_ci_high": catastrophic_high,
+            "catastrophic_ci_method": catastrophic_method,
             "runtime_s_mean": runtime_stats["mean"],
+            "clock_certificate_rate": (
+                float(np.mean(group["clock_certificate"]))
+                if group["clock_certificate"]
+                else float("nan")
+            ),
         }
         for name, value in rmse_stats.items():
             row_summary[f"position_rmse_m_{name}"] = value
         for name, value in nmse_stats.items():
             row_summary[f"y_nmse_{name}"] = value
+        for name, value in clock_stats.items():
+            row_summary[f"clock_error_ns_{name}"] = value
         for name, value in peb_stats.items():
             row_summary[f"peb_position_m_{name}"] = value
         summary.append(row_summary)
@@ -825,6 +993,23 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _binomial_interval(successes: int, total: int, alpha: float = 0.05):
+    if total <= 0:
+        return float("nan"), float("nan"), "unavailable"
+    try:
+        from scipy.stats import beta
+
+        low = 0.0 if successes == 0 else float(
+            beta.ppf(alpha / 2.0, successes, total - successes + 1)
+        )
+        high = 1.0 if successes == total else float(
+            beta.ppf(1.0 - alpha / 2.0, successes + 1, total - successes)
+        )
+        return low, high, "Clopper-Pearson exact"
+    except ImportError:
+        return float("nan"), float("nan"), "scipy_unavailable"
 
 
 def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, float]:
@@ -866,6 +1051,10 @@ def get_plot_metric(baseline: str, plot_kind: str) -> str | None:
         return "y_nmse"
     if plot_kind == "outlier":
         return "outlier_rate"
+    if plot_kind == "position_p95":
+        return "position_rmse_m"
+    if plot_kind == "nmse_p95":
+        return "y_nmse"
     raise ValueError(f"unknown plot kind {plot_kind!r}")
 
 
@@ -880,25 +1069,58 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
         nmse_stats = _summary_stats(
             [_to_float(row.get("y_nmse")) for row in success]
         )
+        clock_stats = _summary_stats(
+            [_to_float(row.get("clock_error_ns")) for row in success]
+        )
+        clock_certificates = [
+            str(row.get("clock_certified", "")).lower() == "true"
+            for row in success
+            if str(row.get("clock_certified", "")).lower() in {"true", "false"}
+        ]
         peb_stats = _summary_stats([_to_float(row.get("peb_position_m")) for row in success])
         runtime_stats = _summary_stats([_to_float(row.get("runtime_s")) for row in success], percentiles=False)
         outlier_rate = float("nan")
+        outlier_count = 0
+        finite_count = 0
         if outlier_threshold_m is not None:
             rmse = np.asarray([_to_float(row.get("position_rmse_m")) for row in success], dtype=float)
             finite = rmse[np.isfinite(rmse)]
-            outlier_rate = float(np.mean(finite > float(outlier_threshold_m))) if finite.size else float("nan")
+            finite_count = int(finite.size)
+            outlier_count = int(np.sum(finite > float(outlier_threshold_m)))
+            outlier_rate = float(outlier_count / finite.size) if finite.size else float("nan")
+        outlier_ci_low, outlier_ci_high, outlier_ci_method = _binomial_interval(
+            outlier_count, finite_count
+        )
+        catastrophic_count = int(len(group) - len(success) + outlier_count)
+        catastrophic_low, catastrophic_high, catastrophic_method = _binomial_interval(
+            catastrophic_count, len(group)
+        )
         row_summary = {
             "baseline": baseline,
             "snr_db": snr_db,
             "n": len(group),
             "success_rate": float(len(success) / max(len(group), 1)),
             "outlier_rate": outlier_rate,
+            "outlier_ci_low": outlier_ci_low,
+            "outlier_ci_high": outlier_ci_high,
+            "outlier_ci_method": outlier_ci_method,
+            "catastrophic_rate": float(catastrophic_count / max(len(group), 1)),
+            "catastrophic_ci_low": catastrophic_low,
+            "catastrophic_ci_high": catastrophic_high,
+            "catastrophic_ci_method": catastrophic_method,
             "runtime_s_mean": runtime_stats["mean"],
+            "clock_certificate_rate": (
+                float(np.mean(clock_certificates))
+                if clock_certificates
+                else float("nan")
+            ),
         }
         for name, value in rmse_stats.items():
             row_summary[f"position_rmse_m_{name}"] = value
         for name, value in nmse_stats.items():
             row_summary[f"y_nmse_{name}"] = value
+        for name, value in clock_stats.items():
+            row_summary[f"clock_error_ns_{name}"] = value
         for name, value in peb_stats.items():
             row_summary[f"peb_position_m_{name}"] = value
         summary.append(row_summary)
@@ -932,11 +1154,16 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
             continue
         rows = [row for row in summary_rows if row["baseline"] == baseline]
         xs = np.asarray([_to_float(row["snr_db"]) for row in rows], dtype=float)
-        summary_field = metric if plot_kind == "outlier" else f"{metric}_mean"
+        if plot_kind == "outlier":
+            summary_field = metric
+        elif plot_kind in {"position_p95", "nmse_p95"}:
+            summary_field = f"{metric}_p95"
+        else:
+            summary_field = f"{metric}_mean"
         ys = np.asarray(
             [_to_float(row.get(summary_field)) for row in rows], dtype=float
         )
-        if plot_kind == "nmse":
+        if plot_kind in {"nmse", "nmse_p95"}:
             positive = ys > 0.0
             ys[positive] = 10.0 * np.log10(ys[positive])
             ys[~positive] = np.nan
@@ -945,7 +1172,7 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
             continue
         order = np.argsort(xs[finite])
         linestyle = "-." if baseline == "constrained_jones_peb" else ("--" if baseline == "peb" else "-")
-        is_proposed = baseline == "proposed"
+        is_proposed = baseline in {"proposed", "mksc_ccop"}
         ax.plot(
             xs[finite][order],
             ys[finite][order],
@@ -960,9 +1187,11 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
         "rmse": "Position RMSE (m)",
         "nmse": "Channel NMSE (dB)",
         "outlier": "Outlier probability",
+        "position_p95": "Position-error p95 (m)",
+        "nmse_p95": "Channel-NMSE p95 (dB)",
     }[plot_kind]
     ax.set_ylabel(ylabel)
-    if plot_kind == "rmse":
+    if plot_kind in {"rmse", "position_p95"}:
         ax.set_yscale("log")
     elif plot_kind == "outlier":
         ax.set_ylim(-0.02, 1.02)
@@ -975,6 +1204,8 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
         "rmse": RMSE_PDF,
         "nmse": NMSE_PDF,
         "outlier": OUTLIER_PDF,
+        "position_p95": POSITION_P95_PDF,
+        "nmse_p95": NMSE_P95_PDF,
     }[plot_kind]
     fig.savefig(out_dir / output_name)
     plt.close(fig)
@@ -987,6 +1218,7 @@ def _runtime_memory_table(trial_csv: pathlib.Path) -> list[dict[str, Any]]:
             "runtime_minus10": [],
             "runtime_0": [],
             "rss": [],
+            "rss_peak": [],
         }
         for baseline in ESTIMATOR_BASELINES
     }
@@ -1005,10 +1237,14 @@ def _runtime_memory_table(trial_csv: pathlib.Path) -> list[dict[str, Any]]:
                     grouped[baseline]["runtime_minus10"].append(runtime_s)
                 if np.isclose(snr_db, 0.0):
                     grouped[baseline]["runtime_0"].append(runtime_s)
-            for field in ("rss_mb_before", "rss_mb_after"):
-                rss_mb = _to_float(row.get(field))
-                if np.isfinite(rss_mb):
-                    grouped[baseline]["rss"].append(rss_mb)
+            rss_peak = _to_float(row.get("rss_mb_peak"))
+            if np.isfinite(rss_peak):
+                grouped[baseline]["rss_peak"].append(rss_peak)
+            else:
+                for field in ("rss_mb_before", "rss_mb_after"):
+                    rss_mb = _to_float(row.get(field))
+                    if np.isfinite(rss_mb):
+                        grouped[baseline]["rss"].append(rss_mb)
 
     table_rows = []
     for baseline in ESTIMATOR_BASELINES:
@@ -1017,7 +1253,12 @@ def _runtime_memory_table(trial_csv: pathlib.Path) -> list[dict[str, Any]]:
             continue
         runtime_minus10 = np.asarray(values["runtime_minus10"], dtype=float)
         runtime_0 = np.asarray(values["runtime_0"], dtype=float)
-        rss = np.asarray(values["rss"], dtype=float)
+        rss_peak = np.asarray(values["rss_peak"], dtype=float)
+        rss = (
+            rss_peak
+            if rss_peak.size
+            else np.asarray(values["rss"], dtype=float)
+        )
         table_rows.append(
             {
                 "baseline": baseline,
@@ -1035,7 +1276,11 @@ def _runtime_memory_table(trial_csv: pathlib.Path) -> list[dict[str, Any]]:
                 "peak_memory_mb": (
                     float(np.max(rss)) if rss.size else float("nan")
                 ),
-                "memory_measurement": "max_pre_post_rss_snapshot",
+                "memory_measurement": (
+                    "sampled_process_peak_rss_10ms"
+                    if rss_peak.size
+                    else "max_pre_post_rss_snapshot"
+                ),
                 "n_runtime_at_minus10_db": int(runtime_minus10.size),
                 "n_runtime_at_0_db": int(runtime_0.size),
             }
@@ -1080,9 +1325,9 @@ def _write_summary_markdown(
         "## Table I: runtime and memory comparison",
         "",
         (
-            "Memory is the maximum observed pre/post-run RSS snapshot. It is "
-            "available only when `--profile-memory` is enabled and is not an "
-            "in-kernel peak-memory measurement."
+            "Memory is the 10-ms sampled peak process RSS while each method "
+            "runs. It is available only with `--profile-memory`; short-lived "
+            "allocation spikes below the sampling interval may be missed."
         ),
         "",
     ]
@@ -1092,13 +1337,21 @@ def _write_summary_markdown(
         ("mean_runtime_s_at_0_db", "Mean runtime at 0 dB (s)"),
         ("peak_memory_mb", "Peak memory (MB)"),
     ]
-    lines.append("| " + " | ".join(label for _, label in columns) + " |")
-    lines.append("| " + " | ".join("---" for _ in columns) + " |")
-    for row in runtime_rows:
+    if runtime_rows:
+        lines.append("| " + " | ".join(label for _, label in columns) + " |")
+        lines.append("| " + " | ".join("---" for _ in columns) + " |")
+        for row in runtime_rows:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _markdown_value(row.get(field, "")) for field, _ in columns
+                )
+                + " |"
+            )
+    else:
         lines.append(
-            "| "
-            + " | ".join(_markdown_value(row.get(field, "")) for field, _ in columns)
-            + " |"
+            "Runtime table omitted: use `--runtime-profile` in a dedicated "
+            "single-process run."
         )
     lines.extend(
         [
@@ -1116,9 +1369,25 @@ def _write_summary_markdown(
 
 def _git_commit() -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        ).strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
+
+
+def _git_dirty() -> bool:
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[2],
+        )
+        return bool(status.strip())
+    except (OSError, subprocess.SubprocessError):
+        return True
 
 
 def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]) -> dict[str, Any]:
@@ -1132,8 +1401,10 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "seed": int(args.seed),
         "outlier_threshold_m": float(args.outlier_threshold_m),
         "profile_memory": bool(args.profile_memory),
+        "runtime_profile": bool(args.runtime_profile),
         "memory_snapshot_fallback": "proc_self_status_vmrss",
         "git_commit": _git_commit(),
+        "git_dirty": _git_dirty(),
         "strict_ris_geometry": bool(args.strict_ris_geometry),
         "baseline_backend": str(args.baseline_backend),
         "gpu_device": args.gpu_device,
@@ -1276,6 +1547,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cache-memory-budget-gb", type=float, default=None)
     parser.add_argument("--gpu-memory-fraction", type=float, default=None)
     parser.add_argument("--reuse-incompatible-cache", action="store_true")
+    parser.add_argument(
+        "--runtime-profile",
+        action="store_true",
+        help="publish runtime/memory tables from a dedicated single-process run",
+    )
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--strict-ris-geometry", action="store_true")
     add_global_vp_args(parser)
@@ -1390,11 +1666,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     args.process_workers = int(args.resource_plan["process_workers"])
     args.blas_threads = int(args.resource_plan["blas_threads"])
-    if args.baseline_backend in {"cupy", "auto"} and args.process_workers > 2:
-        print(
-            "Multiple worker processes may contend for one GPU; prefer "
-            "--process-workers 1 or 2."
+    gpu_requested = (
+        args.baseline_backend in {"cupy", "auto"}
+        or args.global_vp_backend in {"cupy", "auto"}
+    )
+    if gpu_requested and args.process_workers != 1:
+        raise ValueError(
+            "one --gpu-device supports exactly one worker process; use "
+            "--process-workers 1 or split jobs across GPU devices"
         )
+    if args.runtime_profile and args.process_workers != 1:
+        raise ValueError("--runtime-profile requires --process-workers 1")
     for task in tasks:
         task["blas_threads"] = args.blas_threads
     apply_thread_limits(
@@ -1505,7 +1787,7 @@ def main(argv: list[str] | None = None) -> None:
     summary = _read_csv(summary_csv)
     with metadata_path.open("w") as handle:
         json.dump(_metadata(args, snr_grid, baselines), handle, indent=2)
-    runtime_rows = _runtime_memory_table(trial_csv)
+    runtime_rows = _runtime_memory_table(trial_csv) if args.runtime_profile else []
     runtime_fields = [
         "baseline",
         "algorithm",
@@ -1516,7 +1798,8 @@ def main(argv: list[str] | None = None) -> None:
         "n_runtime_at_minus10_db",
         "n_runtime_at_0_db",
     ]
-    _write_csv(out_dir / RUNTIME_MEMORY_CSV, runtime_rows, runtime_fields)
+    if args.runtime_profile:
+        _write_csv(out_dir / RUNTIME_MEMORY_CSV, runtime_rows, runtime_fields)
     _write_summary_markdown(
         out_dir,
         args.command_line,
@@ -1527,6 +1810,8 @@ def main(argv: list[str] | None = None) -> None:
         _plot(summary, out_dir, "rmse")
         _plot(summary, out_dir, "nmse")
         _plot(summary, out_dir, "outlier")
+        _plot(summary, out_dir, "position_p95")
+        _plot(summary, out_dir, "nmse_p95")
     progress.log("finished", "completed", message="benchmark experiment finished")
     progress.close()
     print(f"Wrote benchmark comparison outputs to {out_dir}")
