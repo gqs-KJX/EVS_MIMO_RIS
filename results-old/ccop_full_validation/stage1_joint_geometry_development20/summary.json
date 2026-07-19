@@ -1,0 +1,35 @@
+{
+  "evs_subspace_joint_geometry_stage1_ccop": {
+    "channel_nmse_median": 6.932120552576387e-05,
+    "delay_rmse_median_ns": 0.0714331274487763,
+    "n": 20,
+    "outliers": 0,
+    "position_median_m": 0.0006774162870414407,
+    "position_rmse_m": 0.0010440127676149655,
+    "stage1_runtime_median_s": 15.44099839500268
+  },
+  "evs_subspace_stage1_ccop": {
+    "channel_nmse_median": 7.76411354925793e-05,
+    "delay_rmse_median_ns": 0.0714331274487763,
+    "n": 20,
+    "outliers": 3,
+    "position_median_m": 0.0008501399237974424,
+    "position_rmse_m": 0.2711106686298579,
+    "stage1_runtime_median_s": 13.27280555350444
+  },
+  "frozen_stage1_ccop": {
+    "channel_nmse_median": 7.84333578131755e-05,
+    "delay_rmse_median_ns": 0.154674428908105,
+    "n": 20,
+    "outliers": 4,
+    "position_median_m": 0.0009024810199380796,
+    "position_rmse_m": 0.3544148380669181,
+    "stage1_runtime_median_s": 12.628984144503193
+  },
+  "paired": {
+    "introduced_outliers": 0,
+    "n": 20,
+    "position_wins": 9,
+    "rescued_outliers": 4
+  }
+}

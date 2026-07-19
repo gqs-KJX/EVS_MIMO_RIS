@@ -100,6 +100,7 @@ def test_benchmark_pool_uses_process_workers(tmp_path, monkeypatch):
             "-20",
             "--baselines",
             "peb",
+            "--no-constrained-jones-peb",
             "--jobs",
             "10",
             "--process-workers",

@@ -1,0 +1,5 @@
+check,passed,primary_value
+pointwise,True,6.048822748518674e-16
+gradient,True,1.808129100493249e-07
+incumbent,True,0.04490575956872567
+cp_ngc,True,0.38021958469594397

@@ -1,0 +1,103 @@
+{
+  "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+  "git_dirty": true,
+  "timestamp": "2026-07-14T13:26:52.100194+00:00",
+  "timestamp_utc": "2026-07-14T13:26:52.100194+00:00",
+  "command_line": "/home/gqs/miniconda3/bin/python /home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_paper_ablation_figures.py --figures fig1 --n-trials 1 --snr-grid 0 --jobs 1 --process-workers 1 --out-dir results/ablation_test --force-rerun",
+  "n_trials": 1,
+  "jobs": 1,
+  "process_workers": 1,
+  "max_workers": 1,
+  "maxtasksperchild": 1,
+  "task_grouping": "grouped",
+  "streaming_csv": true,
+  "csv_flush_every": 10,
+  "store_large_arrays": false,
+  "blas_threads": 1,
+  "estimated_cpu_slots": 1,
+  "memory_budget_gb": null,
+  "memory_per_worker_gb": null,
+  "trim_memory": true,
+  "respect_existing_blas_env": false,
+  "profile_memory": false,
+  "snr_grid": [
+    0.0
+  ],
+  "paper_k": 3,
+  "figures": [
+    "fig1"
+  ],
+  "fig6_interpretation": "forced_stage2_seed_diagnostics;clock_panel_compares_weighted_mean_vs_rdc;position_panel_compares_lg_fusion_vs_bounded_polish;reports_p95_absolute_seed_errors",
+  "seed": 20260526,
+  "include_diagnostic_variants": false,
+  "diagnostic_variants": [],
+  "global_vp_backend": "cpu",
+  "global_vp_gpu_device": 0,
+  "global_vp_validate_gpu_against_cpu": false,
+  "vp_dictionary_mode": "matrix_free",
+  "vp_debug_compare_explicit": false,
+  "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+  "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation.",
+  "config_overrides": {
+    "seed": 20260526,
+    "outlier_threshold_m": 0.1,
+    "paper_k_for_all_figures": 3,
+    "deprecated_k_grid_ignored": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "global_vp": {},
+    "crb": {
+      "include_constrained_jones_peb": true,
+      "include_anchored_jones_peb": false,
+      "jones_anchor_prior_mode": "disabled",
+      "jones_anchor_prior_scale": 1.0
+    }
+  },
+  "shared_cache_signatures": {
+    "fig1_fig2": {
+      "n_trials": 1,
+      "snr_grid": [
+        0.0
+      ],
+      "paper_k": 3,
+      "figures": [
+        "fig1_fig2"
+      ],
+      "seed": 20260526,
+      "variant_list": {
+        "fig1_fig2": [
+          "stage1_only",
+          "fixed_pol_vp",
+          "free_jones_vp",
+          "adaptive_jones_no_rescue",
+          "adaptive_jones_vp_proposed",
+          "PEB",
+          "constrained_jones_peb"
+        ]
+      },
+      "include_diagnostic_variants": false,
+      "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+      "git_dirty": true,
+      "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+      "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation.",
+      "debug_compare_main_single_proposed": false,
+      "global_vp_backend": "cpu",
+      "global_vp_gpu_device": 0,
+      "global_vp_validate_gpu_against_cpu": false,
+      "vp_dictionary_mode": "matrix_free",
+      "vp_debug_compare_explicit": false,
+      "fig1_proposed_dispatch_version": 2,
+      "paper_ablation_layout_version": 3,
+      "include_constrained_jones_peb": true,
+      "include_anchored_jones_peb": false,
+      "jones_anchor_prior_mode": "disabled",
+      "jones_anchor_prior_scale": 1.0
+    }
+  },
+  "python": "3.13.12",
+  "numpy": "2.4.6",
+  "scipy_available": true
+}

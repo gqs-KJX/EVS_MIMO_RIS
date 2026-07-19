@@ -24,9 +24,8 @@ import numpy as np
 if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
+    from src.baselines.als_cpd import run_als_cpd_baseline
     from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from src.baselines.far_field_omp import run_far_field_omp_baseline
-    from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -63,9 +62,8 @@ if __package__ in (None, ""):
     from src.tensor_utils import hankelize_frequency
     from src.utils import scipy_is_available
 else:
+    from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from ..baselines.far_field_omp import run_far_field_omp_baseline
-    from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -106,17 +104,17 @@ else:
 FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c", "fig11"]
 DEFAULT_FIGURES = ",".join(FIGURE_ORDER)
 DEFAULT_BASELINES = (
-    "proposed,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,"
+    "mksc_ccop,als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,"
     "peb,constrained_jones_peb"
 )
 ESTIMATOR_BASELINES = (
     "proposed",
-    "ff_omp",
+    "mksc_ccop",
+    "als_cpd",
+    "scaled_4d",
     "ris_momp",
-    "nf_mmpsr",
     "nf_ris_groupomp_localgrid_wls",
     "stage1_only",
-    "mksc_ccop",
 )
 REFERENCE_BASELINES = (
     "peb",
@@ -126,10 +124,10 @@ REFERENCE_BASELINES = (
 )
 BASELINE_LABELS = {
     "proposed": "Proposed NGC–LG-RDC",
-    "ff_omp": "FF-OMP (Adapted)",
-    "ris_momp": "RIS-GOMP (MOMP-Inspired)",
-    "nf_mmpsr": "NF-CC Grid (MMPSR-Inspired)",
-    "nf_ris_groupomp_localgrid_wls": "Adapted NF-RIS Group OMP + Local-Grid + WLS",
+    "als_cpd": "ALS-CPD + Joint Mapping (Adapted)",
+    "scaled_4d": "Scale-normalized 4-D Jones-VP",
+    "ris_momp": "RIS-MOMP adaptation",
+    "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
     "stage1_only": "Stage-I Only",
     "mksc_ccop": "Proposed MKSC-GI-balanced + CCOP-JVP",
     "peb": "Data-only Free-Jones PEB",
@@ -388,8 +386,11 @@ def baselines_for_figure(
             name
             for name in selected
             if name in {
-                "proposed",
-                "nf_mmpsr",
+                "mksc_ccop",
+                "als_cpd",
+                "scaled_4d",
+                "ris_momp",
+                "nf_ris_groupomp_localgrid_wls",
                 "stage1_only",
             }
         ]
@@ -820,12 +821,8 @@ def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
     configured = copy.deepcopy(config)
     configured["K"] = int(assumed_k)
     baselines = copy.deepcopy(configured.get("baselines", {}))
-    baselines.setdefault("ff_omp", {})["max_groups"] = int(assumed_k)
     baselines.setdefault("ris_momp", {})["max_groups"] = int(assumed_k)
     baselines.setdefault("nf_ris_groupomp_localgrid_wls", {})["max_groups"] = int(assumed_k)
-    # NF-MMPSR creates two Jones nuisance columns per panel; its model
-    # dimension and support therefore follow scene["K"] == assumed_K.
-    baselines.setdefault("nf_mmpsr", {})["assumed_K"] = int(assumed_k)
     configured["baselines"] = baselines
     return configured
 
@@ -920,11 +917,13 @@ def _mksc_ccop_result_row(
     config: dict,
     task: dict[str, Any],
     cache: Stage1Cache | None = None,
+    baseline: str = "mksc_ccop",
 ) -> dict[str, Any]:
-    """Run the frozen final route without activating legacy Stage-II rescue."""
+    """Run one frozen final-paper route without legacy Stage-II rescue."""
     final_config = apply_final_paper_options(config)
+    variant = "scaled_4d" if baseline == "scaled_4d" else "proposed"
     route = run_paper_variant(
-        "proposed",
+        variant,
         data=data,
         config=final_config,
         cache=cache,
@@ -936,7 +935,7 @@ def _mksc_ccop_result_row(
     if bool(route["failed"]):
         raise RuntimeError(str(route["error"]))
     return {
-        "baseline": "mksc_ccop",
+        "baseline": baseline,
         "trial_id": int(task["trial_id"]),
         "seed": int(task["seed"]),
         "snr_db": float(task["snr_db"]),
@@ -946,7 +945,11 @@ def _mksc_ccop_result_row(
         "runtime_s": float(route["deployment_runtime_s"]),
         "failed": False,
         "error": "",
-        "dictionary_mode": "mksc_gi_balanced_ccop_jvp",
+        "dictionary_mode": (
+            "scaled_4d_jones_vp"
+            if baseline == "scaled_4d"
+            else "mksc_gi_balanced_ccop_jvp"
+        ),
         "clock_error_ns": float(route["clock_error_ns"]),
         "clock_certified": route["clock_certified"],
         "stage1_runtime_s": float(route["stage1_runtime_s"]),
@@ -1033,9 +1036,8 @@ def run_stage1_only_baseline(data: dict, config: dict) -> BaselineResult:
 
 
 BASELINE_RUNNERS = {
-    "ff_omp": run_far_field_omp_baseline,
+    "als_cpd": run_als_cpd_baseline,
     "ris_momp": run_ris_momp_baseline,
-    "nf_mmpsr": run_near_field_mmpsr_baseline,
     "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
     "stage1_only": run_stage1_only_baseline,
 }
@@ -1263,7 +1265,10 @@ def _run_methods_on_prepared_data(
     rows: list[dict[str, Any]] = []
     final_cache = (
         Stage1Cache(data, apply_final_paper_options(config))
-        if "mksc_ccop" in task["baselines"]
+        if any(
+            baseline in {"mksc_ccop", "scaled_4d"}
+            for baseline in task["baselines"]
+        )
         else None
     )
     for baseline in task["baselines"]:
@@ -1275,6 +1280,14 @@ def _run_methods_on_prepared_data(
                 elif baseline == "mksc_ccop":
                     row = _mksc_ccop_result_row(
                         data, config, task, cache=final_cache
+                    )
+                elif baseline == "scaled_4d":
+                    row = _mksc_ccop_result_row(
+                        data,
+                        config,
+                        task,
+                        cache=final_cache,
+                        baseline="scaled_4d",
                     )
                 elif baseline in BASELINE_RUNNERS:
                     result = BASELINE_RUNNERS[baseline](data, config)
@@ -1553,9 +1566,9 @@ def plot_summary(
     styles = {
         "proposed": ("o", "-"),
         "mksc_ccop": ("o", "-"),
-        "ff_omp": ("s", "-"),
+        "als_cpd": ("s", "-"),
+        "scaled_4d": ("P", "-"),
         "ris_momp": ("^", "-"),
-        "nf_mmpsr": ("D", "-"),
         "nf_ris_groupomp_localgrid_wls": ("*", "-"),
         "stage1_only": ("x", "-"),
         "peb": ("v", "--"),

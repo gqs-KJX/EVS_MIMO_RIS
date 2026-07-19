@@ -1,0 +1,82 @@
+{
+  "arguments": {
+    "blas_threads": 1,
+    "ccop_outer_max_iter": 1,
+    "clock_abs_tol": 1e-12,
+    "clock_fft_size": 256,
+    "clock_max_intervals": 500,
+    "clock_rel_tol": 1e-10,
+    "diagnostic_mode": "fast",
+    "force_rerun": true,
+    "gpu_device": 0,
+    "jones_mode": "jones_regularized",
+    "n_trials": 1,
+    "old_max_iter": 1,
+    "old_vp_backend": "cpu",
+    "out_dir": "results/ccop_full_validation/c1_route_smoke",
+    "outlier_threshold_m": 0.1,
+    "seed": 20260715,
+    "snr_db": -10.0
+  },
+  "environment": {
+    "command": "/home/gqs/miniconda3/bin/python -m src.experiments.run_ccop_full_validation --n-trials 1 --seed 20260715 --diagnostic-mode fast --old-max-iter 1 --ccop-outer-max-iter 1 --clock-fft-size 256 --clock-max-intervals 500 --blas-threads 1 --out-dir results/ccop_full_validation/c1_route_smoke --force-rerun",
+    "cupy": "unavailable",
+    "git_branch": "research/ccop_full_validation",
+    "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+    "git_dirty": true,
+    "git_status_porcelain": "M src/baselines/als_cpd.py\n M src/baselines/common.py\n M src/baselines/far_field_omp.py\n M src/baselines/near_field_mmpsr.py\n M src/baselines/nf_ris_groupomp_localgrid_wls.py\n M src/baselines/ris_momp.py\n M src/config.py\n M src/experiments/run_benchmark_comparison.py\n M src/experiments/run_paper_ablation_figures.py\n M src/experiments/run_proposed_ablation.py\n M src/experiments/run_robustness_and_scaling_figures.py\n M src/main_single_proposed.py\n M src/stage2_rescue.py\n M tests/test_benchmark_baselines.py\n M tests/test_fig1_proposed_consistency.py\n M tests/test_paper_ablation_figures.py\n M tests/test_paper_ablation_grouped_parallel.py\n M tests/test_robustness_and_scaling_figures.py\n M tests/test_stage2_ablation_config.py\n M tests/test_stage2_decoupled_clock.py\n?? src/ccop_jvp.py\n?? src/cp_ngc.py\n?? src/cp_ngc_covariance.py\n?? src/experiments/check_ccop_jvp_equivalence.py\n?? src/experiments/evaluate_cp_ngc_saved_candidates.py\n?? src/experiments/run_ccop_full_validation.py\n?? src/experiments/run_ccop_paired_mc.py\n?? src/validation_artifacts.py\n?? tests/test_ccop_jvp_math.py\n?? tests/test_ccop_reproducibility.py\n?? tests/test_cp_ngc_projection.py",
+    "numpy": "2.4.6",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+    "python_executable": "/home/gqs/miniconda3/bin/python",
+    "scipy": "1.17.1",
+    "timestamp_utc": "2026-07-15T12:51:52.810784+00:00",
+    "worktree_fingerprint": "48452ba62e7455b843a56082cf961c77bb6c0cd77e22e6ec4f0d4695013ebffc"
+  },
+  "experiment": "CCOP full validation Stage-III isolation R1--R5",
+  "r4_budget_contract": "raw-seconds 4-D exact objective capped at R1 objective evaluations plus R3 position-orbit evaluations",
+  "seeds": [
+    4191845062
+  ],
+  "shared_trial_contract": "one Y_noisy and one Stage-I output per seed",
+  "spec": {
+    "blas_threads": 1,
+    "ccop_outer_max_iter": 1,
+    "clock_abs_tol": 1e-12,
+    "clock_fft_size": 256,
+    "clock_max_intervals": 500,
+    "clock_rel_tol": 1e-10,
+    "diagnostic_mode": "fast",
+    "gpu_device": 0,
+    "jones_mode": "jones_regularized",
+    "old_max_iter": 1,
+    "old_vp_backend": "cpu",
+    "outlier_threshold_m": 0.1,
+    "snr_db": -10.0,
+    "use_old_incumbent": false
+  },
+  "trials": [
+    {
+      "environment": {
+        "command": "/home/gqs/miniconda3/bin/python -m src.experiments.run_ccop_full_validation --n-trials 1 --seed 20260715 --diagnostic-mode fast --old-max-iter 1 --ccop-outer-max-iter 1 --clock-fft-size 256 --clock-max-intervals 500 --blas-threads 1 --out-dir results/ccop_full_validation/c1_route_smoke --force-rerun",
+        "cupy": "unavailable",
+        "git_branch": "research/ccop_full_validation",
+        "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+        "git_dirty": true,
+        "git_status_porcelain": "M src/baselines/als_cpd.py\n M src/baselines/common.py\n M src/baselines/far_field_omp.py\n M src/baselines/near_field_mmpsr.py\n M src/baselines/nf_ris_groupomp_localgrid_wls.py\n M src/baselines/ris_momp.py\n M src/config.py\n M src/experiments/run_benchmark_comparison.py\n M src/experiments/run_paper_ablation_figures.py\n M src/experiments/run_proposed_ablation.py\n M src/experiments/run_robustness_and_scaling_figures.py\n M src/main_single_proposed.py\n M src/stage2_rescue.py\n M tests/test_benchmark_baselines.py\n M tests/test_fig1_proposed_consistency.py\n M tests/test_paper_ablation_figures.py\n M tests/test_paper_ablation_grouped_parallel.py\n M tests/test_robustness_and_scaling_figures.py\n M tests/test_stage2_ablation_config.py\n M tests/test_stage2_decoupled_clock.py\n?? src/ccop_jvp.py\n?? src/cp_ngc.py\n?? src/cp_ngc_covariance.py\n?? src/experiments/check_ccop_jvp_equivalence.py\n?? src/experiments/evaluate_cp_ngc_saved_candidates.py\n?? src/experiments/run_ccop_full_validation.py\n?? src/experiments/run_ccop_paired_mc.py\n?? src/validation_artifacts.py\n?? tests/test_ccop_jvp_math.py\n?? tests/test_ccop_reproducibility.py\n?? tests/test_cp_ngc_projection.py",
+        "numpy": "2.4.6",
+        "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+        "python_executable": "/home/gqs/miniconda3/bin/python",
+        "scipy": "1.17.1",
+        "timestamp_utc": "2026-07-15T12:51:52.810784+00:00",
+        "worktree_fingerprint": "48452ba62e7455b843a56082cf961c77bb6c0cd77e22e6ec4f0d4695013ebffc"
+      },
+      "resolved_config_hash": "f98fe573d6222b7acc7a45cb6dc0702f1ea547ee2a351dd51e14f06c9859a7fa",
+      "seed": 4191845062,
+      "stage1_output_hash": "9ddcd6bee28f895e5007b3808c2e47ef09fa67a9fc95c899b526fef8c022c4f3",
+      "trial_id": 0,
+      "y_noisy_hash": "bb1f334f84e76ea7d1724f891e7afa56ac663bf949d798dac34b25d120afe5d4"
+    }
+  ]
+}

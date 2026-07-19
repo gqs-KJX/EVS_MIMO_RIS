@@ -180,8 +180,8 @@ def release_gpu_memory_pools() -> None:
     imported by the backend selector) incur zero cost and never trigger CUDA
     context initialization. On GPU runs this stops each worker process from
     holding its peak device footprint for the whole job. Only blocks that are
-    no longer referenced are released, so results are unchanged; the
-    re-allocation cost on the next trial is negligible relative to trial time.
+    no longer referenced are released, so results are unchanged; repeated
+    release/re-allocation can trade throughput for a lower retained footprint.
     """
     cupy = sys.modules.get("cupy")
     if cupy is None:
@@ -193,15 +193,17 @@ def release_gpu_memory_pools() -> None:
         pass
 
 
-def trim_memory() -> None:
+def trim_memory(*, release_gpu: bool = True) -> None:
     """Collect Python garbage and best-effort release free glibc arenas.
 
     When the CuPy GPU backend has been used in this process, also return cached
-    free blocks from the CuPy memory pools to the device. This is a no-op on
-    CPU-only runs, so CPU performance is unaffected.
+    free blocks from the CuPy memory pools to the device unless ``release_gpu``
+    is false. This is a no-op on CPU-only runs, so CPU performance is
+    unaffected.
     """
     gc.collect()
-    release_gpu_memory_pools()
+    if release_gpu:
+        release_gpu_memory_pools()
     if not sys.platform.startswith("linux"):
         return
     try:

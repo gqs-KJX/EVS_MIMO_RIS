@@ -1,0 +1,4 @@
+baseline,snr_db,n,success_rate,outlier_rate,runtime_s_mean,position_rmse_m_mean,position_rmse_m_median,position_rmse_m_std,position_rmse_m_p10,position_rmse_m_p90,y_nmse_mean,y_nmse_median,y_nmse_std,peb_position_m_mean,peb_position_m_median,peb_position_m_std,peb_position_m_p10,peb_position_m_p90
+ff_omp,-20.0,1,1.0,1.0,14.819054662977578,1.6465677323428656,1.6465677323428656,0.0,1.6465677323428656,1.6465677323428656,0.9968926408819877,0.9968926408819877,0.0,nan,nan,nan,nan,nan
+peb,-20.0,1,1.0,nan,1.5793560819874983,nan,nan,nan,nan,nan,nan,nan,nan,0.0035712126829111302,0.0035712126829111302,0.0,0.0035712126829111302,0.0035712126829111302
+proposed,-20.0,1,1.0,0.0,160.094452010002,0.03696478712794845,0.03696478712794845,0.0,0.03696478712794845,0.03696478712794845,0.07234472605576907,0.07234472605576907,0.0,nan,nan,nan,nan,nan

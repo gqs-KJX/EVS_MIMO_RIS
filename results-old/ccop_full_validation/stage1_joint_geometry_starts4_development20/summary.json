@@ -1,0 +1,17 @@
+{
+  "evs_subspace_joint_geometry_stage1_ccop": {
+    "channel_nmse_median": 6.932120552576387e-05,
+    "delay_rmse_median_ns": 0.0714331274487763,
+    "n": 20,
+    "outliers": 0,
+    "position_median_m": 0.0006774162870414407,
+    "position_rmse_m": 0.001044012789909023,
+    "stage1_runtime_median_s": 14.76047362350073
+  },
+  "paired": {
+    "introduced_outliers": 0,
+    "n": 0,
+    "position_wins": 0,
+    "rescued_outliers": 0
+  }
+}

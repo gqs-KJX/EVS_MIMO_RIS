@@ -1,0 +1,34 @@
+{
+  "start_time_utc": "2026-07-10T07:08:42.042915+00:00",
+  "finish_time_utc": "2026-07-10T07:10:40.736255+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/main_single_proposed.py --repeat-runs 1 --rerun-seeds 821394406 --repeat-jobs 1 --snr-db=-10 --paper-k 3 --stage2-rescue-impl pllg --stage2-pllg-reweight-steps 1 --stage2-pllg-local-weight-mode auto --no-stage2-pllg-legacy-fallback --stage2-force-run-for-diagnostics --global-vp-backend cpu --blas-threads 1 --repeat-out-dir results/stage2_pair_seed821394406_pllg --force-rerun",
+  "n_runs": 1,
+  "jobs": 1,
+  "base_seed": 20260526,
+  "trial_seeds": [
+    821394406
+  ],
+  "rerun_seeds_provided": true,
+  "outlier_threshold_m": 0.1,
+  "blas_threads": 1,
+  "config_overrides": {
+    "K": 3,
+    "stage2_rescue_impl": "pllg",
+    "stage2_pllg_reweight_steps": 1,
+    "stage2_pllg_local_weight_mode": "auto",
+    "stage2_pllg_legacy_fallback": false,
+    "stage2_force_run_for_diagnostics": true,
+    "global_vp": {
+      "backend": "cpu"
+    },
+    "SNR_dB": -10.0
+  },
+  "resource_options": {
+    "memory_budget_gb": null,
+    "memory_per_worker_gb": null,
+    "trim_memory": true
+  },
+  "git_commit": "a4d7276",
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

@@ -1,0 +1,22 @@
+{
+  "figure": "fig1",
+  "proposed_variant": "adaptive_jones_vp_proposed",
+  "exact_duplicate_variants": [
+    "adaptive_jones_no_rescue",
+    "fixed_pol_vp"
+  ],
+  "overlap_explanation": "Adaptive policy selected the fixed-pol anchor for every reported point.",
+  "lambda_diagnostics": [
+    {
+      "trial_id": "0",
+      "seed": "3147786918",
+      "snr_db": "0.0",
+      "lambda_path_min": "1.8726597166821572",
+      "lambda_path_max": "7.277669046629998",
+      "lambda_path_mean": "4.058210366696664",
+      "lambda_clipped_fraction": "0.0",
+      "selected_vp_family_branch": "fixed_pol_anchor",
+      "variant_config_hash": "b7d53898dfb6fffc"
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "git_commit": "unknown",
+  "timestamp": "2026-07-13T16:02:37.418093+00:00",
+  "timestamp_utc": "2026-07-13T16:02:37.418093+00:00",
+  "command_line": "/home/u202520081000135/.conda/envs/evs313/bin/python /home/share/ggg/src/experiments/run_paper_ablation_figures.py --figures all --n-trials 24 --paper-k 3 --snr-grid=-10,-5,0,5,10,15,20 --out-dir results/pilot_n24_gpu/ablation --force-rerun --jobs 24 --process-workers 24 --blas-threads 1 --global-vp-backend cupy --global-vp-gpu-device 0 --global-vp-gpu-dtype complex128",
+  "n_trials": 24,
+  "jobs": 24,
+  "process_workers": 24,
+  "max_workers": 24,
+  "maxtasksperchild": 1,
+  "task_grouping": "grouped",
+  "streaming_csv": true,
+  "csv_flush_every": 10,
+  "store_large_arrays": false,
+  "blas_threads": 1,
+  "estimated_cpu_slots": 24,
+  "memory_budget_gb": null,
+  "memory_per_worker_gb": null,
+  "trim_memory": true,
+  "respect_existing_blas_env": false,
+  "profile_memory": false,
+  "snr_grid": [
+    -10.0,
+    -5.0,
+    0.0,
+    5.0,
+    10.0,
+    15.0,
+    20.0
+  ],
+  "paper_k": 3,
+  "figures": [
+    "fig1",
+    "fig2",
+    "fig3",
+    "fig4",
+    "fig5",
+    "fig6"
+  ],
+  "fig6_interpretation": "forced_stage2_seed_diagnostics_lg_weighted_mean_vs_lg_rdc_vs_joint_pllg_rdc;reports_p95_absolute_seed_errors",
+  "seed": 20260526,
+  "include_diagnostic_variants": false,
+  "diagnostic_variants": [],
+  "global_vp_backend": "cupy",
+  "global_vp_gpu_device": 0,
+  "global_vp_validate_gpu_against_cpu": false,
+  "vp_dictionary_mode": "matrix_free",
+  "vp_debug_compare_explicit": false,
+  "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+  "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation.",
+  "config_overrides": {
+    "seed": 20260526,
+    "outlier_threshold_m": 0.1,
+    "paper_k_for_all_figures": 3,
+    "deprecated_k_grid_ignored": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "global_vp": {
+      "backend": "cupy",
+      "gpu_device": 0,
+      "validate_gpu_against_cpu": false,
+      "gpu_dtype": "complex128"
+    },
+    "crb": {
+      "include_constrained_jones_peb": true,
+      "include_anchored_jones_peb": false,
+      "jones_anchor_prior_mode": "disabled",
+      "jones_anchor_prior_scale": 1.0
+    }
+  },
+  "shared_cache_signatures": {
+    "fig1_fig2": {
+      "n_trials": 24,
+      "snr_grid": [
+        -10.0,
+        -5.0,
+        0.0,
+        5.0,
+        10.0,
+        15.0,
+        20.0
+      ],
+      "paper_k": 3,
+      "figures": [
+        "fig1_fig2"
+      ],
+      "seed": 20260526,
+      "variant_list": {
+        "fig1_fig2": [
+          "stage1_only",
+          "fixed_pol_vp",
+          "free_jones_vp",
+          "adaptive_jones_no_rescue",
+          "adaptive_jones_vp_proposed",
+          "constrained_jones_peb"
+        ]
+      },
+      "include_diagnostic_variants": false,
+      "git_commit": "unknown",
+      "receiver_noise_convention": "AWGN is added only on active EVS observation components with variance set by active-component signal power.",
+      "receiver_mode_convention": "receiver_mode selects the EVS component observation mask before noise generation and estimator evaluation.",
+      "debug_compare_main_single_proposed": false,
+      "global_vp_backend": "cupy",
+      "global_vp_gpu_device": 0,
+      "global_vp_validate_gpu_against_cpu": false,
+      "vp_dictionary_mode": "matrix_free",
+      "vp_debug_compare_explicit": false,
+      "fig1_proposed_dispatch_version": 2,
+      "paper_ablation_layout_version": 3,
+      "include_constrained_jones_peb": true,
+      "include_anchored_jones_peb": false,
+      "jones_anchor_prior_mode": "disabled",
+      "jones_anchor_prior_scale": 1.0,
+      "global_vp_overrides": {
+        "backend": "cupy",
+        "gpu_device": 0,
+        "validate_gpu_against_cpu": false,
+        "gpu_dtype": "complex128"
+      }
+    }
+  },
+  "python": "3.13.14",
+  "numpy": "2.4.6",
+  "scipy_available": true,
+  "nested_receiver_noise_convention": "fixed_full6d_reference_sigma2",
+  "nested_receiver_reference_mode": "full_6d",
+  "snr_interpretation_fig3_fig4": "full_6d_reference_snr"
+}

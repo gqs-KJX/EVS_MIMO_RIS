@@ -1,0 +1,2 @@
+figure,baseline,x_name,x_value,n,success_rate,plot_metric,rmse_m,median_m,p90_m,p95_m,outlier_rate,runtime_s_mean,runtime_s_median,runtime_s_p95,rss_mb_peak_mean
+fig8,proposed,calibration_std_deg,0.0,1,1.0,position_rmse_m,0.0006272655295956019,0.0006272655295956019,0.0006272655295956019,0.0006272655295956019,0.0,139.32544333500118,139.32544333500118,139.32544333500118,nan

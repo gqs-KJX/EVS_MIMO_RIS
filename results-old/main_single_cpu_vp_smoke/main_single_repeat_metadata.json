@@ -1,0 +1,19 @@
+{
+  "start_time_utc": "2026-06-22T17:12:45.258338+00:00",
+  "finish_time_utc": "2026-06-22T17:15:05.676618+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/main_single_proposed.py --repeat-runs 2 --repeat-jobs 1 --repeat-out-dir results/main_single_cpu_vp_smoke --seed 20260526 --blas-threads 1 --force-rerun",
+  "n_runs": 2,
+  "jobs": 1,
+  "base_seed": 20260526,
+  "trial_seeds": [
+    3147786918,
+    112311654
+  ],
+  "rerun_seeds_provided": false,
+  "outlier_threshold_m": 0.1,
+  "blas_threads": 1,
+  "config_overrides": {},
+  "git_commit": "2fbc52a",
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

@@ -1,0 +1,45 @@
+{
+  "evs_subspace_joint_geometry_stage1_ccop": {
+    "channel_nmse_median": 0.10964687055760436,
+    "delay_rmse_median_ns": 62.25572482413002,
+    "n": 2,
+    "outliers": 2,
+    "position_median_m": 0.13831439074334573,
+    "position_rmse_m": 0.13852476670582448,
+    "stage1_runtime_median_s": 0.30496902800223324
+  },
+  "experiment": {
+    "blas_threads": 1,
+    "ccop_outer_max_iter": 20,
+    "clock_fft_size": 4096,
+    "diagnostic_mode": "fast",
+    "jobs": 2,
+    "joint_max_iter": 30,
+    "joint_num_starts": 7,
+    "routes": [
+      "frozen_stage1_ccop",
+      "evs_subspace_joint_geometry_stage1_ccop"
+    ],
+    "runtime_policy": "parallel throughput run; use single-process development timing for claims",
+    "seeds": [
+      11,
+      12
+    ],
+    "snr_db": -10.0
+  },
+  "frozen_stage1_ccop": {
+    "channel_nmse_median": 0.09190062330547744,
+    "delay_rmse_median_ns": 59.90917320831031,
+    "n": 2,
+    "outliers": 2,
+    "position_median_m": 0.4281935902128707,
+    "position_rmse_m": 0.5071805799288611,
+    "stage1_runtime_median_s": 0.42033892600011313
+  },
+  "paired": {
+    "introduced_outliers": 0,
+    "n": 2,
+    "position_wins": 2,
+    "rescued_outliers": 0
+  }
+}

@@ -649,14 +649,50 @@ def test_final_summary_keeps_failures_in_catastrophic_denominator():
             "variant": "proposed",
             "failed": True,
             "outlier": True,
+            "position_error_m": 99.0,
         },
     ]
     summary = final_common.summarize_rows(rows)[0]
     assert summary["success_rate"] == 0.5
     assert summary["conditional_outlier_rate"] == 0.0
     assert summary["catastrophic_rate"] == 0.5
+    assert summary["position_rmse_m"] == pytest.approx(0.01)
     assert summary["clock_rmse_ns"] == pytest.approx(0.2)
     assert summary["channel_nmse_p95"] == pytest.approx(0.1)
+
+
+def test_final_summary_separates_mean_rmse_conditional_rmse_and_peb_rms():
+    estimator_rows = [
+        {
+            "suite": "snr",
+            "x_name": "snr_db",
+            "x_value": -10,
+            "variant": "proposed",
+            "failed": False,
+            "outlier": outlier,
+            "position_error_m": error,
+        }
+        for error, outlier in ((3.0, False), (4.0, True))
+    ]
+    peb_rows = [
+        {
+            "suite": "snr",
+            "x_name": "snr_db",
+            "x_value": -10,
+            "variant": "free_jones_peb",
+            "failed": False,
+            "peb_position_m": value,
+        }
+        for value in (1.0, 3.0)
+    ]
+    summary = final_common.summarize_rows(estimator_rows + peb_rows)
+    estimator = next(row for row in summary if row["variant"] == "proposed")
+    peb = next(row for row in summary if row["variant"] == "free_jones_peb")
+    assert estimator["position_mean_error_m"] == 3.5
+    assert estimator["position_rmse_m"] == np.sqrt(12.5)
+    assert estimator["position_conditional_rmse_m"] == 3.0
+    assert peb["peb_position_m_mean"] == 2.0
+    assert peb["peb_position_m_rms"] == np.sqrt(5.0)
 
 
 def test_evs_resolution_requires_path_count_pairing_accuracy_and_no_collapse():

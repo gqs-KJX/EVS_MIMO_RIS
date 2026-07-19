@@ -1,0 +1,23 @@
+{
+  "start_time_utc": "2026-06-29T09:38:20.404534+00:00",
+  "finish_time_utc": "2026-06-29T09:40:06.708960+00:00",
+  "command_line": "/home/gqs/miniconda3/lib/python3.13/site-packages/pytest/__main__.py tests/ -q -p no:cacheprovider",
+  "n_runs": 1,
+  "jobs": 1,
+  "base_seed": 20260526,
+  "trial_seeds": [
+    3147786918
+  ],
+  "rerun_seeds_provided": false,
+  "outlier_threshold_m": 0.1,
+  "blas_threads": 1,
+  "config_overrides": {},
+  "resource_options": {
+    "memory_budget_gb": null,
+    "memory_per_worker_gb": null,
+    "trim_memory": true
+  },
+  "git_commit": "c8bd925",
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

@@ -1,0 +1,351 @@
+{
+  "artifact_payload_hash": "7b3a194ce100f35be375b382ff393a00d2ef61cbeb7a1e57bda7eab2ca0602ce",
+  "candidates": {
+    "ccop": {
+      "boundary": {
+        "boundary_hit": true,
+        "boundary_hit_axis": [
+          "x",
+          "z"
+        ],
+        "boundary_tol_m": 0.02,
+        "distance_to_position_box_boundary_m": 0.0,
+        "min_distance_per_axis": {
+          "x": 0.0,
+          "y": 0.10226551753466717,
+          "z": 0.0
+        }
+      },
+      "delta_t": 2.313152997982151e-09,
+      "metrics": {
+        "K": 3,
+        "boundary_hit": true,
+        "ccop_clock_interval_evaluations": 318,
+        "ccop_position_evaluations": 5,
+        "channel_y_nmse": 0.9349756279757663,
+        "channel_y_rmse_abs": 0.40806739146286064,
+        "clock_bnb_splits": 17,
+        "clock_certificate_gap_objective": 1.6794065150883675e-10,
+        "clock_certified": true,
+        "clock_error_ns": 2.686847002017849,
+        "clock_fft_peak_gap_objective": 0.00026114217480096446,
+        "data_runtime_s": 0.003051997999136802,
+        "delta_t_error_s": -2.686847002017849e-09,
+        "delta_t_hat_s": 2.313152997982151e-09,
+        "delta_t_true_s": 5e-09,
+        "deployment_runtime_s": 0.21351900700028636,
+        "diagnostic_mode": "fast",
+        "end_to_end_incremental_runtime_s": 0.21351900700028636,
+        "err_x_m": -0.95,
+        "err_y_m": -1.8477344824653328,
+        "err_z_m": 0.7,
+        "error": "",
+        "failed": false,
+        "incumbent_generation_runtime_s": 0.0,
+        "incumbent_non_degradation": false,
+        "linear_nuisance_dim": 6,
+        "metric_reconstruction_runtime_s": 0.0007467579998774454,
+        "noise_variance": 1.780998252711884,
+        "nonlinear_dim": 3,
+        "old_incumbent_used": false,
+        "outer_message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+        "outer_n_eval": 5,
+        "outer_n_iter": 2,
+        "outer_success": false,
+        "outlier_flag": true,
+        "p_hat_x": 0.3,
+        "p_hat_y": -1.2977344824653327,
+        "p_hat_z": 1.45,
+        "p_true_x": 1.25,
+        "p_true_y": 0.55,
+        "p_true_z": 0.75,
+        "paired_trial_wall_runtime_s": 0.22729469499972765,
+        "position_error_m": 2.1924011306536566,
+        "range_rmse_m": 1.166244043374825,
+        "raw_objective_final": 1.9625764057196569,
+        "regularized_objective_final": 1.9647812277022758,
+        "route": "ccop_jvp_profiled_3d",
+        "route_refinement_runtime_s": 0.018240493998746388,
+        "route_runtime_s": 0.018987251998623833,
+        "seed": 4191845062,
+        "shared_data_hash": "1bcc919318eeb4517274",
+        "snr_db": -10.0,
+        "stage1_runtime_s": 0.19147975700252573,
+        "tau_rmse_s": 2.423013756342771e-09,
+        "trial_id": 0,
+        "vp_backend": "numpy_cpu"
+      },
+      "optimizer_success": false,
+      "p_u": [
+        0.3,
+        -1.2977344824653327,
+        1.45
+      ],
+      "raw_objective_final": 1.9625764057196569,
+      "regularized_objective_final": 1.9647812277022758,
+      "selected_candidate": "ccop_lbfgsb",
+      "x_hat": [
+        {
+          "imag": -0.04956277074003736,
+          "real": -0.016832025088990253
+        },
+        {
+          "imag": 0.03779513557466363,
+          "real": -0.05495168124866135
+        },
+        {
+          "imag": -0.013923256065747503,
+          "real": -0.015560019031130998
+        },
+        {
+          "imag": 0.027383642837783773,
+          "real": -0.05368433871260318
+        },
+        {
+          "imag": -0.10752024804876399,
+          "real": 0.024976051279806507
+        },
+        {
+          "imag": -0.05226077701659662,
+          "real": -0.11046362839546062
+        }
+      ]
+    },
+    "old_4d": {
+      "boundary": {
+        "boundary_hit": true,
+        "boundary_hit_axis": [
+          "x",
+          "z"
+        ],
+        "boundary_tol_m": 0.02,
+        "distance_to_position_box_boundary_m": 5.6778501836163286e-05,
+        "min_distance_per_axis": {
+          "x": 0.00027547195026056404,
+          "y": 0.3923036239361213,
+          "z": 5.6778501836163286e-05
+        }
+      },
+      "delta_t": 1.8000126323620496e-09,
+      "metrics": {
+        "K": 3,
+        "boundary_hit": true,
+        "ccop_clock_interval_evaluations": 0,
+        "ccop_position_evaluations": 0,
+        "channel_y_nmse": 0.9574649485087505,
+        "channel_y_rmse_abs": 0.41294592870337854,
+        "clock_bnb_splits": 0,
+        "clock_certificate_gap_objective": NaN,
+        "clock_certified": false,
+        "clock_error_ns": 3.1999873676379504,
+        "clock_fft_peak_gap_objective": NaN,
+        "data_runtime_s": 0.003051997999136802,
+        "delta_t_error_s": -3.1999873676379505e-09,
+        "delta_t_hat_s": 1.8000126323620496e-09,
+        "delta_t_true_s": 5e-09,
+        "deployment_runtime_s": 0.20814529300332651,
+        "diagnostic_mode": "fast",
+        "end_to_end_incremental_runtime_s": 0.20814529300332651,
+        "err_x_m": -0.9497245280497395,
+        "err_y_m": -1.5576963760638787,
+        "err_z_m": 0.6999432214981638,
+        "error": "",
+        "failed": false,
+        "incumbent_generation_runtime_s": 0.0,
+        "incumbent_non_degradation": false,
+        "linear_nuisance_dim": 6,
+        "metric_reconstruction_runtime_s": 0.0,
+        "noise_variance": 1.780998252711884,
+        "nonlinear_dim": 4,
+        "old_incumbent_used": false,
+        "outer_message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+        "outer_n_eval": 4,
+        "outer_n_iter": 2,
+        "outer_success": false,
+        "outlier_flag": true,
+        "p_hat_x": 0.30027547195026055,
+        "p_hat_y": -1.0076963760638786,
+        "p_hat_z": 1.4499432214981638,
+        "p_true_x": 1.25,
+        "p_true_y": 0.55,
+        "p_true_z": 0.75,
+        "paired_trial_wall_runtime_s": 0.22729469499972765,
+        "position_error_m": 1.9540509697812563,
+        "range_rmse_m": 1.0649087029235358,
+        "raw_objective_final": 1.966923756645335,
+        "regularized_objective_final": 1.9679643950020522,
+        "route": "old_4d_jones_vp",
+        "route_refinement_runtime_s": 0.013613538001663983,
+        "route_runtime_s": 0.013613538001663983,
+        "seed": 4191845062,
+        "shared_data_hash": "1bcc919318eeb4517274",
+        "snr_db": -10.0,
+        "stage1_runtime_s": 0.19147975700252573,
+        "tau_rmse_s": 2.090227449617994e-09,
+        "trial_id": 0,
+        "vp_backend": "cpu"
+      },
+      "optimizer_success": false,
+      "p_u": [
+        0.30027547195026055,
+        -1.0076963760638786,
+        1.4499432214981638
+      ],
+      "raw_objective_final": 1.966923756645335,
+      "regularized_objective_final": 1.9679643950020522,
+      "selected_candidate": "",
+      "x_hat": [
+        {
+          "imag": -0.034277811390160465,
+          "real": -0.0013631658722831723
+        },
+        {
+          "imag": 0.020534699464152515,
+          "real": -0.04749405108278222
+        },
+        {
+          "imag": 0.01868488822131736,
+          "real": -0.021358602798314773
+        },
+        {
+          "imag": 0.07204282562551186,
+          "real": -0.028369269045645518
+        },
+        {
+          "imag": -0.08807216275310335,
+          "real": 0.018750348523265972
+        },
+        {
+          "imag": -0.04359076968921389,
+          "real": -0.09340450435004809
+        }
+      ]
+    }
+  },
+  "ccop_candidate_hash": "5b481e5bbf874a5ed5105dba39ffe892b3c7a042771a85a9c7eff67816dc9505",
+  "covariance_z": {
+    "available": false,
+    "source": "not_yet_implemented_reproducibility_gate"
+  },
+  "dimensions": {
+    "I": 24,
+    "K": 3,
+    "L": 8,
+    "M_A": 4,
+    "M_R": 64,
+    "N": 15,
+    "P": 8,
+    "T": 32
+  },
+  "environment": {
+    "command": "/home/gqs/miniconda3/bin/python -m src.experiments.run_ccop_paired_mc --n-trials 1 --seed 20260715 --snr-db=-10 --diagnostic-mode fast --jobs 1 --blas-threads 1 --old-max-iter 2 --ccop-outer-max-iter 2 --clock-fft-size 512 --clock-max-intervals 2000 --no-use-old-incumbent --out-dir results/ccop_full_validation/repro_run_b --force-rerun",
+    "cupy": "unavailable",
+    "git_branch": "research/ccop_full_validation",
+    "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+    "git_dirty": true,
+    "git_status_porcelain": "M src/baselines/als_cpd.py\n M src/baselines/common.py\n M src/baselines/far_field_omp.py\n M src/baselines/near_field_mmpsr.py\n M src/baselines/nf_ris_groupomp_localgrid_wls.py\n M src/baselines/ris_momp.py\n M src/config.py\n M src/experiments/run_benchmark_comparison.py\n M src/experiments/run_paper_ablation_figures.py\n M src/experiments/run_proposed_ablation.py\n M src/experiments/run_robustness_and_scaling_figures.py\n M src/main_single_proposed.py\n M src/stage2_rescue.py\n M tests/test_benchmark_baselines.py\n M tests/test_fig1_proposed_consistency.py\n M tests/test_paper_ablation_figures.py\n M tests/test_paper_ablation_grouped_parallel.py\n M tests/test_robustness_and_scaling_figures.py\n M tests/test_stage2_ablation_config.py\n M tests/test_stage2_decoupled_clock.py\n?? src/ccop_jvp.py\n?? src/cp_ngc.py\n?? src/experiments/check_ccop_jvp_equivalence.py\n?? src/experiments/evaluate_cp_ngc_saved_candidates.py\n?? src/experiments/run_ccop_paired_mc.py\n?? src/validation_artifacts.py",
+    "numpy": "2.4.6",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+    "python_executable": "/home/gqs/miniconda3/bin/python",
+    "scipy": "1.17.1",
+    "scipy_optimizer_available": true,
+    "timestamp_utc": "2026-07-15T12:28:21.091465+00:00",
+    "worktree_fingerprint": "2395a8205314f181ff59348acf4fa06d89c60c3ce7c87b4cc2702459a09b2cf8"
+  },
+  "npz_file": "trial_000000_seed_4191845062.npz",
+  "old_candidate_hash": "f65c44cd182b1b35db22a7da9beaa45dc75cd268e42324d29ed9a27f853222d0",
+  "resolved_config_hash": "c2356745c050eda27007de37132f6440a81852987c0a90ecf6fd867b6a930838",
+  "runtime_buckets_s": {
+    "ccop_route": 0.018987251998623833,
+    "data": 0.003051997999136802,
+    "old_route": 0.013613538001663983,
+    "paired_wall": 0.22729469499972765,
+    "stage1": 0.19147975700252573
+  },
+  "seed": 4191845062,
+  "snr_db": -10.0,
+  "stage1": {
+    "all_assignment_scores": [
+      {
+        "assignment": [
+          1,
+          0,
+          2
+        ],
+        "clock_bound_violation": 0.0,
+        "clock_spread": 2.77614837969436,
+        "projection_score": 4.932569404801128,
+        "score": 6.320643594648308
+      },
+      {
+        "assignment": [
+          2,
+          1,
+          0
+        ],
+        "clock_bound_violation": 1.6066081707348716,
+        "clock_spread": 6.793191580748248,
+        "projection_score": 4.874409081972251,
+        "score": 9.07430895771381
+      }
+    ],
+    "assignment": [
+      1,
+      0,
+      2
+    ],
+    "assignment_margin": 0.43566217929982104,
+    "boundary_diagnostics": [
+      true,
+      true,
+      true
+    ],
+    "delay_uncertainty_source": "configured_floor",
+    "delay_uncertainty_used_floor": true,
+    "panel_to_column_assignment": [
+      1,
+      0,
+      2
+    ],
+    "rank_one_ratios": [
+      0.9780495054817707,
+      0.9177375215895167,
+      0.671680132841549
+    ],
+    "ris_residual_type": "exact_shortlisted_projection",
+    "top_l_assignment_hypotheses": [
+      [
+        1,
+        0,
+        2
+      ],
+      [
+        2,
+        1,
+        0
+      ]
+    ],
+    "validity": {
+      "assignment_confident": [
+        true,
+        true,
+        true
+      ],
+      "delay": [
+        true,
+        true,
+        true
+      ],
+      "local_geometry": [
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  "stage1_input_hash": "e372f0ff1abb052931fbc0f19d7020f97292fba6285829518029fcf1073ab5d8",
+  "stage1_output_hash": "9ddcd6bee28f895e5007b3808c2e47ef09fa67a9fc95c899b526fef8c022c4f3",
+  "trial_id": 0,
+  "y_noisy_hash": "bb1f334f84e76ea7d1724f891e7afa56ac663bf949d798dac34b25d120afe5d4"
+}

@@ -410,7 +410,7 @@ def _plot_from_summary(
                 ):
                     if metric != "position_rmse_m":
                         continue
-                    source_metric = "peb_position_m_mean"
+                    source_metric = "peb_position_m_rms"
                 else:
                     source_metric = metric
                 y = [float(by_x[value][source_metric]) for value in x_values]

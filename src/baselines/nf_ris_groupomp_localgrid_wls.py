@@ -1,4 +1,16 @@
-"""Adapted near-field RIS group-OMP/local-grid/WLS localization baseline."""
+"""NF-RIS CPD-OMP-SAGE-WLS adaptation for the repository raw tensor.
+
+The original paper uses a SISO tensor created by a Kronecker RIS profile.  The
+repository instead observes an EVS x subcarrier x training tensor and uses
+arbitrary per-panel phase profiles.  This adaptation preserves the published
+algorithmic stages while using the exact repository operator ``c_k=Omega_k g_k``:
+
+1. sequential rank-one CPD and orthogonal residual updates;
+2. one-dimensional delay matching, far-field direction initialization, and a
+   one-dimensional exact near-field range search;
+3. cyclic SAGE complete-data updates with per-path raw-domain refinement;
+4. FIM-weighted fusion of path parameters into common position and clock.
+"""
 
 from __future__ import annotations
 
@@ -7,90 +19,719 @@ from typing import Any
 
 import numpy as np
 
-from .backend import BackendConfig, get_backend
-from .cache import BASELINE_CACHE, baseline_cache_key, cache_diagnostics_delta
-from .factorized_scoring import (
-    FactorizedPositionClockScorer,
-    factorized_fit_supports,
-)
+from .als_cpd import complex_cp_als
 from .common import (
     BaselineResult,
-    clock_grid_from_config,
+    build_jones_basis_evs_atoms,
     delay_grid_from_scene,
+    delay_response,
     expand_jones_group,
-    group_omp_select,
+    group_design,
     supports_from_position_clock,
+    training_response_from_direction,
+    training_response_from_position,
     vectorize_raw_observation,
 )
+from .factorized_scoring import factorized_fit_supports
 from ..geometry import local_geometry_from_position
 from ..utils import scipy_is_available
 
 
-def _direction_grid(size: int) -> list[tuple[int, int, float, float, np.ndarray]]:
-    axis_count = max(3, int(np.ceil(np.sqrt(max(size, 3)))))
-    axis = np.linspace(-0.8, 0.8, axis_count)
-    directions = []
-    for ux_idx, ux in enumerate(axis):
-        for uy_idx, uy in enumerate(axis):
-            rem = 1.0 - ux * ux - uy * uy
-            if rem <= 0.0:
-                continue
-            direction = np.array([ux, uy, np.sqrt(rem)], dtype=float)
-            directions.append((int(ux_idx), int(uy_idx), float(ux), float(uy), direction))
-            if len(directions) >= size:
-                return directions
-    return directions
+def _normalized(value: np.ndarray) -> np.ndarray:
+    array = np.asarray(value, dtype=complex).reshape(-1)
+    norm = float(np.linalg.norm(array))
+    return array / norm if np.isfinite(norm) and norm > 0.0 else array
 
 
-def _coarse_groups(scene: dict, config: dict) -> list[dict[str, Any]]:
-    baseline_cfg = config.get("baselines", {})
-    cfg = dict(baseline_cfg.get("nf_ris_groupomp_localgrid_wls", {}))
-    directions = _direction_grid(int(cfg.get("direction_grid_size", 9)))
-    taus = delay_grid_from_scene(scene, config, int(cfg.get("delay_grid_size", 9)))
-    groups = []
-    for panel in range(int(scene["K"])):
-        for direction_idx, (ux_idx, uy_idx, ux, uy, direction) in enumerate(directions):
-            for tau_idx, tau in enumerate(taus):
-                groups.append(
-                    {
-                        "panel": int(panel),
-                        "panel_index": int(panel),
-                        "direction": direction,
-                        "u_x": float(ux),
-                        "u_y": float(uy),
-                        "u_x_index": int(ux_idx),
-                        "u_y_index": int(uy_idx),
-                        "direction_index": int(direction_idx),
-                        "tau": float(tau),
-                        "tau_index": int(tau_idx),
-                        "near_field": False,
-                        "group_size": 2,
-                        "pol_indices": [0, 1],
-                    }
+def _direction_candidates(size: int) -> list[tuple[int, int, float, float]]:
+    axis_count = max(3, int(np.ceil(np.sqrt(max(int(size), 3)))))
+    axis = np.linspace(-0.95, 0.95, axis_count, dtype=float)
+    candidates: list[tuple[int, int, float, float]] = []
+    for ux_index, ux in enumerate(axis):
+        for uy_index, uy in enumerate(axis):
+            if ux * ux + uy * uy < 0.999**2:
+                candidates.append(
+                    (int(ux_index), int(uy_index), float(ux), float(uy))
                 )
-    return groups
+    return candidates
 
 
-def _fit_near_field(
+def _hemisphere_sign(scene: dict, config: dict, panel: int) -> float:
+    bounds = np.asarray(config.get("ue_bounds"), dtype=float)
+    center = np.mean(bounds, axis=1)
+    q_local = np.asarray(scene["rotations"][panel], dtype=float) @ (
+        center - np.asarray(scene["ris_centers"][panel], dtype=float)
+    )
+    return float(np.sign(q_local[2]) or 1.0)
+
+
+def _direction(ux: float, uy: float, sign: float) -> np.ndarray:
+    ux = float(np.clip(ux, -0.999, 0.999))
+    uy = float(np.clip(uy, -0.999, 0.999))
+    radius_sq = ux * ux + uy * uy
+    if radius_sq >= 0.999**2:
+        scale = 0.999 / np.sqrt(radius_sq + 1.0e-15)
+        ux *= scale
+        uy *= scale
+        radius_sq = ux * ux + uy * uy
+    uz = float(np.sign(sign) or 1.0) * np.sqrt(max(1.0 - radius_sq, 1.0e-12))
+    return np.array([ux, uy, uz], dtype=float)
+
+
+def _range_grid(scene: dict, config: dict, size: int) -> np.ndarray:
+    bounds = np.asarray(config.get("ue_bounds"), dtype=float)
+    corners = np.array(
+        [[x, y, z] for x in bounds[0] for y in bounds[1] for z in bounds[2]],
+        dtype=float,
+    )
+    values: list[float] = []
+    for panel in range(int(scene["K"])):
+        values.extend(
+            np.linalg.norm(
+                corners - np.asarray(scene["ris_centers"][panel], dtype=float),
+                axis=1,
+            ).tolist()
+        )
+    return np.linspace(min(values), max(values), max(3, int(size)), dtype=float)
+
+
+def _position_on_ray(
+    scene: dict, panel: int, direction_local: np.ndarray, range_m: float
+) -> np.ndarray:
+    return np.asarray(scene["ris_centers"][panel], dtype=float) + (
+        np.asarray(scene["rotations"][panel], dtype=float).T
+        @ (float(range_m) * np.asarray(direction_local, dtype=float))
+    )
+
+
+def _near_field_support(
+    scene: dict,
+    panel: int,
+    ux: float,
+    uy: float,
+    range_m: float,
+    tau: float,
+    *,
+    sign: float,
+) -> dict[str, Any]:
+    direction_local = _direction(ux, uy, sign)
+    position = _position_on_ray(scene, panel, direction_local, range_m)
+    elevation = float(np.arcsin(np.clip(direction_local[2], -1.0, 1.0)))
+    azimuth = float(np.arctan2(direction_local[1], direction_local[0]))
+    return {
+        "panel": int(panel),
+        "panel_index": int(panel),
+        "position": position,
+        "range": float(range_m),
+        "direction": direction_local,
+        "u_x": float(direction_local[0]),
+        "u_y": float(direction_local[1]),
+        "u_z_sign": float(np.sign(direction_local[2]) or 1.0),
+        "elevation": elevation,
+        "azimuth": azimuth,
+        "tau": float(tau),
+        "near_field": True,
+        "group_size": 2,
+        "pol_indices": [0, 1],
+    }
+
+
+def _match_delay_factor(
+    scene: dict, delay_factor: np.ndarray, tau_grid: np.ndarray
+) -> tuple[float, int, float]:
+    target = _normalized(delay_factor)
+    scores = np.asarray(
+        [
+            abs(np.vdot(_normalized(delay_response(scene, float(tau))), target)) ** 2
+            for tau in tau_grid
+        ],
+        dtype=float,
+    )
+    index = int(np.argmax(scores))
+    return float(tau_grid[index]), index, float(scores[index])
+
+
+def _panel_evs_score(
+    scene: dict, config: dict, panel: int, evs_factor: np.ndarray
+) -> float:
+    basis, _ = build_jones_basis_evs_atoms(scene, config, panel_index=panel)
+    matrix = np.column_stack([_normalized(column) for column in basis[:2]])
+    q, _ = np.linalg.qr(matrix, mode="reduced")
+    return float(np.linalg.norm(q.conj().T @ _normalized(evs_factor)) ** 2)
+
+
+def _match_cpd_component(
+    scene: dict,
+    config: dict,
+    evs_factor: np.ndarray,
+    delay_factor: np.ndarray,
+    training_factor: np.ndarray,
+    available_panels: list[int],
+    directions: list[tuple[int, int, float, float]],
+    ranges: np.ndarray,
+    taus: np.ndarray,
+) -> dict[str, Any] | None:
+    if not available_panels:
+        return None
+    tau, tau_index, delay_score = _match_delay_factor(scene, delay_factor, taus)
+    target_training = _normalized(training_factor)
+    best: tuple[float, int, int, int, int, float, float, np.ndarray] | None = None
+    for panel in available_panels:
+        evs_score = _panel_evs_score(scene, config, panel, evs_factor)
+        sign = _hemisphere_sign(scene, config, panel)
+        for direction_index, (ux_index, uy_index, ux, uy) in enumerate(directions):
+            direction_local = _direction(ux, uy, sign)
+            response = _normalized(
+                training_response_from_direction(scene, panel, direction_local)
+            )
+            training_score = float(abs(np.vdot(response, target_training)) ** 2)
+            score = evs_score * training_score
+            if best is None or score > best[0]:
+                best = (
+                    score,
+                    int(panel),
+                    int(direction_index),
+                    int(ux_index),
+                    int(uy_index),
+                    float(ux),
+                    float(uy),
+                    direction_local,
+                )
+    if best is None:
+        return None
+    _, panel, direction_index, ux_index, uy_index, ux, uy, direction_local = best
+    range_scores = []
+    for range_m in ranges:
+        position = _position_on_ray(scene, panel, direction_local, float(range_m))
+        response = _normalized(
+            training_response_from_position(
+                scene, panel, position, near_field=True
+            )
+        )
+        range_scores.append(float(abs(np.vdot(response, target_training)) ** 2))
+    range_index = int(np.argmax(range_scores))
+    support = _near_field_support(
+        scene,
+        panel,
+        ux,
+        uy,
+        float(ranges[range_index]),
+        tau,
+        sign=float(np.sign(direction_local[2]) or 1.0),
+    )
+    support.update(
+        {
+            "direction_index": int(direction_index),
+            "u_x_index": int(ux_index),
+            "u_y_index": int(uy_index),
+            "range_index": int(range_index),
+            "tau_index": int(tau_index),
+            "cpd_evs_direction_score": float(best[0]),
+            "cpd_delay_score": delay_score,
+            "cpd_range_score": float(range_scores[range_index]),
+        }
+    )
+    return support
+
+
+def _cpd_omp(
     scene: dict,
     config: dict,
     y_vec: np.ndarray,
-    p_u: np.ndarray,
-    delta_t: float,
-    *,
-    ridge: float = 1.0e-10,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
-    groups = supports_from_position_clock(
+    cfg: dict,
+) -> tuple[
+    list[dict[str, Any]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    list[dict[str, Any]],
+]:
+    directions = _direction_candidates(int(cfg.get("direction_grid_size", 31)))
+    ranges = _range_grid(scene, config, int(cfg.get("range_grid_size", 31)))
+    taus = delay_grid_from_scene(
+        scene, config, int(cfg.get("delay_grid_size", 41))
+    )
+    selected: list[dict[str, Any]] = []
+    cpd_diagnostics: list[dict[str, Any]] = []
+    coeffs = np.zeros(0, dtype=complex)
+    y_hat = np.zeros_like(y_vec)
+    residual = y_vec.copy()
+    initial_norm = float(np.linalg.norm(y_vec)) + 1.0e-15
+    max_groups = int(cfg.get("max_groups", scene["K"]))
+    for iteration in range(max(0, max_groups)):
+        if float(np.linalg.norm(residual)) / initial_norm <= float(
+            cfg.get("cpd_residual_stop_rel", 1.0e-4)
+        ):
+            break
+        factors, _, diagnostics = complex_cp_als(
+            residual.reshape(scene["I"], scene["N"], scene["T"]),
+            1,
+            max_iter=int(cfg.get("cpd_max_iter", 80)),
+            tol=float(cfg.get("cpd_tol", 1.0e-7)),
+            reg=float(cfg.get("cpd_reg", 1.0e-8)),
+        )
+        available = [
+            panel
+            for panel in range(int(scene["K"]))
+            if panel not in {int(item["panel"]) for item in selected}
+        ]
+        support = _match_cpd_component(
+            scene,
+            config,
+            factors[0][:, 0],
+            factors[1][:, 0],
+            factors[2][:, 0],
+            available,
+            directions,
+            ranges,
+            taus,
+        )
+        if support is None:
+            break
+        support["cpd_iteration"] = int(iteration)
+        support["coarse_stage"] = "rank1_cpd_delay_direction_then_nf_range"
+        selected.append(support)
+        expanded = [
+            item for group in selected for item in expand_jones_group(group, 2)
+        ]
+        coeffs, y_hat, residual = factorized_fit_supports(
+            scene, config, expanded, y_vec, ridge=1.0e-10
+        )
+        cpd_diagnostics.append(
+            {
+                "iteration": int(iteration),
+                "panel": int(support["panel"]),
+                "tau": float(support["tau"]),
+                "range": float(support["range"]),
+                "orthogonal_residual_norm": float(np.linalg.norm(residual)),
+                "als_iterations": int(diagnostics["als_iterations"]),
+                "als_converged": bool(diagnostics["als_converged"]),
+                "als_residual": float(diagnostics["als_residual"]),
+            }
+        )
+    return selected, coeffs, y_hat, residual, cpd_diagnostics
+
+
+def _support_state(support: dict[str, Any], c0: float) -> np.ndarray:
+    return np.array(
+        [
+            float(support["u_x"]),
+            float(support["u_y"]),
+            float(support["range"]),
+            float(support["tau"]) * float(c0),
+        ],
+        dtype=float,
+    )
+
+
+def _support_from_state(
+    scene: dict,
+    support: dict[str, Any],
+    state: np.ndarray,
+) -> dict[str, Any]:
+    result = _near_field_support(
         scene,
-        np.asarray(p_u, dtype=float),
-        float(delta_t),
-        model_variant="near_field",
+        int(support["panel"]),
+        float(state[0]),
+        float(state[1]),
+        float(state[2]),
+        float(state[3]) / float(scene["c0"]),
+        sign=float(support.get("u_z_sign", 1.0)),
     )
-    expanded = [support for group in groups for support in expand_jones_group(group, 2)]
+    for key in (
+        "cpd_iteration",
+        "direction_index",
+        "u_x_index",
+        "u_y_index",
+        "range_index",
+        "tau_index",
+        "coarse_stage",
+        "cpd_evs_direction_score",
+        "cpd_delay_score",
+        "cpd_range_score",
+    ):
+        if key in support:
+            result[key] = support[key]
+    return result
+
+
+def _state_bounds(scene: dict, config: dict) -> tuple[np.ndarray, np.ndarray]:
+    ranges = _range_grid(scene, config, 3)
+    taus = delay_grid_from_scene(scene, config, 3)
+    lower = np.array([-0.999, -0.999, float(ranges[0]), float(taus[0]) * scene["c0"]])
+    upper = np.array([0.999, 0.999, float(ranges[-1]), float(taus[-1]) * scene["c0"]])
+    return lower, upper
+
+
+def _refine_sage_component(
+    scene: dict,
+    config: dict,
+    complete_data: np.ndarray,
+    support: dict[str, Any],
+    cfg: dict,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    lower, upper = _state_bounds(scene, config)
+    x0 = np.clip(_support_state(support, scene["c0"]), lower, upper)
+    ue_bounds = np.asarray(config.get("ue_bounds"), dtype=float)
+    reference_energy = float(np.linalg.norm(complete_data) ** 2) + 1.0e-15
+    evaluations = 0
+
+    def raw_objective(state: np.ndarray) -> float:
+        clipped = np.clip(np.asarray(state, dtype=float), lower, upper)
+        candidate = _support_from_state(scene, support, clipped)
+        expanded = expand_jones_group(candidate, 2)
+        _, _, residual = factorized_fit_supports(
+            scene, config, expanded, complete_data, ridge=1.0e-10
+        )
+        return float(np.linalg.norm(residual) ** 2)
+
+    def objective(state: np.ndarray) -> float:
+        nonlocal evaluations
+        evaluations += 1
+        clipped = np.clip(np.asarray(state, dtype=float), lower, upper)
+        candidate = _support_from_state(scene, support, clipped)
+        raw_value = raw_objective(clipped)
+        position = np.asarray(candidate["position"], dtype=float)
+        below = np.maximum(ue_bounds[:, 0] - position, 0.0)
+        above = np.maximum(position - ue_bounds[:, 1], 0.0)
+        disk_violation = max(clipped[0] ** 2 + clipped[1] ** 2 - 0.999**2, 0.0)
+        penalty = reference_energy * (
+            100.0 * float(np.dot(below + above, below + above))
+            + 100.0 * disk_violation**2
+        )
+        return float(raw_value + penalty)
+
+    initial_search_objective = objective(x0)
+    initial_objective = raw_objective(_support_state(support, scene["c0"]))
+    best_state = x0.copy()
+    solver = "coordinate_fallback"
+    success = True
+    if scipy_is_available():
+        try:
+            from scipy.optimize import minimize  # type: ignore[import-not-found]
+
+            result = minimize(
+                objective,
+                x0,
+                method="Nelder-Mead",
+                bounds=list(zip(lower, upper)),
+                options={
+                    "maxiter": int(cfg.get("sage_maxiter", 30)),
+                    "xatol": float(cfg.get("sage_xatol", 1.0e-5)),
+                    "fatol": float(cfg.get("sage_fatol", 1.0e-8)) * reference_energy,
+                },
+            )
+            best_state = np.clip(np.asarray(result.x, dtype=float), lower, upper)
+            solver = "scipy.optimize.Nelder-Mead"
+            success = bool(result.success)
+        except Exception:  # noqa: BLE001 - deterministic coordinate fallback below.
+            pass
+
+    if solver == "coordinate_fallback":
+        steps = np.array(
+            [0.08, 0.08, max((upper[2] - lower[2]) / 12.0, 0.02), max((upper[3] - lower[3]) / 12.0, 1.0e-3)],
+            dtype=float,
+        )
+        best_value = initial_search_objective
+        for level in range(max(1, int(cfg.get("sage_fallback_levels", 2)))):
+            for coordinate in range(4):
+                for offset in (-steps[coordinate], steps[coordinate]):
+                    candidate = best_state.copy()
+                    candidate[coordinate] += offset
+                    value = objective(candidate)
+                    if value < best_value:
+                        best_value = value
+                        best_state = np.clip(candidate, lower, upper)
+            steps *= 0.5
+
+    refined = _support_from_state(scene, support, best_state)
+    refined["sage_refined"] = True
+    final_search_objective = objective(best_state)
+    final_objective = raw_objective(best_state)
+    rolled_back = bool(
+        (not np.isfinite(final_objective))
+        or final_objective > initial_objective * (1.0 + 1.0e-12)
+    )
+    if rolled_back:
+        refined = dict(support)
+        refined["sage_refined"] = False
+        final_objective = initial_objective
+        final_search_objective = initial_search_objective
+    return refined, {
+        "solver": solver,
+        "success": bool(success and not rolled_back),
+        "rolled_back": rolled_back,
+        "evaluations": evaluations,
+        "initial_objective": initial_objective,
+        "final_objective": final_objective,
+        "initial_search_objective": initial_search_objective,
+        "final_search_objective": final_search_objective,
+    }
+
+
+def _component_from_coefficients(
+    scene: dict,
+    config: dict,
+    support: dict[str, Any],
+    coefficients: np.ndarray,
+) -> np.ndarray:
+    design = group_design(scene, config, support, normalize=True)
+    return design @ np.asarray(coefficients, dtype=complex).reshape(2)
+
+
+def _sage_refine(
+    scene: dict,
+    config: dict,
+    y_vec: np.ndarray,
+    selected: list[dict[str, Any]],
+    cfg: dict,
+) -> tuple[
+    list[dict[str, Any]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, Any],
+]:
+    refined = [dict(item) for item in selected]
+    expanded = [item for group in refined for item in expand_jones_group(group, 2)]
     coeffs, y_hat, residual = factorized_fit_supports(
-        scene, config, expanded, y_vec, ridge=ridge
+        scene, config, expanded, y_vec, ridge=1.0e-10
     )
-    return coeffs, y_hat, residual, groups
+    initial_objective = float(np.linalg.norm(residual) ** 2)
+    previous_objective = initial_objective
+    path_trace: list[dict[str, Any]] = []
+    total_evaluations = 0
+    cycles_run = 0
+    max_cycles = int(cfg.get("sage_iterations", 2))
+    if not bool(cfg.get("sage_enabled", True)) or not refined:
+        max_cycles = 0
+    for cycle in range(max(0, max_cycles)):
+        cycles_run += 1
+        for path_index in range(len(refined)):
+            component = _component_from_coefficients(
+                scene,
+                config,
+                refined[path_index],
+                coeffs[2 * path_index : 2 * path_index + 2],
+            )
+            complete_data = y_vec - y_hat + component
+            refined[path_index], diagnostics = _refine_sage_component(
+                scene,
+                config,
+                complete_data,
+                refined[path_index],
+                cfg,
+            )
+            total_evaluations += int(diagnostics["evaluations"])
+            path_trace.append(
+                {
+                    "cycle": int(cycle),
+                    "path_index": int(path_index),
+                    "panel": int(refined[path_index]["panel"]),
+                    **diagnostics,
+                }
+            )
+            expanded = [
+                item for group in refined for item in expand_jones_group(group, 2)
+            ]
+            coeffs, y_hat, residual = factorized_fit_supports(
+                scene, config, expanded, y_vec, ridge=1.0e-10
+            )
+        objective = float(np.linalg.norm(residual) ** 2)
+        relative_change = abs(previous_objective - objective) / (
+            previous_objective + 1.0e-15
+        )
+        previous_objective = objective
+        if relative_change <= float(cfg.get("sage_convergence_tol", 1.0e-4)):
+            break
+    return refined, coeffs, y_hat, residual, {
+        "sage_iterations": cycles_run,
+        "sage_num_evals": total_evaluations,
+        "sage_initial_objective": initial_objective,
+        "sage_final_objective": float(np.linalg.norm(residual) ** 2),
+        "sage_path_trace": path_trace,
+    }
+
+
+def _support_efim(
+    scene: dict,
+    config: dict,
+    support: dict[str, Any],
+    coefficients: np.ndarray,
+    noise_variance: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Numerically form a local channel-parameter EFIM after Jones removal."""
+    state = _support_state(support, scene["c0"])
+    lower, upper = _state_bounds(scene, config)
+    design0 = group_design(scene, config, support, normalize=True)
+    steps = np.array([1.0e-4, 1.0e-4, 1.0e-3, 1.0e-3], dtype=float)
+    derivatives: list[np.ndarray] = []
+    for coordinate, step in enumerate(steps):
+        plus = state.copy()
+        minus = state.copy()
+        plus[coordinate] = min(plus[coordinate] + step, upper[coordinate])
+        minus[coordinate] = max(minus[coordinate] - step, lower[coordinate])
+        denominator = plus[coordinate] - minus[coordinate]
+        if denominator <= 0.0:
+            derivatives.append(np.zeros(design0.shape[0], dtype=complex))
+            continue
+        plus_design = group_design(
+            scene,
+            config,
+            _support_from_state(scene, support, plus),
+            normalize=True,
+        )
+        minus_design = group_design(
+            scene,
+            config,
+            _support_from_state(scene, support, minus),
+            normalize=True,
+        )
+        derivatives.append(
+            ((plus_design - minus_design) @ coefficients) / denominator
+        )
+    derivative_matrix = np.column_stack(derivatives)
+    nuisance_projection = design0 @ (
+        np.linalg.pinv(design0.conj().T @ design0, rcond=1.0e-10)
+        @ (design0.conj().T @ derivative_matrix)
+    )
+    efficient_derivative = derivative_matrix - nuisance_projection
+    variance = float(noise_variance)
+    if not np.isfinite(variance) or variance <= 0.0:
+        variance = 1.0
+    efim = (2.0 / variance) * np.real(
+        efficient_derivative.conj().T @ efficient_derivative
+    )
+    efim = 0.5 * (efim + efim.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(efim)
+    clipped = np.maximum(eigenvalues, 0.0)
+    efim = (eigenvectors * clipped[None, :]) @ eigenvectors.T
+    return efim, {
+        "efim_eigenvalues": clipped,
+        "efim_rank": int(np.sum(clipped > max(float(np.max(clipped)), 1.0) * 1.0e-10)),
+    }
+
+
+def _wls_position_clock(
+    scene: dict,
+    config: dict,
+    selected: list[dict[str, Any]],
+    coefficients: np.ndarray,
+    noise_variance: float,
+    cfg: dict,
+) -> tuple[np.ndarray, float, dict[str, Any]]:
+    bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
+    bounds_dt = np.asarray(config.get("delta_t_bounds"), dtype=float)
+    positions = np.asarray([item["position"] for item in selected], dtype=float)
+    p0 = (
+        np.median(positions, axis=0)
+        if positions.size
+        else np.mean(bounds_p, axis=1)
+    )
+    p0 = np.clip(p0, bounds_p[:, 0], bounds_p[:, 1])
+    dt_candidates = []
+    for support in selected:
+        panel = int(support["panel"])
+        distance = float(
+            np.linalg.norm(p0 - np.asarray(scene["ris_centers"][panel], dtype=float))
+        )
+        dt_candidates.append(
+            float(support["tau"])
+            - (distance + float(scene["d_RB"][panel])) / float(scene["c0"])
+        )
+    dt0 = float(np.median(dt_candidates)) if dt_candidates else float(np.mean(bounds_dt))
+    dt0 = float(np.clip(dt0, bounds_dt[0], bounds_dt[1]))
+
+    sqrt_weights: list[np.ndarray] = []
+    weight_trace: list[dict[str, Any]] = []
+    for path_index, support in enumerate(selected):
+        try:
+            efim, trace = _support_efim(
+                scene,
+                config,
+                support,
+                coefficients[2 * path_index : 2 * path_index + 2],
+                noise_variance,
+            )
+            eigenvalues, eigenvectors = np.linalg.eigh(efim)
+            sqrt_weight = (
+                np.sqrt(np.maximum(eigenvalues, 0.0))[:, None]
+                * eigenvectors.T
+            )
+            weight_trace.append({"panel": int(support["panel"]), **trace})
+        except Exception as exc:  # noqa: BLE001 - energy proxy remains data-only.
+            energy = float(
+                np.linalg.norm(coefficients[2 * path_index : 2 * path_index + 2]) ** 2
+            )
+            sqrt_weight = np.sqrt(max(energy, 1.0e-12)) * np.eye(4)
+            weight_trace.append(
+                {
+                    "panel": int(support["panel"]),
+                    "efim_rank": 0,
+                    "warning": f"efim_fallback: {type(exc).__name__}: {exc}",
+                }
+            )
+        sqrt_weights.append(sqrt_weight)
+    maximum_weight = max(
+        [float(np.linalg.norm(weight, 2)) for weight in sqrt_weights] + [1.0]
+    )
+    sqrt_weights = [weight / maximum_weight for weight in sqrt_weights]
+
+    lower = np.r_[bounds_p[:, 0], bounds_dt[0] * scene["c0"]]
+    upper = np.r_[bounds_p[:, 1], bounds_dt[1] * scene["c0"]]
+    x0 = np.clip(np.r_[p0, dt0 * scene["c0"]], lower, upper)
+
+    def residual_fn(state: np.ndarray) -> np.ndarray:
+        p = np.asarray(state[:3], dtype=float)
+        clock_m = float(state[3])
+        blocks: list[np.ndarray] = []
+        for support, sqrt_weight in zip(selected, sqrt_weights):
+            panel = int(support["panel"])
+            q_local = np.asarray(scene["rotations"][panel], dtype=float) @ (
+                p - np.asarray(scene["ris_centers"][panel], dtype=float)
+            )
+            range_m = float(np.linalg.norm(q_local)) + 1.0e-15
+            direction_local = q_local / range_m
+            tau_m = range_m + float(scene["d_RB"][panel]) + clock_m
+            estimate = _support_state(support, scene["c0"])
+            model = np.array(
+                [direction_local[0], direction_local[1], range_m, tau_m],
+                dtype=float,
+            )
+            blocks.append(sqrt_weight @ (estimate - model))
+        if not blocks:
+            return np.asarray(state - x0, dtype=float)
+        return np.concatenate(blocks)
+
+    solver = "bounded_initialization"
+    success = False
+    num_evals = 1
+    solution = x0.copy()
+    if bool(cfg.get("wls_enabled", True)) and scipy_is_available() and selected:
+        try:
+            from scipy.optimize import least_squares  # type: ignore[import-not-found]
+
+            result = least_squares(
+                residual_fn,
+                x0,
+                bounds=(lower, upper),
+                max_nfev=int(cfg.get("wls_max_nfev", 100)),
+                x_scale=np.maximum(upper - lower, 1.0e-9),
+            )
+            solution = result.x
+            solver = "scipy.optimize.least_squares"
+            success = bool(result.success)
+            num_evals = int(result.nfev)
+        except Exception:  # noqa: BLE001 - return the bounded initialization.
+            pass
+    return solution[:3].astype(float), float(solution[3] / scene["c0"]), {
+        "wls_solver": solver,
+        "wls_success": success,
+        "wls_num_evals": num_evals,
+        "wls_final_cost": float(np.linalg.norm(residual_fn(solution)) ** 2),
+        "wls_weight_model": "local_channel_efim_after_jones_projection",
+        "wls_weight_trace": weight_trace,
+    }
 
 
 def _model_components(scene: dict, p_u: np.ndarray, delta_t: float) -> dict[str, np.ndarray]:
@@ -103,449 +744,140 @@ def _model_components(scene: dict, p_u: np.ndarray, delta_t: float) -> dict[str,
             np.asarray(scene["rotations"][panel], dtype=float),
         )
         ranges.append(float(range_m))
-        taus.append(float((range_m + scene["d_RB"][panel]) / scene["c0"] + float(delta_t)))
-    return {"ranges": np.asarray(ranges, dtype=float), "taus": np.asarray(taus, dtype=float)}
-
-
-def _ray_position_clock(
-    scene: dict,
-    config: dict,
-    selected: list[dict[str, Any]],
-) -> tuple[np.ndarray, float, dict[str, Any]]:
-    bounds_p = np.asarray(
-        config.get("ue_bounds", [[0.3, 2.7], [-1.4, 1.5], [0.35, 1.45]]),
-        dtype=float,
-    )
-    if not selected:
-        p = np.mean(bounds_p, axis=1)
-        dt = float(np.mean(clock_grid_from_config(config, 3)))
-        return p, dt, {"coarse_ray_solver": "fallback_center", "coarse_clipped_to_bounds": False}
-    lhs = np.zeros((3, 3), dtype=float)
-    rhs = np.zeros(3, dtype=float)
-    for group in selected:
-        panel = int(group.get("panel", 0))
-        u_local = np.asarray(group.get("direction", [0.0, 0.0, 1.0]), dtype=float)
-        u_local /= np.linalg.norm(u_local) + 1.0e-15
-        u = np.asarray(scene["rotations"][panel], dtype=float).T @ u_local
-        u /= np.linalg.norm(u) + 1.0e-15
-        center = np.asarray(scene["ris_centers"][panel], dtype=float)
-        projector = np.eye(3) - np.outer(u, u)
-        lhs += projector
-        rhs += projector @ center
-    cond = float(np.linalg.cond(lhs)) if np.linalg.norm(lhs) > 0.0 else float("inf")
-    p = np.linalg.pinv(lhs, rcond=1.0e-10) @ rhs
-    clipped = bool(np.any(p < bounds_p[:, 0]) or np.any(p > bounds_p[:, 1]))
-    p = np.clip(p, bounds_p[:, 0], bounds_p[:, 1])
-    dt_values = []
-    for group in selected:
-        panel = int(group.get("panel", 0))
-        tau = float(group.get("tau", 0.0))
-        range_m = float(np.linalg.norm(p - np.asarray(scene["ris_centers"][panel], dtype=float)))
-        dt_values.append(tau - (range_m + scene["d_RB"][panel]) / scene["c0"])
-    bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
-    dt = float(np.clip(np.mean(dt_values) if dt_values else np.mean(bounds_dt), bounds_dt[0], bounds_dt[1]))
-    return p.astype(float), dt, {
-        "coarse_ray_solver": "pinv_ray_intersection",
-        "coarse_ray_condition_number": cond,
-        "coarse_clipped_to_bounds": clipped,
-    }
-
-
-def _objective(
-    scene: dict,
-    config: dict,
-    y_vec: np.ndarray,
-    p_u: np.ndarray,
-    delta_t: float,
-    selected: list[dict[str, Any]],
-    l1_tau_lambda: float,
-) -> tuple[float, np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
-    coeffs, y_hat, residual, groups = _fit_near_field(scene, config, y_vec, p_u, delta_t)
-    value = float(np.linalg.norm(residual) ** 2)
-    if float(l1_tau_lambda) > 0.0 and selected:
-        penalty = 0.0
-        for support in selected:
-            panel = int(support.get("panel", 0))
-            tau_hat = float(support.get("tau", 0.0))
-            range_m = float(np.linalg.norm(np.asarray(p_u, dtype=float) - scene["ris_centers"][panel]))
-            tau_model = (range_m + scene["d_RB"][panel]) / scene["c0"] + float(delta_t)
-            penalty += abs(tau_hat - tau_model)
-        value += float(l1_tau_lambda) * penalty
-    return value, coeffs, y_hat, residual, groups
-
-
-def _local_search(
-    scene: dict,
-    config: dict,
-    y_vec: np.ndarray,
-    p0: np.ndarray,
-    dt0: float,
-    selected: list[dict[str, Any]],
-    scorer: FactorizedPositionClockScorer,
-    *,
-    levels: int,
-    position_radius_m: float,
-    clock_radius_s: float,
-    shrink: float,
-    l1_tau_lambda: float,
-) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]], int, float]:
-    bounds_p = np.asarray(
-        config.get("ue_bounds", [[0.3, 2.7], [-1.4, 1.5], [0.35, 1.45]]),
-        dtype=float,
-    )
-    bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
-    p_best = np.clip(np.asarray(p0, dtype=float), bounds_p[:, 0], bounds_p[:, 1])
-    dt_best = float(np.clip(float(dt0), bounds_dt[0], bounds_dt[1]))
-    def penalty(position: np.ndarray, delta_t: float) -> float:
-        if float(l1_tau_lambda) <= 0.0 or not selected:
-            return 0.0
-        value = 0.0
-        for support in selected:
-            panel = int(support.get("panel", 0))
-            tau_hat = float(support.get("tau", 0.0))
-            range_m = float(
-                np.linalg.norm(
-                    np.asarray(position, dtype=float)
-                    - np.asarray(scene["ris_centers"][panel], dtype=float)
-                )
-            )
-            tau_model = (
-                range_m + scene["d_RB"][panel]
-            ) / scene["c0"] + float(delta_t)
-            value += abs(tau_hat - tau_model)
-        return float(l1_tau_lambda) * value
-
-    _, _, initial_residual_sq = scorer.score_candidates(
-        p_best[None, :], np.asarray([dt_best], dtype=float)
-    )
-    best_value = float(initial_residual_sq[0]) + penalty(p_best, dt_best)
-    evals = 1
-    for level in range(max(0, int(levels))):
-        scale = float(shrink) ** level
-        offsets = [-position_radius_m * scale, 0.0, position_radius_m * scale]
-        dt_offsets = [-clock_radius_s * scale, 0.0, clock_radius_s * scale]
-        center_p = p_best.copy()
-        center_dt = dt_best
-        trial_positions: list[np.ndarray] = []
-        trial_clocks: list[float] = []
-        for dx in offsets:
-            for dy in offsets:
-                for dz in offsets:
-                    p = np.clip(center_p + np.array([dx, dy, dz]), bounds_p[:, 0], bounds_p[:, 1])
-                    for dt_offset in dt_offsets:
-                        dt = float(np.clip(center_dt + dt_offset, bounds_dt[0], bounds_dt[1]))
-                        trial_positions.append(p)
-                        trial_clocks.append(dt)
-        _, _, residual_sq = scorer.score_candidates(
-            np.asarray(trial_positions, dtype=float),
-            np.asarray(trial_clocks, dtype=float),
+        taus.append(
+            (float(range_m) + float(scene["d_RB"][panel])) / float(scene["c0"])
+            + float(delta_t)
         )
-        for index, residual_value in enumerate(residual_sq):
-            value = float(residual_value) + penalty(
-                trial_positions[index], trial_clocks[index]
-            )
-            evals += 1
-            if value < best_value:
-                best_value = value
-                p_best = trial_positions[index]
-                dt_best = trial_clocks[index]
-    coeffs_best, y_hat_best, residual_best, groups_best = _fit_near_field(
-        scene, config, y_vec, p_best, dt_best
-    )
-    best_value = float(np.linalg.norm(residual_best) ** 2) + penalty(p_best, dt_best)
-    return p_best, dt_best, coeffs_best, y_hat_best, residual_best, groups_best, evals, best_value
+    return {"ranges": np.asarray(ranges), "taus": np.asarray(taus)}
 
 
-def _wls_position_clock(
-    scene: dict,
-    config: dict,
-    initial_p: np.ndarray,
-    initial_dt: float,
-    selected: list[dict[str, Any]],
-    *,
-    lambda_ray: float,
-    lambda_tau: float,
-) -> tuple[np.ndarray, float, dict[str, Any]]:
-    bounds_p = np.asarray(
-        config.get("ue_bounds", [[0.3, 2.7], [-1.4, 1.5], [0.35, 1.45]]),
-        dtype=float,
-    )
-    bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
-    lower = np.r_[bounds_p[:, 0], bounds_dt[0]]
-    upper = np.r_[bounds_p[:, 1], bounds_dt[1]]
-    x0 = np.clip(np.r_[np.asarray(initial_p, dtype=float).reshape(3), float(initial_dt)], lower, upper)
-
-    def residual_fn(x: np.ndarray) -> np.ndarray:
-        p = x[:3]
-        dt = float(x[3])
-        residuals: list[float] = []
-        for support in selected:
-            panel = int(support.get("panel", 0))
-            center = np.asarray(scene["ris_centers"][panel], dtype=float)
-            direction = np.asarray(support.get("direction", [0.0, 0.0, 1.0]), dtype=float)
-            direction = np.asarray(scene["rotations"][panel], dtype=float).T @ direction
-            direction /= np.linalg.norm(direction) + 1.0e-15
-            projector = np.eye(3) - np.outer(direction, direction)
-            ray_residual = projector @ (p - center)
-            residuals.extend((np.sqrt(float(lambda_ray)) * ray_residual).tolist())
-            tau = float(support.get("tau", 0.0))
-            tau_model = (np.linalg.norm(p - center) + scene["d_RB"][panel]) / scene["c0"] + dt
-            residuals.append(np.sqrt(float(lambda_tau)) * (tau - tau_model) / 1.0e-9)
-        if not residuals:
-            residuals.extend((p - x0[:3]).tolist())
-        return np.asarray(residuals, dtype=float)
-
-    if scipy_is_available():
-        try:
-            from scipy.optimize import least_squares  # type: ignore[import-not-found]
-
-            result = least_squares(
-                residual_fn,
-                x0,
-                bounds=(lower, upper),
-                max_nfev=int(config.get("baselines", {}).get("geometry_max_nfev", 100)),
-                x_scale=np.maximum(upper - lower, 1.0e-12),
-            )
-            return result.x[:3].astype(float), float(result.x[3]), {
-                "wls_solver": "scipy.optimize.least_squares",
-                "wls_final_cost": float(result.cost),
-                "wls_num_evals": int(result.nfev),
-                "wls_success": bool(result.success),
-            }
-        except Exception as exc:  # noqa: BLE001 - fall back to local grid below.
-            warning = f"wls_failed: {type(exc).__name__}: {exc}"
-    else:
-        warning = "wls_no_scipy_local_grid"
-
-    best = x0.copy()
-    best_cost = float(np.linalg.norm(residual_fn(best)) ** 2)
-    evals = 1
-    for radius in (0.25, 0.1, 0.04):
-        for dx in (-radius, 0.0, radius):
-            for dy in (-radius, 0.0, radius):
-                for dz in (-radius, 0.0, radius):
-                    for dt_ns in (-1.0, 0.0, 1.0):
-                        x = np.clip(best + np.array([dx, dy, dz, dt_ns * 1.0e-9]), lower, upper)
-                        cost = float(np.linalg.norm(residual_fn(x)) ** 2)
-                        evals += 1
-                        if cost < best_cost:
-                            best = x
-                            best_cost = cost
-    return best[:3].astype(float), float(best[3]), {
-        "wls_solver": "local_grid",
-        "wls_final_cost": best_cost,
-        "wls_num_evals": evals,
-        "wls_success": True,
-        "warning": warning,
-    }
-
-
-def run_nf_ris_groupomp_localgrid_wls_baseline(data: dict, config: dict) -> BaselineResult:
+def run_nf_ris_groupomp_localgrid_wls_baseline(
+    data: dict, config: dict
+) -> BaselineResult:
     start = time.perf_counter()
     scene = data["scene"]
     y_vec = vectorize_raw_observation(data["Y_noisy"])
-    baseline_cfg = config.get("baselines", {})
-    cfg = dict(baseline_cfg.get("nf_ris_groupomp_localgrid_wls", {}))
-    backend_cfg = BackendConfig.from_value(baseline_cfg.get("backend_config"))
-    backend = get_backend(backend_cfg)
-    BASELINE_CACHE.configure(
-        enabled=backend_cfg.cache_enabled,
-        memory_budget_gb=backend_cfg.cache_memory_budget_gb,
+    cfg = dict(
+        config.get("baselines", {}).get("nf_ris_groupomp_localgrid_wls", {})
     )
-    cache_before = BASELINE_CACHE.snapshot()
-    cache_key = baseline_cache_key(
-        "nf_ris_groupomp_localgrid_wls",
+
+    selected, coarse_coeffs, coarse_y_hat, coarse_residual, cpd_trace = _cpd_omp(
+        scene, config, y_vec, cfg
+    )
+    coarse_objective = float(np.linalg.norm(coarse_residual) ** 2)
+    (
+        sage_supports,
+        sage_coeffs,
+        sage_y_hat,
+        sage_residual,
+        sage_diagnostics,
+    ) = _sage_refine(scene, config, y_vec, selected, cfg)
+    final_p, final_dt, wls_diagnostics = _wls_position_clock(
         scene,
         config,
-        grid_sizes=(
-            int(cfg.get("direction_grid_size", 9)),
-            int(cfg.get("delay_grid_size", 9)),
-            "far_field_direction_delay_jones_group_omp",
-        ),
+        sage_supports,
+        sage_coeffs,
+        float(data.get("noise_variance", 1.0)),
+        cfg,
     )
-    groups = BASELINE_CACHE.get_or_create(
-        cache_key, lambda: _coarse_groups(scene, config)
-    )
-    max_groups = int(cfg.get("max_groups", scene["K"]))
-    selected, expanded_supports, coeffs_coarse, y_hat_coarse, omp_diag = group_omp_select(
-        scene,
-        config,
-        groups,
-        y_vec,
-        max_groups=max_groups,
-        batch_size=int(cfg.get("batch_size", 64)),
-        trim_memory_enabled=bool(config.get("baselines", {}).get("trim_memory", True)),
-        backend_config=backend_cfg,
-        static_cache_key=cache_key,
-        unique_panels=bool(cfg.get("unique_panel_groups", True)),
-    )
-    local_scorer = FactorizedPositionClockScorer(
-        scene, config, y_vec, backend_cfg
-    )
-    local_backend = local_scorer.backend
-    coarse_p, coarse_dt, ray_diag = _ray_position_clock(scene, config, selected)
     bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
-    span = bounds_p[:, 1] - bounds_p[:, 0]
-    auto_radius = float(max(np.min(span) / 4.0, 0.05))
-    clock_radius_s = float(cfg.get("local_grid_clock_radius_ns", 2.0)) * 1.0e-9
-    l1_tau_lambda = float(cfg.get("l1_tau_lambda", 0.0))
-    nf_levels = int(cfg.get("coarse_to_nf_refinement_levels", 2))
-    nf_p, nf_dt, nf_coeffs, nf_y_hat, nf_residual, nf_groups, nf_evals, nf_objective = _local_search(
-        scene,
-        config,
-        y_vec,
-        coarse_p,
-        coarse_dt,
-        selected,
-        local_scorer,
-        levels=nf_levels if bool(cfg.get("local_refinement", True)) else 0,
-        position_radius_m=auto_radius,
-        clock_radius_s=clock_radius_s,
-        shrink=float(cfg.get("refinement_shrink", 0.5)),
-        l1_tau_lambda=l1_tau_lambda,
-    )
-
-    local_grid_enabled = bool(cfg.get("local_grid_enabled", True))
-    local_grid_iterations = int(cfg.get("local_grid_iterations", 5)) if local_grid_enabled else 0
-    local_grid_levels = int(cfg.get("local_grid_refinement_levels", 2))
-    local_grid_radius_value = cfg.get("local_grid_position_radius_m", "auto")
-    local_grid_radius = auto_radius if str(local_grid_radius_value) == "auto" else float(local_grid_radius_value)
-    local_grid_p = nf_p
-    local_grid_dt = nf_dt
-    local_grid_coeffs = nf_coeffs
-    local_grid_y_hat = nf_y_hat
-    local_grid_residual = nf_residual
-    local_grid_groups = nf_groups
-    local_grid_initial_objective = float(np.linalg.norm(nf_residual) ** 2)
-    local_grid_final_objective = local_grid_initial_objective
-    local_grid_evals = 0
-    for iteration in range(local_grid_iterations):
-        (
-            local_grid_p,
-            local_grid_dt,
-            local_grid_coeffs,
-            local_grid_y_hat,
-            local_grid_residual,
-            local_grid_groups,
-            evals,
-            local_grid_final_objective,
-        ) = _local_search(
-            scene,
-            config,
-            y_vec,
-            local_grid_p,
-            local_grid_dt,
-            selected,
-            local_scorer,
-            levels=local_grid_levels,
-            position_radius_m=local_grid_radius * (float(cfg.get("local_grid_shrink", 0.5)) ** iteration),
-            clock_radius_s=clock_radius_s * (float(cfg.get("local_grid_shrink", 0.5)) ** iteration),
-            shrink=float(cfg.get("local_grid_shrink", 0.5)),
-            l1_tau_lambda=0.0,
-        )
-        local_grid_evals += evals
-
-    wls_enabled = bool(cfg.get("wls_enabled", True))
-    if wls_enabled:
-        final_p, final_dt, wls_diag = _wls_position_clock(
-            scene,
-            config,
-            local_grid_p,
-            local_grid_dt,
-            selected,
-            lambda_ray=float(cfg.get("wls_lambda_ray", 1.0)),
-            lambda_tau=float(cfg.get("wls_lambda_tau", 1.0)),
-        )
-    else:
-        final_p, final_dt, wls_diag = local_grid_p, local_grid_dt, {
-            "wls_solver": "disabled",
-            "wls_final_cost": float("nan"),
-            "wls_num_evals": 0,
-            "wls_success": False,
-        }
-    clipped = bool(np.any(final_p < bounds_p[:, 0]) or np.any(final_p > bounds_p[:, 1]))
+    bounds_dt = np.asarray(config.get("delta_t_bounds"), dtype=float)
     final_p = np.clip(final_p, bounds_p[:, 0], bounds_p[:, 1])
-    final_coeffs, final_y_hat, final_residual, final_groups = _fit_near_field(
-        scene, config, y_vec, final_p, final_dt
+    final_dt = float(np.clip(final_dt, bounds_dt[0], bounds_dt[1]))
+    final_groups = supports_from_position_clock(
+        scene, final_p, final_dt, model_variant="near_field"
     )
-    warning_parts = [wls_diag.get("warning", "")]
-    if bool(cfg.get("use_subris", True)):
-        warning_parts.append("subris_fallback_to_physical_panel_centers")
-    warning = "; ".join(part for part in warning_parts if part)
-    coarse_backend = str(omp_diag.get("backend", backend.name))
-    coarse_gpu_used = bool(omp_diag.get("gpu_used", False))
-    local_gpu_used = local_backend.name == "cupy"
-    any_gpu_used = bool(coarse_gpu_used or local_gpu_used)
-    backend_warning_parts = [str(omp_diag.get("backend_warning", ""))]
-    if any_gpu_used:
-        backend_warning_parts.append("mixed_backend_cpu_wls_and_final_fit")
-    backend_warning = "; ".join(
-        part for part in backend_warning_parts if part
+    final_expanded = [
+        item for group in final_groups for item in expand_jones_group(group, 2)
+    ]
+    final_coeffs, final_y_hat, final_residual = factorized_fit_supports(
+        scene, config, final_expanded, y_vec, ridge=1.0e-10
     )
+    sage_enabled = bool(cfg.get("sage_enabled", True)) and int(
+        cfg.get("sage_iterations", 2)
+    ) > 0 and bool(sage_supports)
     diagnostics = {
-        **omp_diag,
-        **ray_diag,
-        **wls_diag,
-        "dictionary_mode": "nf_ris_groupomp_localgrid_wls_adapted",
-        "model_variant": "near_field_ris_groupomp_localgrid_wls",
-        "reference_algorithm": "GroupOMP_LocalGrid_WLS",
-        "adaptation_note": "adapted_baseline_no_cpd_or_sage_claim",
-        "cpd_omp_adapted_used": False,
-        "coarse_direction_delay_grid_size": len(groups),
-        "coarse_selected_groups": selected,
-        "coarse_position": coarse_p,
-        "coarse_delta_t": coarse_dt,
-        "near_field_l1_refinement_used": bool(cfg.get("local_refinement", True)),
-        "l1_tau_lambda": l1_tau_lambda,
-        "near_field_l1_num_evals": nf_evals,
-        "near_field_l1_objective": nf_objective,
-        "sage_enabled": False,
-        "sage_iterations": 0,
-        "sage_num_evals": 0,
-        "sage_initial_objective": float("nan"),
-        "sage_final_objective": float("nan"),
-        "local_grid_enabled": local_grid_enabled,
-        "local_grid_iterations": local_grid_iterations,
-        "local_grid_num_evals": local_grid_evals,
-        "local_grid_initial_objective": local_grid_initial_objective,
-        "local_grid_final_objective": local_grid_final_objective,
-        "wls_enabled": wls_enabled,
-        "subris_mode": "physical_panel_centers",
-        "subris_shape": tuple(cfg.get("subris_shape", (2, 2))),
-        "subris_fallback_used": bool(cfg.get("use_subris", True)),
-        "final_clipped_to_bounds": clipped,
-        "grid_size": len(groups),
-        "support_size": len(selected),
-        "selected_support": selected,
-        "expanded_supports": expanded_supports,
-        "coeff_norm": float(np.linalg.norm(final_coeffs)),
-        "raw_coarse_objective": float(np.linalg.norm(y_vec - y_hat_coarse) ** 2),
-        "raw_objective_final": float(np.linalg.norm(final_residual) ** 2 / y_vec.size),
-        "backend": "mixed" if any_gpu_used else "cpu",
-        "gpu_used": any_gpu_used,
-        "gpu_device": (
-            local_backend.device
-            if local_gpu_used
-            else omp_diag.get("gpu_device", "")
+        "dictionary_mode": "nf_ris_cpd_omp_sage_wls_adaptation",
+        "model_variant": "near_field_cpd_omp_sage_wls_adaptation",
+        "reference_algorithm": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
+        "adaptation_note": (
+            "evs_delay_training_cpd_with_panel_aware_spatial_search;_"
+            "random_Omega_prevents_the_paper_Kronecker_RIS_axis_factorization"
         ),
-        "coarse_backend": coarse_backend,
-        "coarse_gpu_used": coarse_gpu_used,
-        "local_refinement_backend": local_backend.name,
-        "local_refinement_gpu_used": local_gpu_used,
-        "wls_backend": "cpu" if wls_enabled else "disabled",
-        "mixed_backend": any_gpu_used,
-        "backend_warning": backend_warning,
-        "warning": warning,
+        "cpd_omp_adapted_used": len(cpd_trace) > 0,
+        "cpd_tensor_shape": (int(scene["I"]), int(scene["N"]), int(scene["T"])),
+        "cpd_rank1_sequential": True,
+        "cpd_trace": cpd_trace,
+        "coarse_direction_delay_grid_size": int(
+            len(_direction_candidates(int(cfg.get("direction_grid_size", 31))))
+            + int(cfg.get("delay_grid_size", 41))
+        ),
+        "coarse_selected_groups": selected,
+        "coarse_position": (
+            np.median(np.asarray([item["position"] for item in selected]), axis=0)
+            if selected
+            else np.mean(bounds_p, axis=1)
+        ),
+        "coarse_delta_t": float("nan"),
+        "near_field_l1_refinement_used": False,
+        "near_field_one_sparse_refinement_used": bool(cpd_trace),
+        "l1_tau_lambda": 0.0,
+        "near_field_distance_search": "one_sparse_1d_exact_near_field_dictionary",
+        "sage_enabled": sage_enabled,
+        **sage_diagnostics,
+        "local_grid_enabled": False,
+        "local_grid_iterations": 0,
+        "local_grid_num_evals": 0,
+        "wls_enabled": bool(cfg.get("wls_enabled", True)),
+        **wls_diagnostics,
+        "subris_mode": "not_used_normal_ris_adaptation",
+        "subris_shape": (),
+        "subris_fallback_used": False,
+        "final_clipped_to_bounds": bool(
+            np.any(final_p <= bounds_p[:, 0]) or np.any(final_p >= bounds_p[:, 1])
+        ),
+        "grid_size": int(
+            len(_direction_candidates(int(cfg.get("direction_grid_size", 31))))
+            + int(cfg.get("range_grid_size", 31))
+            + int(cfg.get("delay_grid_size", 41))
+        ),
+        "support_size": len(sage_supports),
+        "selected_support": sage_supports,
+        "expanded_supports": final_expanded,
+        "expanded_support_count": len(final_expanded),
+        "selected_group_count": len(sage_supports),
+        "selected_panel_count": len({int(item["panel"]) for item in sage_supports}),
+        "selected_panels": [int(item["panel"]) for item in sage_supports],
+        "unique_panel_constraint": True,
+        "coeff_norm": float(np.linalg.norm(final_coeffs)),
+        "raw_coarse_objective": coarse_objective,
+        "raw_sage_objective": float(np.linalg.norm(sage_residual) ** 2),
+        "raw_common_geometry_objective": float(np.linalg.norm(final_residual) ** 2),
+        "raw_objective_final": float(
+            np.linalg.norm(final_residual) ** 2 / max(y_vec.size, 1)
+        ),
+        "backend": "cpu",
+        "gpu_used": False,
+        "gpu_device": "",
+        "coarse_backend": "cpu",
+        "coarse_gpu_used": False,
+        "local_refinement_backend": "cpu",
+        "local_refinement_gpu_used": False,
+        "wls_backend": "cpu",
+        "mixed_backend": False,
+        "backend_warning": "",
+        "warning": "",
     }
-    diagnostics.update(cache_diagnostics_delta(cache_before, BASELINE_CACHE.snapshot()))
     return BaselineResult(
         name="nf_ris_groupomp_localgrid_wls",
         p_u=final_p,
         delta_t=final_dt,
         Y_hat=final_y_hat.reshape(scene["I"], scene["N"], scene["T"]),
-        raw_objective_final=float(np.linalg.norm(final_residual) ** 2 / y_vec.size),
+        raw_objective_final=float(
+            np.linalg.norm(final_residual) ** 2 / max(y_vec.size, 1)
+        ),
         components=_model_components(scene, final_p, final_dt),
-        selected_support=[*selected, *final_groups],
+        selected_support=sage_supports,
         runtime_s=time.perf_counter() - start,
         diagnostics=diagnostics,
     )

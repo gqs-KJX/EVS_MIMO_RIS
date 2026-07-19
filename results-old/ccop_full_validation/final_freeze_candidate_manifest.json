@@ -1,0 +1,114 @@
+{
+  "algorithm": "MKSC-GI_balanced_to_CCOP-JVP",
+  "status": "paper_frozen_after_heldout",
+  "algorithm_config_hash_seed0_before_noise": "795446e54c80cd9b5bdcfd380921f212b53b001f9b0ebd30071b57a106c6389f",
+  "algorithm_settings": {
+    "preset": "balanced",
+    "stage1_initializer": "evs_sufficient_joint_position_geometry",
+    "evs_subspace_rtol": 1e-12,
+    "joint_geometry": {
+      "num_starts": 4,
+      "max_iter": 30,
+      "use_leave_one_out": false
+    },
+    "refresh_jones_anchor": true,
+    "global_vp": {
+      "mode": "jones_regularized",
+      "max_iter": 80,
+      "use_weight": false,
+      "use_delay_prior": false,
+      "jones_diagonal_loading": 0.0
+    },
+    "ccop_jvp": {
+      "clock_fft_size": 4096,
+      "clock_abs_tol_objective": 1e-12,
+      "clock_rel_tol": 1e-10,
+      "clock_max_intervals": 20000,
+      "outer_max_iter": 20,
+      "outer_ftol": 1e-12,
+      "outer_gtol": 1e-8
+    }
+  },
+  "heldout_seed_count": 400,
+  "heldout_seed_hash": "67501c7c86d2072b0e943f4b0b5253eee0c6e2bc377b49087df4413643753e19",
+  "heldout_result": {
+    "analysis_bootstrap_draws": 20000,
+    "channel_nmse_median": 4.998802087202836e-05,
+    "channel_nmse_p95": 8.6260326317722e-05,
+    "clock_certified": 400,
+    "clock_rmse_ns": 0.26164501112475214,
+    "conditional_correct_basin_clock_rmse_ns": 0.003297498065804526,
+    "conditional_correct_basin_position_rmse_m": 0.001290194376926898,
+    "config_hash_matches": 400,
+    "deployment_runtime_median_ratio": 1.0866588633586254,
+    "deployment_runtime_median_ratio_ci95": [
+      1.0790555227605425,
+      1.0932599746900011
+    ],
+    "introduced_outliers": 0,
+    "mcnemar_exact_two_sided_p": 1.5407439555097887e-33,
+    "n": 400,
+    "new_outlier_rate": 0.015,
+    "new_outlier_rate_ci95_exact": [
+      0.005524109504580662,
+      0.032361294480775016
+    ],
+    "new_outliers": 6,
+    "old_outlier_rate": 0.29,
+    "old_outliers": 116,
+    "position_median_m": 0.0009209526103885412,
+    "position_p95_m": 0.002554331763497335,
+    "position_rmse_m": 0.11686303823098462,
+    "raw_objective_non_degradation": 399,
+    "rescued_outliers": 110,
+    "shared_outliers": 6,
+    "y_noisy_hash_matches": 400
+  },
+  "heldout_artifact_sha256": {
+    "analysis": "bb947d2c8e4fddee298b69bd23fbf388b7d37f31c519d2727f1fd2d11ec1d2d9",
+    "environment": "2d38b12fb5480428c80c436ea448550e27fb5a51e181c60e95f0540048a9d082",
+    "paired_routes_csv": "2631c540d75fb9e2c27b75f32e5cbbcd4946327c17201a176f87c4ae5e65c87e",
+    "run_spec": "1a55a3f974f639646e2685e5c90d2ac46b5220e1b982195cdaa3771dc649f5ad",
+    "summary": "42e8ba5aa080108777d206040325dd0ec50727878f2d84d15d32f02086b79985"
+  },
+  "memory_smoke": {
+    "new_peak_rss_kbytes": 5649964,
+    "old_peak_rss_kbytes": 5384184,
+    "peak_rss_ratio": 1.0493630975464434,
+    "seed": 2416604853,
+    "swap_count": 0
+  },
+  "environment": {
+    "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+    "git_branch": "research/ccop_full_validation",
+    "git_dirty": true,
+    "worktree_fingerprint": "69d77c82693e1a46f6f360d9c884e54c44140bb30bb3d52e0f89d6836d2e5784",
+    "python": "3.13.12",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "cupy": "unavailable"
+  },
+  "source_sha256": {
+    "src/estimators.py": "67101d1002f5cc9c93bcfb5e70af60d76c6e371a727dbcf962cf24a59e8f9a9d",
+    "src/ccop_stage1_initializer.py": "d8dcae41833159a3f8ec200b78b6e7ff096b37fa4d65d0977842af1dfecd499c",
+    "src/ccop_jvp.py": "2f8a8d9eb2fb48ddf63ab9a59505cbd855274d9cb243733f2cc961e8562aa18b",
+    "src/robust_jnpp.py": "23c81e956d243f932fa4e594a09693627a908d2258258cb6b05dcb6536ce2f7e",
+    "src/experiments/run_ccop_stage1_paired_pilot.py": "674dc0d21008c633a1d90859c87bac55fa0ce33ae52da6d6989e3208814ac908",
+    "src/validation_artifacts.py": "8a73d0b7a6360c544a16df7a4d834fee82abef1428a7acdd59046e267cbc7bc4"
+  },
+  "passed_gates": [
+    "47_focused_tests_pre_heldout",
+    "54_focused_tests_final",
+    "reproducibility_hash_replay",
+    "development20",
+    "validation100",
+    "fixed_regression5",
+    "snr_minus15_5",
+    "snr_minus5_5",
+    "training128_5",
+    "atomic_checkpoint_resume_smoke",
+    "heldout400_once_without_retuning",
+    "route_isolated_peak_memory_smoke"
+  ],
+  "heldout_policy": "run_once_without_retuning"
+}

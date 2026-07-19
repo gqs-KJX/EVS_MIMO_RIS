@@ -1,0 +1,26 @@
+{
+  "evs_subspace_stage1_ccop": {
+    "channel_nmse_median": 9.77695730967454e-05,
+    "delay_rmse_median_ns": 0.033353074127910255,
+    "n": 3,
+    "outliers": 1,
+    "position_median_m": 0.0017472211795061562,
+    "position_rmse_m": 0.4041467354684087,
+    "stage1_runtime_median_s": 15.300867154001025
+  },
+  "frozen_stage1_ccop": {
+    "channel_nmse_median": 0.08323899168693438,
+    "delay_rmse_median_ns": 0.08474477197167508,
+    "n": 3,
+    "outliers": 2,
+    "position_median_m": 0.5577265540968757,
+    "position_rmse_m": 0.5167396533124545,
+    "stage1_runtime_median_s": 15.110560019995319
+  },
+  "paired": {
+    "introduced_outliers": 0,
+    "n": 3,
+    "position_wins": 2,
+    "rescued_outliers": 1
+  }
+}

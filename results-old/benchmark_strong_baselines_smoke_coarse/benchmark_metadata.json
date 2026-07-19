@@ -1,0 +1,37 @@
+{
+  "n_trials": 1,
+  "snr_grid": [
+    0.0
+  ],
+  "paper_k": 3,
+  "baselines": [
+    "ris_momp",
+    "nf_mmpsr",
+    "nf_ris_cpd_omp_sage_wls",
+    "proposed",
+    "peb"
+  ],
+  "grid_profile": "coarse",
+  "seed": 20260526,
+  "git_commit": "4c6fb61af2108703784cb8ef9d6218e4f478c805",
+  "strict_ris_geometry": false,
+  "baseline_backend": "cpu",
+  "gpu_device": 0,
+  "gpu_batch_size": null,
+  "cpu_batch_size": null,
+  "cache_baseline_grids": true,
+  "cache_memory_budget_gb": null,
+  "gpu_memory_fraction": null,
+  "timestamp_utc": "2026-07-03T15:39:25.358753+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_benchmark_comparison.py --n-trials 1 --snr-grid 0 --paper-k 3 --baselines ris_momp,nf_mmpsr,nf_ris_cpd_omp_sage_wls,proposed,peb --grid-profile coarse --baseline-backend cpu --out-dir results/benchmark_strong_baselines_smoke_coarse --jobs 1 --process-workers 1 --blas-threads 1 --force-rerun --no-plots",
+  "jobs": 1,
+  "process_workers": 1,
+  "blas_threads": 1,
+  "estimated_cpu_slots": 1,
+  "memory_budget_gb": null,
+  "memory_per_worker_gb": null,
+  "trim_memory": true,
+  "profile_memory": false,
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

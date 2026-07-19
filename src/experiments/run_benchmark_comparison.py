@@ -15,7 +15,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,8 +26,6 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(project_root))
     from src.baselines.als_cpd import run_als_cpd_baseline
     from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from src.baselines.far_field_omp import run_far_field_omp_baseline
-    from src.baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.baselines.ris_momp import run_ris_momp_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -64,8 +62,6 @@ if __package__ in (None, ""):
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from ..baselines.far_field_omp import run_far_field_omp_baseline
-    from ..baselines.near_field_mmpsr import run_near_field_mmpsr_baseline
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..baselines.ris_momp import run_ris_momp_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -103,13 +99,14 @@ else:
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10,15,20"
 DEFAULT_BASELINES = (
-    "als_cpd,ff_omp,ris_momp,nf_mmpsr,"
-    "nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb,"
+    "als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,"
+    "mksc_ccop,peb,"
     "constrained_jones_peb"
 )
 TRIAL_CSV = "benchmark_trials.csv"
 SUMMARY_CSV = "benchmark_summary.csv"
 RMSE_PDF = "fig7_benchmark_rmse_vs_snr.pdf"
+CONDITIONAL_RMSE_PDF = "fig7_benchmark_conditional_rmse_vs_snr.pdf"
 NMSE_PDF = "fig7_benchmark_nmse_vs_snr.pdf"
 OUTLIER_PDF = "fig7_benchmark_outlier_vs_snr.pdf"
 POSITION_P95_PDF = "fig7_benchmark_position_p95_vs_snr.pdf"
@@ -127,6 +124,7 @@ FIELDNAMES = [
     "failed",
     "error",
     "runtime_s",
+    "position_error_m",
     "position_rmse_m",
     "y_nmse",
     "range_rmse_m",
@@ -186,6 +184,7 @@ FIELDNAMES = [
     "anchored_prior_precision_norm",
     "peb_free_projection_schur_relerr",
     "peb_con_minus_free_min_eig",
+    "peb_con_minus_free_relative_frobenius",
     "peb_hyb_minus_free_min_eig",
     "peb_ordering_ok",
     "peb_is_data_only",
@@ -227,6 +226,11 @@ FIELDNAMES = [
     "momp_local_refinement_used",
     "momp_refinement_levels",
     "momp_refinement_num_evals",
+    "momp_coordinate_sweeps",
+    "momp_coordinate_evaluations",
+    "momp_source_competitions",
+    "cartesian_dictionary_materialized",
+    "range_dictionary_used",
     "nf_mmpsr_cc_metric",
     "nf_mmpsr_top_candidates",
     "nf_mmpsr_local_refinement_used",
@@ -236,6 +240,7 @@ FIELDNAMES = [
     "nf_mmpsr_refined_best_score",
     "reference_algorithm",
     "cpd_omp_adapted_used",
+    "cpd_rank1_sequential",
     "near_field_l1_refinement_used",
     "sage_enabled",
     "sage_iterations",
@@ -245,6 +250,7 @@ FIELDNAMES = [
     "local_grid_num_evals",
     "wls_enabled",
     "wls_final_cost",
+    "wls_weight_model",
     "subris_mode",
     "subris_shape",
     "subris_fallback_used",
@@ -283,10 +289,8 @@ FIELDNAMES = [
 ]
 BASELINE_LABELS = {
     "als_cpd": "ALS-CPD + Joint Mapping (Adapted)",
-    "ff_omp": "FF-OMP (Adapted)",
-    "ris_momp": "RIS-GOMP (MOMP-Inspired)",
-    "nf_mmpsr": "NF-CC Grid (MMPSR-Inspired)",
-    "nf_ris_groupomp_localgrid_wls": "Adapted NF-RIS Group OMP + Local-Grid + WLS",
+    "ris_momp": "RIS-MOMP adaptation",
+    "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
     "proposed": "Legacy NGC–LG-RDC (archived comparator)",
     "scaled_4d": "Scale-normalized 4-D Jones-VP",
     "mksc_ccop": "Proposed MKSC-GI-balanced + CCOP-JVP",
@@ -298,6 +302,16 @@ ESTIMATOR_BASELINES = tuple(
     baseline
     for baseline in BASELINE_LABELS
     if baseline not in {"peb", "constrained_jones_peb"}
+)
+
+# These are the only standalone comparison methods whose implementation uses
+# ``baselines.backend_config`` and can therefore enter the dedicated CuPy lane.
+# Keep this explicit: a method must not be moved to the GPU lane merely because
+# it happens to run in a process where a CUDA device is visible.
+GPU_EXTERNAL_BASELINES = frozenset(
+    {
+        "ris_momp",
+    }
 )
 
 
@@ -383,10 +397,8 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 2,
                     "geometry_refinement_maxiter": 30,
                 },
-                "ff_omp": {"angle_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "local_refinement": False, "refinement_levels": 0, "refinement_shrink": 0.5, "offgrid_refinement": False, "batch_size": 64, "max_batch_memory_mb": 64.0},
-                "nf_mmpsr": {"grid_shape": (3, 3, 2), "clock_grid_size": 3, "top_candidates": 2, "local_refinement": True, "refinement_levels": 1, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 3, "offgrid_refinement": True, "batch_size": 16, "max_batch_memory_mb": 64.0},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 1, "local_grid_iterations": 1, "local_grid_refinement_levels": 1, "batch_size": 32, "max_batch_memory_mb": 64.0, "wls_enabled": True},
+                "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "coordinate_sweeps": 1, "local_refinement": False, "refinement_levels": 0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "cpd_max_iter": 10, "sage_enabled": True, "sage_iterations": 1, "sage_maxiter": 5, "wls_enabled": True, "wls_max_nfev": 20},
             }
         )
     elif profile == "medium":
@@ -397,10 +409,8 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 4,
                     "geometry_refinement_maxiter": 60,
                 },
-                "ff_omp": {"angle_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 2, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (11, 11, 5), "clock_grid_size": 11, "top_candidates": 8, "local_refinement": True, "refinement_levels": 3, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 2, "local_grid_iterations": 5, "local_grid_refinement_levels": 2, "batch_size": 128, "max_batch_memory_mb": 256.0, "wls_enabled": True},
+                "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "coordinate_sweeps": 2, "local_refinement": False, "refinement_levels": 0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "cpd_max_iter": 80, "sage_enabled": True, "sage_iterations": 2, "sage_maxiter": 30, "wls_enabled": True, "wls_max_nfev": 100},
             }
         )
     elif profile == "fine":
@@ -411,10 +421,8 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 8,
                     "geometry_refinement_maxiter": 80,
                 },
-                "ff_omp": {"angle_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "local_refinement": True, "refinement_levels": 3, "refinement_shrink": 0.5, "offgrid_refinement": True, "batch_size": 256, "max_batch_memory_mb": 256.0},
-                "nf_mmpsr": {"grid_shape": (15, 15, 7), "clock_grid_size": 15, "top_candidates": 16, "local_refinement": True, "refinement_levels": 4, "local_position_grid_shape": (3, 3, 3), "local_clock_grid_size": 5, "offgrid_refinement": True, "batch_size": 64, "max_batch_memory_mb": 256.0},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "coarse_to_nf_refinement_levels": 3, "local_grid_iterations": 7, "local_grid_refinement_levels": 3, "batch_size": 128, "max_batch_memory_mb": 256.0, "wls_enabled": True},
+                "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "coordinate_sweeps": 3, "local_refinement": False, "refinement_levels": 0},
+                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "cpd_max_iter": 120, "sage_enabled": True, "sage_iterations": 3, "sage_maxiter": 50, "wls_enabled": True, "wls_max_nfev": 150},
             }
         )
     else:
@@ -519,6 +527,7 @@ def _final_mksc_ccop_row(
         "failed": False,
         "error": "",
         "runtime_s": float(route_row["deployment_runtime_s"]),
+        "position_error_m": float(route_row["position_error_m"]),
         "position_rmse_m": float(route_row["position_error_m"]),
         "y_nmse": float(route_row["channel_nmse"]),
         "range_rmse_m": float("nan"),
@@ -575,6 +584,7 @@ def _peb_row(
         "failed": False,
         "error": "",
         "runtime_s": runtime_s,
+        "position_error_m": float("nan"),
         "position_rmse_m": float("nan"),
         "y_nmse": float("nan"),
         "range_rmse_m": float("nan"),
@@ -610,6 +620,9 @@ def _peb_row(
         "anchored_prior_precision_norm": metrics.get("anchored_prior_precision_norm", float("nan")),
         "peb_free_projection_schur_relerr": metrics.get("peb_free_projection_schur_relerr", float("nan")),
         "peb_con_minus_free_min_eig": metrics.get("peb_con_minus_free_min_eig", float("nan")),
+        "peb_con_minus_free_relative_frobenius": metrics.get(
+            "peb_con_minus_free_relative_frobenius", float("nan")
+        ),
         "peb_hyb_minus_free_min_eig": metrics.get("peb_hyb_minus_free_min_eig", float("nan")),
         "peb_ordering_ok": metrics.get("peb_ordering_ok", ""),
         "peb_is_data_only": bool(metrics.get("peb_is_data_only", True)),
@@ -628,9 +641,7 @@ def _peb_row(
 
 BASELINE_RUNNERS = {
     "als_cpd": run_als_cpd_baseline,
-    "ff_omp": run_far_field_omp_baseline,
     "ris_momp": run_ris_momp_baseline,
-    "nf_mmpsr": run_near_field_mmpsr_baseline,
     "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
 }
 
@@ -653,6 +664,7 @@ def _failure_row(
         "failed": True,
         "error": f"{type(exc).__name__}: {exc}",
         "runtime_s": float("nan"),
+        "position_error_m": float("nan"),
         "position_rmse_m": float("nan"),
         "y_nmse": float("nan"),
         "range_rmse_m": float("nan"),
@@ -807,7 +819,9 @@ def _run_trial_methods(
                     baseline, int(task["trial_id"]), config, exc, data
                 )
         if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
-            trim_memory()
+            trim_memory(
+                release_gpu=bool(task.get("trim_gpu_memory_pool", True))
+            )
         rss_after = (
             _benchmark_memory_snapshot_mb()
             if profile_memory
@@ -842,7 +856,9 @@ def _run_trial_task(task: dict[str, Any]) -> list[dict[str, Any]]:
         rows.extend(_run_trial_methods(task, config, data))
         del data
         if bool(task.get("trim_memory", _WORKER_TRIM_MEMORY)):
-            trim_memory()
+            trim_memory(
+                release_gpu=bool(task.get("trim_gpu_memory_pool", True))
+            )
     return rows
 
 
@@ -910,7 +926,7 @@ def summarize_csv(
                 {
                     "n": 0,
                     "success": 0,
-                    "rmse": [],
+                    "position_error": [],
                     "nmse": [],
                     "clock": [],
                     "clock_certificate": [],
@@ -922,7 +938,7 @@ def summarize_csv(
             if str(row.get("failed")).lower() == "true":
                 continue
             group["success"] += 1
-            group["rmse"].append(_to_float(row.get("position_rmse_m")))
+            group["position_error"].append(_position_error_from_row(row))
             group["nmse"].append(_to_float(row.get("y_nmse")))
             group["clock"].append(_to_float(row.get("clock_error_ns")))
             certificate = str(row.get("clock_certified", "")).lower()
@@ -933,24 +949,31 @@ def summarize_csv(
 
     summary: list[dict[str, Any]] = []
     for (baseline, snr_db), group in sorted(groups.items()):
-        rmse_stats = _summary_stats(group["rmse"])
+        position_stats = _summary_stats(group["position_error"])
         nmse_stats = _summary_stats(group["nmse"])
         clock_stats = _summary_stats(group["clock"])
         peb_stats = _summary_stats(group["peb"])
         runtime_stats = _summary_stats(group["runtime"], percentiles=False)
-        finite_rmse = np.asarray(group["rmse"], dtype=float)
-        finite_rmse = finite_rmse[np.isfinite(finite_rmse)]
+        finite_position = np.asarray(group["position_error"], dtype=float)
+        finite_position = finite_position[np.isfinite(finite_position)]
+        finite_peb = np.asarray(group["peb"], dtype=float)
+        finite_peb = finite_peb[np.isfinite(finite_peb)]
         outlier_rate = float("nan")
         outlier_count = 0
-        if outlier_threshold_m is not None and finite_rmse.size:
+        if outlier_threshold_m is not None and finite_position.size:
             outlier_count = int(
-                np.sum(finite_rmse > float(outlier_threshold_m))
+                np.sum(finite_position > float(outlier_threshold_m))
             )
             outlier_rate = float(
-                outlier_count / finite_rmse.size
+                outlier_count / finite_position.size
             )
         outlier_ci_low, outlier_ci_high, outlier_ci_method = _binomial_interval(
-            outlier_count, int(finite_rmse.size)
+            outlier_count, int(finite_position.size)
+        )
+        conditional_position = (
+            finite_position[finite_position <= float(outlier_threshold_m)]
+            if outlier_threshold_m is not None
+            else np.asarray([], dtype=float)
         )
         catastrophic_count = int(group["n"] - group["success"] + outlier_count)
         catastrophic_low, catastrophic_high, catastrophic_method = _binomial_interval(
@@ -970,13 +993,20 @@ def summarize_csv(
             "catastrophic_ci_high": catastrophic_high,
             "catastrophic_ci_method": catastrophic_method,
             "runtime_s_mean": runtime_stats["mean"],
+            "position_rmse_m": _rms(finite_position),
+            "position_mean_error_m": position_stats["mean"],
+            "position_conditional_rmse_m": _rms(conditional_position),
+            "peb_position_m_rms": _rms(finite_peb),
             "clock_certificate_rate": (
                 float(np.mean(group["clock_certificate"]))
                 if group["clock_certificate"]
                 else float("nan")
             ),
         }
-        for name, value in rmse_stats.items():
+        for name, value in position_stats.items():
+            row_summary[f"position_error_m_{name}"] = value
+            # Retained as a legacy alias; these are distribution statistics
+            # of single-realization errors, not Monte Carlo RMSE statistics.
             row_summary[f"position_rmse_m_{name}"] = value
         for name, value in nmse_stats.items():
             row_summary[f"y_nmse_{name}"] = value
@@ -993,6 +1023,23 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _position_error_from_row(row: Mapping[str, Any]) -> float:
+    value = _to_float(row.get("position_error_m"))
+    if np.isfinite(value):
+        return value
+    return _to_float(row.get("position_rmse_m"))
+
+
+def _rms(values: Any) -> float:
+    array = np.asarray(values, dtype=float)
+    array = array[np.isfinite(array)]
+    return (
+        float(np.sqrt(np.mean(array**2)))
+        if array.size
+        else float("nan")
+    )
 
 
 def _binomial_interval(successes: int, total: int, alpha: float = 0.05):
@@ -1044,8 +1091,12 @@ def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, f
 
 def get_plot_metric(baseline: str, plot_kind: str) -> str | None:
     if baseline in {"peb", "constrained_jones_peb"}:
-        return "peb_position_m" if plot_kind == "rmse" else None
-    if plot_kind == "rmse":
+        return (
+            "peb_position_m"
+            if plot_kind in {"rmse", "conditional_rmse"}
+            else None
+        )
+    if plot_kind in {"rmse", "conditional_rmse"}:
         return "position_rmse_m"
     if plot_kind == "nmse":
         return "y_nmse"
@@ -1065,7 +1116,8 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
     summary: list[dict[str, Any]] = []
     for (baseline, snr_db), group in sorted(groups.items(), key=lambda item: (item[0][0], item[0][1])):
         success = [row for row in group if str(row.get("failed")).lower() != "true"]
-        rmse_stats = _summary_stats([_to_float(row.get("position_rmse_m")) for row in success])
+        position_values = [_position_error_from_row(row) for row in success]
+        position_stats = _summary_stats(position_values)
         nmse_stats = _summary_stats(
             [_to_float(row.get("y_nmse")) for row in success]
         )
@@ -1083,8 +1135,8 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
         outlier_count = 0
         finite_count = 0
         if outlier_threshold_m is not None:
-            rmse = np.asarray([_to_float(row.get("position_rmse_m")) for row in success], dtype=float)
-            finite = rmse[np.isfinite(rmse)]
+            position = np.asarray(position_values, dtype=float)
+            finite = position[np.isfinite(position)]
             finite_count = int(finite.size)
             outlier_count = int(np.sum(finite > float(outlier_threshold_m)))
             outlier_rate = float(outlier_count / finite.size) if finite.size else float("nan")
@@ -1095,6 +1147,18 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
         catastrophic_low, catastrophic_high, catastrophic_method = _binomial_interval(
             catastrophic_count, len(group)
         )
+        finite_position = np.asarray(position_values, dtype=float)
+        finite_position = finite_position[np.isfinite(finite_position)]
+        conditional_position = (
+            finite_position[finite_position <= float(outlier_threshold_m)]
+            if outlier_threshold_m is not None
+            else np.asarray([], dtype=float)
+        )
+        finite_peb = np.asarray(
+            [_to_float(row.get("peb_position_m")) for row in success],
+            dtype=float,
+        )
+        finite_peb = finite_peb[np.isfinite(finite_peb)]
         row_summary = {
             "baseline": baseline,
             "snr_db": snr_db,
@@ -1109,13 +1173,19 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
             "catastrophic_ci_high": catastrophic_high,
             "catastrophic_ci_method": catastrophic_method,
             "runtime_s_mean": runtime_stats["mean"],
+            "position_rmse_m": _rms(finite_position),
+            "position_mean_error_m": position_stats["mean"],
+            "position_conditional_rmse_m": _rms(conditional_position),
+            "peb_position_m_rms": _rms(finite_peb),
             "clock_certificate_rate": (
                 float(np.mean(clock_certificates))
                 if clock_certificates
                 else float("nan")
             ),
         }
-        for name, value in rmse_stats.items():
+        for name, value in position_stats.items():
+            row_summary[f"position_error_m_{name}"] = value
+            # Retained as a legacy alias for existing CSV consumers.
             row_summary[f"position_rmse_m_{name}"] = value
         for name, value in nmse_stats.items():
             row_summary[f"y_nmse_{name}"] = value
@@ -1156,8 +1226,22 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
         xs = np.asarray([_to_float(row["snr_db"]) for row in rows], dtype=float)
         if plot_kind == "outlier":
             summary_field = metric
+        elif plot_kind in {"rmse", "conditional_rmse"}:
+            summary_field = (
+                "peb_position_m_rms"
+                if baseline in {"peb", "constrained_jones_peb"}
+                else (
+                    "position_conditional_rmse_m"
+                    if plot_kind == "conditional_rmse"
+                    else "position_rmse_m"
+                )
+            )
         elif plot_kind in {"position_p95", "nmse_p95"}:
-            summary_field = f"{metric}_p95"
+            summary_field = (
+                "position_error_m_p95"
+                if plot_kind == "position_p95"
+                else f"{metric}_p95"
+            )
         else:
             summary_field = f"{metric}_mean"
         ys = np.asarray(
@@ -1185,13 +1269,14 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
     ax.set_xlabel("SNR (dB)")
     ylabel = {
         "rmse": "Position RMSE (m)",
+        "conditional_rmse": "Correct-basin conditional RMSE / PEB (m)",
         "nmse": "Channel NMSE (dB)",
         "outlier": "Outlier probability",
         "position_p95": "Position-error p95 (m)",
         "nmse_p95": "Channel-NMSE p95 (dB)",
     }[plot_kind]
     ax.set_ylabel(ylabel)
-    if plot_kind in {"rmse", "position_p95"}:
+    if plot_kind in {"rmse", "conditional_rmse", "position_p95"}:
         ax.set_yscale("log")
     elif plot_kind == "outlier":
         ax.set_ylim(-0.02, 1.02)
@@ -1202,6 +1287,7 @@ def _plot(summary_rows: list[dict[str, Any]], out_dir: pathlib.Path, plot_kind: 
     fig.tight_layout()
     output_name = {
         "rmse": RMSE_PDF,
+        "conditional_rmse": CONDITIONAL_RMSE_PDF,
         "nmse": NMSE_PDF,
         "outlier": OUTLIER_PDF,
         "position_p95": POSITION_P95_PDF,
@@ -1318,6 +1404,12 @@ def _write_summary_markdown(
         ),
         "",
         (
+            "Fig.7(a) uses `sqrt(mean(position_error_m**2))`; PEB curves use "
+            "`sqrt(mean(peb_position_m**2))`. The arithmetic mean position "
+            "error is retained separately as `position_mean_error_m`."
+        ),
+        "",
+        (
             "Fig.7(c) defines an outlier as position error greater than "
             f"{outlier_threshold_m:g} m."
         ),
@@ -1407,6 +1499,19 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "git_dirty": _git_dirty(),
         "strict_ris_geometry": bool(args.strict_ris_geometry),
         "baseline_backend": str(args.baseline_backend),
+        "allow_shared_gpu_workers": bool(args.allow_shared_gpu_workers),
+        "hybrid_single_gpu": bool(args.hybrid_single_gpu),
+        "hybrid_retain_gpu_memory_pool": bool(
+            args.hybrid_retain_gpu_memory_pool
+        ),
+        "hybrid_gpu_baselines": list(
+            getattr(args, "hybrid_gpu_baselines", [])
+        ),
+        "hybrid_cpu_baselines": list(
+            getattr(args, "hybrid_cpu_baselines", [])
+        ),
+        "gpu_owner_blas_threads": int(args.gpu_owner_blas_threads),
+        "progress_heartbeat_s": float(args.progress_heartbeat_s),
         "gpu_device": args.gpu_device,
         "gpu_batch_size": args.gpu_batch_size,
         "cpu_batch_size": args.cpu_batch_size,
@@ -1431,6 +1536,10 @@ def _metadata(args: argparse.Namespace, snr_grid: list[float], baselines: list[s
         "jobs": int(args.jobs),
         "process_workers": int(args.process_workers),
         "blas_threads": int(args.blas_threads),
+        "gpu_process_workers": int(
+            args.resource_plan.get("gpu_process_workers", 0)
+        ),
+        "gpu_owner_blas_threads": int(args.gpu_owner_blas_threads),
         "estimated_cpu_slots": int(args.resource_plan["estimated_cpu_slots"]),
         "memory_budget_gb": args.memory_budget_gb,
         "memory_per_worker_gb": args.memory_per_worker_gb,
@@ -1519,6 +1628,252 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
     return tasks
 
 
+def _partition_hybrid_baselines(
+    args: argparse.Namespace,
+    baselines: list[str],
+) -> tuple[list[str], list[str]]:
+    """Split methods without ever exposing CPU-only workers to CUDA."""
+    if args.baseline_backend not in {"cupy", "auto"}:
+        raise ValueError(
+            "--hybrid-single-gpu requires --baseline-backend cupy or auto"
+        )
+    if args.global_vp_backend not in {None, "cpu"}:
+        raise ValueError(
+            "--hybrid-single-gpu currently requires --global-vp-backend cpu; "
+            "this keeps every global-VP route in the CPU-only worker pool"
+        )
+    gpu_baselines = [
+        baseline for baseline in baselines if baseline in GPU_EXTERNAL_BASELINES
+    ]
+    cpu_baselines = [
+        baseline for baseline in baselines if baseline not in GPU_EXTERNAL_BASELINES
+    ]
+    if not gpu_baselines or not cpu_baselines:
+        raise ValueError(
+            "--hybrid-single-gpu requires at least one GPU-capable external "
+            "baseline and at least one CPU-only baseline"
+        )
+    return gpu_baselines, cpu_baselines
+
+
+def _hybrid_resource_plan(
+    args: argparse.Namespace,
+    *,
+    n_cpu_tasks: int,
+) -> dict[str, int]:
+    """Reserve disjoint CPU slots for one GPU owner and the CPU worker pool."""
+    if args.process_workers is None:
+        raise ValueError(
+            "--hybrid-single-gpu requires an explicit --process-workers count "
+            "for the CPU-only pool"
+        )
+    if isinstance(args.blas_threads, str):
+        raise ValueError(
+            "--hybrid-single-gpu requires an explicit integer --blas-threads"
+        )
+    gpu_threads = int(args.gpu_owner_blas_threads)
+    if gpu_threads <= 0:
+        raise ValueError("--gpu-owner-blas-threads must be positive")
+    cpu_job_budget = int(args.jobs) - gpu_threads
+    if cpu_job_budget <= 0:
+        raise ValueError(
+            "--jobs must exceed --gpu-owner-blas-threads so the CPU pool has "
+            "at least one CPU slot"
+        )
+    cpu_plan = resolve_hybrid_resources(
+        jobs=cpu_job_budget,
+        process_workers=int(args.process_workers),
+        blas_threads=int(args.blas_threads),
+        n_tasks=max(int(n_cpu_tasks), 1),
+        memory_budget_gb=args.memory_budget_gb,
+        memory_per_worker_gb=args.memory_per_worker_gb,
+    )
+    estimated_slots = int(cpu_plan["estimated_cpu_slots"]) + gpu_threads
+    if estimated_slots > int(args.jobs):
+        raise RuntimeError("hybrid resource plan exceeds --jobs")
+    return {
+        "jobs": int(args.jobs),
+        "process_workers": int(cpu_plan["process_workers"]),
+        "blas_threads": int(cpu_plan["blas_threads"]),
+        "gpu_process_workers": 1,
+        "gpu_owner_blas_threads": gpu_threads,
+        "n_tasks": int(n_cpu_tasks),
+        "estimated_cpu_slots": estimated_slots,
+    }
+
+
+def _task_for_hybrid_lane(
+    task: dict[str, Any],
+    *,
+    baselines: list[str],
+    lane: str,
+    blas_threads: int,
+    retain_gpu_memory_pool: bool,
+) -> dict[str, Any]:
+    lane_task = dict(task)
+    lane_task["baselines"] = list(baselines)
+    lane_task["worker_lane"] = str(lane)
+    lane_task["blas_threads"] = int(blas_threads)
+    lane_task["backend_config"] = dict(task["backend_config"])
+    lane_task["trim_gpu_memory_pool"] = not (
+        lane == "gpu" and bool(retain_gpu_memory_pool)
+    )
+    if lane == "cpu":
+        # This is the hard isolation boundary: CPU workers never import CuPy or
+        # create a CUDA context, even though the overall benchmark uses CuPy.
+        lane_task["backend_config"]["backend"] = "cpu"
+        lane_task["backend_config"]["gpu_device"] = None
+    return lane_task
+
+
+def _hybrid_row_batches(
+    *,
+    cpu_tasks: list[dict[str, Any]],
+    gpu_tasks: list[dict[str, Any]],
+    cpu_workers: int,
+    cpu_blas_threads: int,
+    gpu_blas_threads: int,
+    respect_existing_blas_env: bool,
+    trim_memory_enabled: bool,
+    profile_memory: bool,
+    progress: ProgressLogger,
+    heartbeat_s: float,
+):
+    """Yield row batches from disjoint CPU and single-owner GPU pools."""
+    cpu_initargs = (
+        int(cpu_blas_threads),
+        bool(respect_existing_blas_env),
+        bool(trim_memory_enabled),
+        bool(profile_memory),
+    )
+    gpu_initargs = (
+        int(gpu_blas_threads),
+        bool(respect_existing_blas_env),
+        bool(trim_memory_enabled),
+        bool(profile_memory),
+    )
+    with mp.Pool(
+        processes=int(cpu_workers),
+        initializer=_init_worker,
+        initargs=cpu_initargs,
+    ) as cpu_pool, mp.Pool(
+        processes=1,
+        initializer=_init_worker,
+        initargs=gpu_initargs,
+    ) as gpu_pool:
+        active = {
+            "cpu": cpu_pool.imap_unordered(
+                _run_trial_task, cpu_tasks, chunksize=1
+            ),
+            "gpu": gpu_pool.imap_unordered(
+                _run_trial_task, gpu_tasks, chunksize=1
+            ),
+        }
+        last_heartbeat = time.monotonic()
+        while active:
+            yielded = False
+            for lane in tuple(active):
+                try:
+                    row_batch = active[lane].next(timeout=0.25)
+                except mp.TimeoutError:
+                    continue
+                except StopIteration:
+                    del active[lane]
+                    continue
+                yielded = True
+                yield lane, row_batch
+                last_heartbeat = time.monotonic()
+            now = time.monotonic()
+            if not yielded and now - last_heartbeat >= float(heartbeat_s):
+                progress.log(
+                    "heartbeat",
+                    "running",
+                    message=(
+                        "hybrid workers active; waiting for the next complete "
+                        "trial batch"
+                    ),
+                    active_lanes=sorted(active),
+                )
+                last_heartbeat = now
+
+
+def _record_row_batch(
+    row_batch: list[dict[str, Any]],
+    *,
+    lane: str,
+    writer: StreamingCsvWriter,
+    progress: ProgressLogger,
+    hash_groups: dict[tuple[int, float, int], set[str]],
+    coverage_groups: dict[tuple[int, float, int], list[str]],
+) -> None:
+    writer.writerows(row_batch)
+    progress_groups: dict[float, list[dict[str, Any]]] = {}
+    for row in row_batch:
+        progress_groups.setdefault(_to_float(row.get("snr_db")), []).append(row)
+    for snr_db, progress_rows in progress_groups.items():
+        representative = progress_rows[0] if progress_rows else {}
+        failed_rows = [
+            row
+            for row in progress_rows
+            if str(row.get("failed")).lower() == "true"
+        ]
+        progress.log(
+            "task_failed" if failed_rows else "task_done",
+            "failed" if failed_rows else "completed",
+            figure="fig7",
+            baseline_or_variant=",".join(
+                str(row.get("baseline", "")) for row in progress_rows
+            ),
+            snr_db=snr_db,
+            trial_id=representative.get("trial_id", ""),
+            seed=representative.get("seed", ""),
+            K=representative.get("K", ""),
+            message="benchmark trial lane batch completed",
+            error="; ".join(
+                str(row.get("error", "")) for row in failed_rows
+            ),
+            scheduler_lane=str(lane),
+        )
+    for row in row_batch:
+        key = (
+            int(row["trial_id"]),
+            _to_float(row["snr_db"]),
+            int(row["K"]),
+        )
+        coverage_groups.setdefault(key, []).append(str(row.get("baseline", "")))
+        observation_hash = str(row.get("y_noisy_hash", ""))
+        if observation_hash:
+            hash_groups.setdefault(key, set()).add(observation_hash)
+
+
+def _validate_benchmark_coverage(
+    coverage_groups: dict[tuple[int, float, int], list[str]],
+    *,
+    n_trials: int,
+    snr_grid: list[float],
+    paper_k: int,
+    baselines: list[str],
+) -> None:
+    expected_baselines = sorted(str(value) for value in baselines)
+    errors: list[str] = []
+    for trial_id in range(int(n_trials)):
+        for snr_db in snr_grid:
+            key = (int(trial_id), float(snr_db), int(paper_k))
+            observed = sorted(coverage_groups.get(key, []))
+            if observed != expected_baselines:
+                errors.append(
+                    f"key={key} expected={expected_baselines} observed={observed}"
+                )
+                if len(errors) >= 5:
+                    break
+        if len(errors) >= 5:
+            break
+    if errors:
+        raise RuntimeError(
+            "benchmark method coverage mismatch: " + "; ".join(errors)
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run EVS-MIMO-RIS benchmark comparisons.")
     add_mc_args(
@@ -1535,6 +1890,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--baseline-backend",
         choices=("cpu", "cupy", "auto"),
         default="cpu",
+    )
+    parser.add_argument(
+        "--allow-shared-gpu-workers",
+        action="store_true",
+        help=(
+            "allow multiple worker processes to share --gpu-device for "
+            "accuracy/throughput runs; disabled by default and incompatible "
+            "with --runtime-profile"
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-single-gpu",
+        action="store_true",
+        help=(
+            "run GPU-capable external baselines in one dedicated CUDA owner "
+            "process while CPU-only baselines run in --process-workers CPU "
+            "processes; accuracy/throughput only"
+        ),
+    )
+    parser.add_argument(
+        "--gpu-owner-blas-threads",
+        type=int,
+        default=1,
+        help=(
+            "native CPU threads reserved for the dedicated GPU owner in "
+            "--hybrid-single-gpu mode"
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-retain-gpu-memory-pool",
+        action="store_true",
+        help=(
+            "retain unused CuPy memory-pool blocks between methods in the "
+            "single GPU-owner process; requires a GPU-memory pilot"
+        ),
+    )
+    parser.add_argument(
+        "--progress-heartbeat-s",
+        type=float,
+        default=60.0,
+        help="parent-process heartbeat interval while worker batches are pending",
     )
     parser.add_argument("--gpu-device", type=int, default=0)
     parser.add_argument("--gpu-batch-size", type=int, default=None)
@@ -1595,6 +1991,10 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--jobs must be positive")
     if args.process_workers is not None and args.process_workers <= 0:
         raise ValueError("--process-workers must be positive")
+    if args.gpu_owner_blas_threads <= 0:
+        raise ValueError("--gpu-owner-blas-threads must be positive")
+    if args.progress_heartbeat_s <= 0.0:
+        raise ValueError("--progress-heartbeat-s must be positive")
     if args.paper_k <= 0:
         raise ValueError("--paper-k must be positive")
     if args.blas_threads != "auto" and int(args.blas_threads) <= 0:
@@ -1607,7 +2007,34 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--cache-memory-budget-gb must be positive")
     if args.gpu_memory_fraction is not None and not 0 < args.gpu_memory_fraction <= 1:
         raise ValueError("--gpu-memory-fraction must be in (0, 1]")
-    if args.baseline_backend in {"cupy", "auto"} and args.process_workers is None:
+    if args.hybrid_single_gpu and args.allow_shared_gpu_workers:
+        raise ValueError(
+            "--hybrid-single-gpu and --allow-shared-gpu-workers are mutually "
+            "exclusive"
+        )
+    if args.hybrid_retain_gpu_memory_pool and not args.hybrid_single_gpu:
+        raise ValueError(
+            "--hybrid-retain-gpu-memory-pool requires --hybrid-single-gpu"
+        )
+    if args.hybrid_single_gpu and args.runtime_profile:
+        raise ValueError(
+            "--hybrid-single-gpu is an accuracy/throughput mode and cannot be "
+            "used with --runtime-profile"
+        )
+    if args.hybrid_single_gpu and args.process_workers is None:
+        raise ValueError(
+            "--hybrid-single-gpu requires an explicit --process-workers count "
+            "for the CPU-only pool"
+        )
+    if args.hybrid_single_gpu and isinstance(args.blas_threads, str):
+        raise ValueError(
+            "--hybrid-single-gpu requires an explicit integer --blas-threads"
+        )
+    if (
+        args.baseline_backend in {"cupy", "auto"}
+        and args.process_workers is None
+        and not args.hybrid_single_gpu
+    ):
         args.process_workers = 1
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1632,6 +2059,18 @@ def main(argv: list[str] | None = None) -> None:
     ):
         baselines.append("constrained_jones_peb")
     snr_grid = parse_snr_grid(args.snr_grid)
+    if not snr_grid:
+        raise ValueError("--snr-grid must contain at least one value")
+    if args.hybrid_single_gpu:
+        gpu_baselines, cpu_baselines = _partition_hybrid_baselines(
+            args, baselines
+        )
+        progress_lane_count = 2
+    else:
+        gpu_baselines, cpu_baselines = [], []
+        progress_lane_count = 1
+    args.hybrid_gpu_baselines = list(gpu_baselines)
+    args.hybrid_cpu_baselines = list(cpu_baselines)
     if "proposed" in baselines:
         preview_config = make_config(
             seed=int(args.seed),
@@ -1644,7 +2083,7 @@ def main(argv: list[str] | None = None) -> None:
     tasks = _tasks(args, snr_grid, baselines)
     progress = ProgressLogger(
         progress_path,
-        len(tasks) * len(snr_grid),
+        len(tasks) * len(snr_grid) * progress_lane_count,
         "run_benchmark_comparison",
     )
     if not args.quiet_progress:
@@ -1656,29 +2095,90 @@ def main(argv: list[str] | None = None) -> None:
             f"--progress-log {progress_path}"
         )
     progress.log("start", "running", message="benchmark experiment started")
-    args.resource_plan = resolve_hybrid_resources(
-        jobs=args.jobs,
-        process_workers=args.process_workers,
-        blas_threads=args.blas_threads,
-        n_tasks=max(len(tasks), 1),
-        memory_budget_gb=args.memory_budget_gb,
-        memory_per_worker_gb=args.memory_per_worker_gb,
-    )
+    if args.hybrid_single_gpu:
+        args.resource_plan = _hybrid_resource_plan(
+            args,
+            n_cpu_tasks=max(len(tasks), 1),
+        )
+    else:
+        args.resource_plan = resolve_hybrid_resources(
+            jobs=args.jobs,
+            process_workers=args.process_workers,
+            blas_threads=args.blas_threads,
+            n_tasks=max(len(tasks), 1),
+            memory_budget_gb=args.memory_budget_gb,
+            memory_per_worker_gb=args.memory_per_worker_gb,
+        )
+        args.resource_plan["gpu_process_workers"] = (
+            1
+            if (
+                args.baseline_backend in {"cupy", "auto"}
+                or args.global_vp_backend in {"cupy", "auto"}
+            )
+            else 0
+        )
+        args.resource_plan["gpu_owner_blas_threads"] = int(
+            args.resource_plan["blas_threads"]
+        )
     args.process_workers = int(args.resource_plan["process_workers"])
     args.blas_threads = int(args.resource_plan["blas_threads"])
+    args.gpu_owner_blas_threads = int(
+        args.resource_plan["gpu_owner_blas_threads"]
+    )
     gpu_requested = (
         args.baseline_backend in {"cupy", "auto"}
         or args.global_vp_backend in {"cupy", "auto"}
     )
-    if gpu_requested and args.process_workers != 1:
+    if (
+        not args.hybrid_single_gpu
+        and gpu_requested
+        and args.process_workers != 1
+        and not bool(args.allow_shared_gpu_workers)
+    ):
         raise ValueError(
-            "one --gpu-device supports exactly one worker process; use "
-            "--process-workers 1 or split jobs across GPU devices"
+            "sharing one --gpu-device across multiple worker processes is "
+            "disabled by default; use --process-workers 1, split jobs across "
+            "GPU devices, or explicitly pass --allow-shared-gpu-workers for "
+            "an accuracy/throughput run"
         )
     if args.runtime_profile and args.process_workers != 1:
         raise ValueError("--runtime-profile requires --process-workers 1")
-    for task in tasks:
-        task["blas_threads"] = args.blas_threads
+    if (
+        not args.hybrid_single_gpu
+        and gpu_requested
+        and args.process_workers > 1
+    ):
+        print(
+            "WARNING: multiple worker processes are sharing one GPU; use this "
+            "run for accuracy/throughput only, not paper runtime or memory claims"
+        )
+    if args.hybrid_single_gpu:
+        cpu_tasks = [
+            _task_for_hybrid_lane(
+                task,
+                baselines=cpu_baselines,
+                lane="cpu",
+                blas_threads=args.blas_threads,
+                retain_gpu_memory_pool=False,
+            )
+            for task in tasks
+        ]
+        gpu_tasks = [
+            _task_for_hybrid_lane(
+                task,
+                baselines=gpu_baselines,
+                lane="gpu",
+                blas_threads=args.gpu_owner_blas_threads,
+                retain_gpu_memory_pool=bool(
+                    args.hybrid_retain_gpu_memory_pool
+                ),
+            )
+            for task in tasks
+        ]
+    else:
+        cpu_tasks, gpu_tasks = [], []
+        for task in tasks:
+            task["blas_threads"] = args.blas_threads
     apply_thread_limits(
         args.blas_threads,
         respect_existing=bool(args.respect_existing_blas_env),
@@ -1688,7 +2188,11 @@ def main(argv: list[str] | None = None) -> None:
         f"jobs={args.jobs} "
         f"process_workers={args.process_workers} "
         f"blas_threads={args.blas_threads} "
+        f"hybrid_single_gpu={bool(args.hybrid_single_gpu)} "
+        f"gpu_process_workers={args.resource_plan['gpu_process_workers']} "
+        f"gpu_owner_blas_threads={args.gpu_owner_blas_threads} "
         f"estimated_cpu_slots={args.resource_plan['estimated_cpu_slots']} "
+        f"allow_shared_gpu_workers={bool(args.allow_shared_gpu_workers)} "
         f"memory_budget_gb={args.memory_budget_gb} "
         f"memory_per_worker_gb={args.memory_per_worker_gb}"
     )
@@ -1704,72 +2208,74 @@ def main(argv: list[str] | None = None) -> None:
         summary = _read_csv(summary_csv)
     else:
         hash_groups: dict[tuple[int, float, int], set[str]] = {}
-        initargs = (
-            args.blas_threads,
-            bool(args.respect_existing_blas_env),
-            bool(args.trim_memory),
-            bool(args.profile_memory),
-        )
+        coverage_groups: dict[tuple[int, float, int], list[str]] = {}
         with StreamingCsvWriter(trial_csv, FIELDNAMES) as writer:
-            if args.process_workers == 1:
-                _init_worker(*initargs)
-                row_batches = map(_run_trial_task, tasks)
-                pool_context = contextlib.nullcontext()
+            if args.hybrid_single_gpu:
+                for lane, row_batch in _hybrid_row_batches(
+                    cpu_tasks=cpu_tasks,
+                    gpu_tasks=gpu_tasks,
+                    cpu_workers=args.process_workers,
+                    cpu_blas_threads=args.blas_threads,
+                    gpu_blas_threads=args.gpu_owner_blas_threads,
+                    respect_existing_blas_env=bool(
+                        args.respect_existing_blas_env
+                    ),
+                    trim_memory_enabled=bool(args.trim_memory),
+                    profile_memory=bool(args.profile_memory),
+                    progress=progress,
+                    heartbeat_s=float(args.progress_heartbeat_s),
+                ):
+                    _record_row_batch(
+                        row_batch,
+                        lane=lane,
+                        writer=writer,
+                        progress=progress,
+                        hash_groups=hash_groups,
+                        coverage_groups=coverage_groups,
+                    )
             else:
-                pool_context = mp.Pool(
-                    processes=args.process_workers,
-                    initializer=_init_worker,
-                    initargs=initargs,
+                initargs = (
+                    args.blas_threads,
+                    bool(args.respect_existing_blas_env),
+                    bool(args.trim_memory),
+                    bool(args.profile_memory),
                 )
-                pool = pool_context.__enter__()
-                row_batches = pool.imap_unordered(
-                    _run_trial_task,
-                    tasks,
-                    chunksize=1,
-                )
-            try:
-                for row_batch in row_batches:
-                    writer.writerows(row_batch)
-                    progress_groups: dict[float, list[dict[str, Any]]] = {}
-                    for row in row_batch:
-                        progress_groups.setdefault(_to_float(row.get("snr_db")), []).append(row)
-                    for snr_db, progress_rows in progress_groups.items():
-                        representative = progress_rows[0] if progress_rows else {}
-                        failed_rows = [
-                            row
-                            for row in progress_rows
-                            if str(row.get("failed")).lower() == "true"
-                        ]
-                        progress.log(
-                            "task_failed" if failed_rows else "task_done",
-                            "failed" if failed_rows else "completed",
-                            figure="fig7",
-                            baseline_or_variant=",".join(
-                                str(row.get("baseline", "")) for row in progress_rows
-                            ),
-                            snr_db=snr_db,
-                            trial_id=representative.get("trial_id", ""),
-                            seed=representative.get("seed", ""),
-                            K=representative.get("K", ""),
-                            message="benchmark trial batch completed",
-                            error="; ".join(
-                                str(row.get("error", "")) for row in failed_rows
-                            ),
+                if args.process_workers == 1:
+                    _init_worker(*initargs)
+                    row_batches = map(_run_trial_task, tasks)
+                    pool_context = contextlib.nullcontext()
+                else:
+                    pool_context = mp.Pool(
+                        processes=args.process_workers,
+                        initializer=_init_worker,
+                        initargs=initargs,
+                    )
+                    pool = pool_context.__enter__()
+                    row_batches = pool.imap_unordered(
+                        _run_trial_task,
+                        tasks,
+                        chunksize=1,
+                    )
+                try:
+                    for row_batch in row_batches:
+                        _record_row_batch(
+                            row_batch,
+                            lane="standard",
+                            writer=writer,
+                            progress=progress,
+                            hash_groups=hash_groups,
+                            coverage_groups=coverage_groups,
                         )
-                    for row in row_batch:
-                        if str(row.get("failed")).lower() == "true":
-                            continue
-                        key = (
-                            int(row["trial_id"]),
-                            _to_float(row["snr_db"]),
-                            int(row["K"]),
-                        )
-                        hash_groups.setdefault(key, set()).add(
-                            str(row.get("y_noisy_hash", ""))
-                        )
-            finally:
-                if args.process_workers != 1:
-                    pool_context.__exit__(None, None, None)
+                finally:
+                    if args.process_workers != 1:
+                        pool_context.__exit__(None, None, None)
+        _validate_benchmark_coverage(
+            coverage_groups,
+            n_trials=int(args.n_trials),
+            snr_grid=snr_grid,
+            paper_k=int(args.paper_k),
+            baselines=baselines,
+        )
         mismatches = {
             key: values for key, values in hash_groups.items() if len(values) > 1
         }
@@ -1808,6 +2314,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     if not args.no_plots:
         _plot(summary, out_dir, "rmse")
+        _plot(summary, out_dir, "conditional_rmse")
         _plot(summary, out_dir, "nmse")
         _plot(summary, out_dir, "outlier")
         _plot(summary, out_dir, "position_p95")

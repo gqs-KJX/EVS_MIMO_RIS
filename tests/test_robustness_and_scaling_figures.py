@@ -47,7 +47,7 @@ def test_trim_memory_cli_is_recorded_in_robustness_tasks_and_metadata():
             "--n-trials",
             "1",
             "--baselines",
-            "ff_omp",
+            "ris_momp",
             "--calibration-std-grid",
             "0",
             "--assumed-k-grid",
@@ -87,12 +87,12 @@ def test_fig8_fig9_tasks_are_grouped_by_trial(
             "--n-trials",
             "2",
             "--baselines",
-            "ff_omp",
+            "ris_momp",
             grid_flag,
             grid_value,
         ]
     )
-    tasks = figures.build_tasks(args, figure, ["ff_omp"])
+    tasks = figures.build_tasks(args, figure, ["ris_momp"])
     assert len(tasks) == 2
     assert tasks[0]["group_values"] == expected
 
@@ -187,9 +187,13 @@ def test_one_trial_all_baselines_share_noisy_hash(figure, monkeypatch):
         )
 
     monkeypatch.setattr(figures, "_proposed_result_row", fake_proposed)
-    monkeypatch.setitem(figures.BASELINE_RUNNERS, "ff_omp", fake_baseline)
+    monkeypatch.setitem(figures.BASELINE_RUNNERS, "als_cpd", fake_baseline)
     monkeypatch.setitem(figures.BASELINE_RUNNERS, "ris_momp", fake_baseline)
-    monkeypatch.setitem(figures.BASELINE_RUNNERS, "nf_mmpsr", fake_baseline)
+    monkeypatch.setitem(
+        figures.BASELINE_RUNNERS,
+        "nf_ris_groupomp_localgrid_wls",
+        fake_baseline,
+    )
     task = {
         "figure": figure,
         "trial_id": 0,
@@ -198,7 +202,12 @@ def test_one_trial_all_baselines_share_noisy_hash(figure, monkeypatch):
         "true_K": 1,
         "assumed_K": 1,
         "calibration_std_deg": 0.0,
-        "baselines": ["proposed", "ff_omp", "ris_momp", "nf_mmpsr"],
+        "baselines": [
+            "proposed",
+            "als_cpd",
+            "ris_momp",
+            "nf_ris_groupomp_localgrid_wls",
+        ],
         "blas_threads": 1,
         "profile_memory": False,
         "trim_memory": False,
@@ -216,8 +225,11 @@ def test_k_mismatch_changes_estimator_order_not_true_data_order():
     assert true_data["scene"]["K"] == 1
     assert estimator_data["scene"]["K"] == 2
     assert configured["K"] == 2
-    assert configured["baselines"]["ff_omp"]["max_groups"] == 2
     assert configured["baselines"]["ris_momp"]["max_groups"] == 2
+    assert (
+        configured["baselines"]["nf_ris_groupomp_localgrid_wls"]["max_groups"]
+        == 2
+    )
     assert np.array_equal(estimator_data["Y_noisy"], true_data["Y_noisy"])
 
 

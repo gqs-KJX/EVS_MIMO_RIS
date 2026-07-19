@@ -1,0 +1,79 @@
+{
+  "figure": "fig8",
+  "n_trials": 1,
+  "snr_db": 0.0,
+  "true_K": 3,
+  "assumed_K_grid": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "calibration_std_grid": [
+    0.0
+  ],
+  "T_grid": [
+    64,
+    128,
+    256,
+    512
+  ],
+  "ris_side_grid": [
+    16,
+    24,
+    32,
+    48,
+    64
+  ],
+  "rue_grid": [
+    1.7608788840929535,
+    2.64131832613943,
+    3.521757768185907,
+    5.28263665227886,
+    7.043515536371814,
+    10.56527330455772
+  ],
+  "delta_tau_min_grid": [
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    20.0
+  ],
+  "baselines": [
+    "proposed"
+  ],
+  "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+  "git_dirty": true,
+  "seed": 20260526,
+  "baseline_backend": "cpu",
+  "gpu_device": 0,
+  "gpu_batch_size": null,
+  "cpu_batch_size": null,
+  "gpu_memory_fraction": null,
+  "trim_memory": true,
+  "runtime_profile": false,
+  "grid_profile": "coarse",
+  "include_constrained_jones_peb": true,
+  "include_anchored_jones_peb": false,
+  "jones_anchor_prior_mode": "disabled",
+  "jones_anchor_prior_scale": 1.0,
+  "global_vp_overrides": {},
+  "timestamp_utc": "2026-07-14T13:26:32.489404+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_robustness_and_scaling_figures.py --figures fig8 --n-trials 1 --calibration-std-grid 0 --baselines proposed --grid-profile coarse --jobs 1 --process-workers 1 --out-dir results/robustness_test --force-rerun",
+  "python": "3.13.12",
+  "numpy": "2.4.6",
+  "scipy_optimizer_available": true,
+  "resource_plan": {
+    "jobs": 1,
+    "process_workers": 1,
+    "blas_threads": 1,
+    "n_tasks": 1,
+    "estimated_cpu_slots": 1
+  },
+  "profile_memory": false,
+  "peb_policy": "no PEB"
+}

@@ -1,0 +1,1 @@
+/home/u202520081000135/.conda/envs/evs313/bin/python -m src.experiments.run_final_mksc_ccop_ablation --suites compression --snr-grid=-20,-15,-10,-5,0,5,10 --n-trials 200 --seed 20260724 --bootstrap-replicates 10000 --diagnostic-mode performance --jobs 24 --blas-threads 1 --out-dir results/final_mksc_ccop/compression_matched_paper200

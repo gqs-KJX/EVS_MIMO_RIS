@@ -23,7 +23,12 @@ def relative_nmse(x_hat: np.ndarray, x_true: np.ndarray, eps: float = 1e-12) -> 
     return float(np.linalg.norm(x_hat - x_true) ** 2 / (np.linalg.norm(x_true) ** 2 + eps))
 
 
-def position_rmse(p_hat: np.ndarray, p_true: np.ndarray) -> float:
-    """Return Euclidean position error in meters."""
+def position_error(p_hat: np.ndarray, p_true: np.ndarray) -> float:
+    """Return one realization's Euclidean position error in meters."""
     assert p_hat.shape == p_true.shape == (3,), "positions must have shape (3,)"
     return float(np.linalg.norm(p_hat - p_true))
+
+
+def position_rmse(p_hat: np.ndarray, p_true: np.ndarray) -> float:
+    """Backward-compatible alias for the single-realization position error."""
+    return position_error(p_hat, p_true)

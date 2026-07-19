@@ -1,0 +1,15 @@
+{
+  "command": "/home/u202520081000135/.conda/envs/evs313/bin/python -m src.experiments.run_final_mksc_ccop_ablation --suites components --focus-snr-db -10 --n-trials 400 --seed 20260721 --bootstrap-replicates 10000 --diagnostic-mode performance --jobs 24 --blas-threads 1 --out-dir results/final_mksc_ccop/components_paper400",
+  "cupy": "14.1.1",
+  "git_branch": "unavailable",
+  "git_commit": "unavailable",
+  "git_dirty": false,
+  "git_status_porcelain": "unavailable",
+  "numpy": "2.4.6",
+  "platform": "Linux-5.4.0-100-generic-x86_64-with-glibc2.28",
+  "python": "3.13.14 | packaged by Anaconda, Inc. | (main, Jun 17 2026, 20:12:46) [GCC 14.3.0]",
+  "python_executable": "/home/u202520081000135/.conda/envs/evs313/bin/python",
+  "scipy": "1.18.0",
+  "timestamp_utc": "2026-07-17T14:42:49.334257+00:00",
+  "worktree_fingerprint": "unavailable"
+}

@@ -276,7 +276,18 @@ def test_ris_momp_cpu_gpu_selected_support_match():
     cpu_config = _tiny_config()
     data = _make_data(cpu_config)
     scene = data["scene"]
-    support = list(ris_momp._ris_momp_supports(scene, cpu_config))[2]
+    tau_grid = common.delay_grid_from_scene(scene, cpu_config, 3)
+    support = ris_momp._support(
+        scene,
+        cpu_config,
+        panel=0,
+        ux=0.0,
+        uy=0.0,
+        tau=float(tau_grid[1]),
+        ux_index=1,
+        uy_index=1,
+        tau_index=1,
+    )
     atom = common.simple_atom_normalize(
         common.raw_atom_from_support(scene, cpu_config, support)
     )
@@ -288,9 +299,11 @@ def test_ris_momp_cpu_gpu_selected_support_match():
         {"backend": "cupy", "gpu_device": 0, "gpu_batch_size": 2}
     )
     gpu = ris_momp.run_ris_momp_baseline(data, gpu_config)
-    assert gpu.selected_support[0]["direction_index"] == cpu.selected_support[0]["direction_index"]
+    assert gpu.selected_support[0]["u_x_index"] == cpu.selected_support[0]["u_x_index"]
+    assert gpu.selected_support[0]["u_y_index"] == cpu.selected_support[0]["u_y_index"]
     assert gpu.selected_support[0]["tau_index"] == cpu.selected_support[0]["tau_index"]
-    assert gpu.diagnostics["group_omp"] is True
+    assert gpu.diagnostics["group_omp"] is False
+    assert gpu.diagnostics["cartesian_dictionary_materialized"] is False
     assert len(gpu.diagnostics["expanded_supports"]) == 2 * len(gpu.selected_support)
 
 

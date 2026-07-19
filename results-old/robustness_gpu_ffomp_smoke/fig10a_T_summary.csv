@@ -1,0 +1,2 @@
+figure,baseline,x_name,x_value,n,success_rate,plot_metric,rmse_m,median_m,p90_m,p95_m,runtime_s_mean
+fig10a,ff_omp,T,64.0,1,1.0,position_rmse_m,0.7658422462321522,0.7658422462321522,0.7658422462321522,0.7658422462321522,32.68372772895964

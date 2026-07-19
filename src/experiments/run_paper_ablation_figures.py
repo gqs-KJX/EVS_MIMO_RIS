@@ -249,6 +249,7 @@ PEB_EXTRA_FIELDS = [
     "anchored_prior_precision_norm",
     "peb_free_projection_schur_relerr",
     "peb_con_minus_free_min_eig",
+    "peb_con_minus_free_relative_frobenius",
     "peb_hyb_minus_free_min_eig",
     "peb_ordering_ok",
 ]
@@ -361,6 +362,7 @@ FIELDNAMES = [
     "anchored_prior_precision_norm",
     "peb_free_projection_schur_relerr",
     "peb_con_minus_free_min_eig",
+    "peb_con_minus_free_relative_frobenius",
     "peb_hyb_minus_free_min_eig",
     "peb_ordering_ok",
     "efim_unscaled_cache_hit",
@@ -1940,6 +1942,18 @@ def _min_eig_difference(candidate: np.ndarray | None, free: np.ndarray | None) -
     return float(np.min(eig)) if eig.size else float("nan")
 
 
+def _relative_frobenius_difference(
+    candidate: np.ndarray | None,
+    reference: np.ndarray | None,
+) -> float:
+    if candidate is None or reference is None:
+        return float("nan")
+    reference_array = np.asarray(reference, dtype=float)
+    difference = np.asarray(candidate, dtype=float) - reference_array
+    denominator = max(float(np.linalg.norm(reference_array)), np.finfo(float).tiny)
+    return float(np.linalg.norm(difference) / denominator)
+
+
 def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
     scene = data["scene"]
     init = _truth_init_estimate(scene, data["true_components"])
@@ -2032,6 +2046,9 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
     con_minus_free = _min_eig_difference(
         constrained.get("J_chi_constrained_scaled"), free_efim_scaled
     )
+    con_minus_free_relative_frobenius = _relative_frobenius_difference(
+        constrained.get("J_chi_constrained_scaled"), free_efim_scaled
+    )
     hyb_minus_free = _min_eig_difference(
         anchored.get("J_chi_anchored_scaled"), free_efim_scaled
     )
@@ -2098,6 +2115,9 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         ),
         "peb_free_projection_schur_relerr": free_schur_relerr,
         "peb_con_minus_free_min_eig": con_minus_free,
+        "peb_con_minus_free_relative_frobenius": (
+            con_minus_free_relative_frobenius
+        ),
         "peb_hyb_minus_free_min_eig": hyb_minus_free,
         "peb_ordering_ok": ordering_ok,
         "warning": warning,
@@ -2290,6 +2310,7 @@ def extract_metrics(result: dict, outlier_threshold_m: float) -> dict[str, Any]:
         "anchored_prior_precision_norm",
         "peb_free_projection_schur_relerr",
         "peb_con_minus_free_min_eig",
+        "peb_con_minus_free_relative_frobenius",
         "peb_hyb_minus_free_min_eig",
     ):
         metrics[key] = _finite_float(result.get(key))

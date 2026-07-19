@@ -3,8 +3,6 @@ import numpy as np
 from src.baselines import (
     als_cpd,
     common,
-    far_field_omp,
-    near_field_mmpsr,
     nf_ris_groupomp_localgrid_wls,
     ris_momp,
 )
@@ -13,6 +11,7 @@ from src.main_single_proposed import _make_data
 from src.experiments import run_benchmark_comparison as bench
 from src.experiments import run_robustness_and_scaling_figures as robust
 from src.experiments.run_paper_ablation_figures import (
+    _constrained_jones_design,
     _peb_from_efim,
     peb_cache_key,
     position_peb_from_global_efim,
@@ -42,16 +41,24 @@ def _tiny_config():
     )
     config["baselines"] = {
         "als_cpd": {"max_iter": 5, "position_grid_shape": (3, 3, 3)},
-        "ff_omp": {"angle_grid_size": 3, "delay_grid_size": 3, "max_atoms": 1},
-        "ris_momp": {"direction_grid_size": 3, "delay_grid_size": 3, "max_atoms": 1},
-        "nf_mmpsr": {"grid_shape": (3, 3, 3), "clock_grid_size": 3},
-        "nf_ris_groupomp_localgrid_wls": {
+        "ris_momp": {
             "direction_grid_size": 3,
             "delay_grid_size": 3,
+            "max_atoms": 1,
+            "coordinate_sweeps": 2,
+            "local_refinement": False,
+        },
+        "nf_ris_groupomp_localgrid_wls": {
+            "direction_grid_size": 3,
+            "range_grid_size": 3,
+            "delay_grid_size": 3,
             "max_groups": 1,
-            "coarse_to_nf_refinement_levels": 0,
-            "local_grid_iterations": 0,
+            "cpd_max_iter": 10,
+            "sage_enabled": True,
+            "sage_iterations": 1,
+            "sage_maxiter": 3,
             "wls_enabled": True,
+            "wls_max_nfev": 10,
         },
     }
     return config
@@ -60,9 +67,7 @@ def _tiny_config():
 def test_import_all_benchmark_baseline_modules():
     assert common.BaselineResult
     assert als_cpd.run_als_cpd_baseline
-    assert far_field_omp.run_far_field_omp_baseline
     assert ris_momp.run_ris_momp_baseline
-    assert near_field_mmpsr.run_near_field_mmpsr_baseline
     assert nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline
 
 
@@ -72,11 +77,9 @@ def test_benchmark_default_baselines_include_targeted_nf_and_constrained_peb():
         baselines.append("constrained_jones_peb")
     assert baselines == [
         "als_cpd",
-        "ff_omp",
-        "ris_momp",
-        "nf_mmpsr",
-        "nf_ris_groupomp_localgrid_wls",
         "scaled_4d",
+        "nf_ris_groupomp_localgrid_wls",
+        "ris_momp",
         "mksc_ccop",
         "peb",
         "constrained_jones_peb",
@@ -254,77 +257,56 @@ def test_als_geometry_mapping_uses_common_position_and_unique_panels():
     assert diagnostics["als_geometry_refined_clock_std_ns"] < 1.0e-6
 
 
-def test_ff_omp_selects_known_atom_in_tiny_dictionary():
-    Phi = np.eye(4, dtype=complex)
-    y = 2.0 * Phi[:, 2]
-    selected = far_field_omp.omp_select_from_dictionary(Phi, y, max_atoms=1)
-    assert selected == [2]
-
-
-def test_ff_omp_recovers_known_far_field_support():
-    config = _tiny_config()
-    data = _make_data(config)
-    scene = data["scene"]
-    support = list(far_field_omp._far_field_supports(scene, config))[0]
-    atom = common.simple_atom_normalize(common.raw_atom_from_support(scene, config, support))
-    data["Y_noisy"] = atom.reshape(scene["I"], scene["N"], scene["T"])
-    data["Y_true"] = data["Y_noisy"].copy()
-    result = far_field_omp.run_far_field_omp_baseline(data, config)
-    assert result.selected_support[0]["direction_index"] == support["direction_index"]
-    assert result.selected_support[0]["tau_index"] == support["tau_index"]
-    assert result.diagnostics["dictionary_mode"] == "far_field_angular_delay_omp"
-    assert result.diagnostics["group_omp"] is True
-    assert result.diagnostics["offgrid_refinement"] is True
-    assert result.diagnostics["refinement_objective"] == "data_domain_ls"
-    assert len(result.diagnostics["expanded_supports"]) == 2 * len(result.selected_support)
-
-
-def test_adapted_group_omp_selects_at_most_one_group_per_panel():
-    config = _tiny_config()
-    config["K"] = 2
-    config["ris_centers"] = np.array(
-        [[4.2, -2.2, 1.05], [4.3, 2.1, 1.15]], dtype=float
-    )
-    config["baselines"]["ff_omp"].update(
-        {"max_atoms": 2, "offgrid_refinement": False}
-    )
-    data = _make_data(config)
-    result = far_field_omp.run_far_field_omp_baseline(data, config)
-    panels = result.diagnostics["selected_panels"]
-    assert result.diagnostics["unique_panel_constraint"] is True
-    assert len(panels) == 2
-    assert len(set(panels)) == len(panels)
-
-
 def test_ris_momp_recovers_known_multidimensional_support():
     config = _tiny_config()
     data = _make_data(config)
     scene = data["scene"]
-    support = list(ris_momp._ris_momp_supports(scene, config))[0]
+    tau_grid = common.delay_grid_from_scene(scene, config, 3)
+    support = ris_momp._support(
+        scene,
+        config,
+        panel=0,
+        ux=0.0,
+        uy=0.0,
+        tau=float(tau_grid[1]),
+        ux_index=1,
+        uy_index=1,
+        tau_index=1,
+    )
     atom = common.simple_atom_normalize(common.raw_atom_from_support(scene, config, support))
     data["Y_noisy"] = atom.reshape(scene["I"], scene["N"], scene["T"])
     data["Y_true"] = data["Y_noisy"].copy()
     result = ris_momp.run_ris_momp_baseline(data, config)
-    assert result.selected_support[0]["direction_index"] == support["direction_index"]
+    assert result.selected_support[0]["u_x_index"] == support["u_x_index"]
+    assert result.selected_support[0]["u_y_index"] == support["u_y_index"]
     assert result.selected_support[0]["tau_index"] == support["tau_index"]
-    assert result.diagnostics["dictionary_mode"] == "near_field_range_aware_group_momp"
-    assert result.diagnostics["group_omp"] is True
-    assert result.diagnostics["offgrid_refinement"] is True
-    assert result.diagnostics["model_variant"] == "near_field_momp"
-    assert result.diagnostics["momp_group_omp_enabled"] is True
+    assert result.diagnostics["dictionary_mode"] == "ris_momp_independent_ux_uy_delay"
+    assert result.diagnostics["group_omp"] is False
+    assert result.diagnostics["model_variant"] == "far_field_ris_momp_adaptation"
+    assert result.diagnostics["momp_group_omp_enabled"] is False
+    assert result.diagnostics["cartesian_dictionary_materialized"] is False
+    assert result.diagnostics["range_dictionary_used"] is False
 
 
-def test_nf_mmpsr_grid_search_selects_known_grid_point():
+def test_nf_ris_adaptation_runs_cpd_sage_and_fim_weighted_wls():
     config = _tiny_config()
     data = _make_data(config)
     data["Y_noisy"] = data["Y_true"].copy()
-    result = near_field_mmpsr.run_near_field_mmpsr_baseline(data, config)
-    assert np.allclose(result.p_u, config["p_u_true"])
-    assert abs(result.delta_t - config["delta_t_true"]) < 1.0e-15
-    assert result.diagnostics["dictionary_mode"] == "near_field_spherical_grid_mmpsr_refined"
-    assert "coarse_grid_position" in result.diagnostics
-    assert "refined_position" in result.diagnostics
-    assert result.diagnostics["refinement_objective"] == "cc_projection_local_grid"
+    result = nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(
+        data, config
+    )
+    assert result.diagnostics["cpd_omp_adapted_used"] is True
+    assert result.diagnostics["cpd_rank1_sequential"] is True
+    assert result.diagnostics["sage_enabled"] is True
+    assert result.diagnostics["sage_iterations"] == 1
+    assert (
+        result.diagnostics["sage_final_objective"]
+        <= result.diagnostics["sage_initial_objective"] * (1.0 + 1.0e-12)
+    )
+    assert result.diagnostics["wls_weight_model"] == "local_channel_efim_after_jones_projection"
+    assert np.all(np.isfinite(result.p_u))
+    assert np.isfinite(result.delta_t)
+    assert result.Y_hat.shape == data["Y_noisy"].shape
 
 
 def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
@@ -339,9 +321,7 @@ def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
     data["Y_noisy"] = data["Y_true"].copy()
 
     als_cpd.run_als_cpd_baseline(data, config)
-    far_field_omp.run_far_field_omp_baseline(data, config)
     ris_momp.run_ris_momp_baseline(data, config)
-    near_field_mmpsr.run_near_field_mmpsr_baseline(data, config)
     nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(data, config)
 
 
@@ -349,6 +329,63 @@ def test_benchmark_plot_metric_mapping_uses_peb_for_peb():
     assert bench.get_plot_metric("peb", "rmse") == "peb_position_m"
     assert bench.get_plot_metric("peb", "nmse") is None
     assert bench.get_plot_metric("proposed", "rmse") == "position_rmse_m"
+
+
+def test_benchmark_summary_distinguishes_mean_error_rmse_and_peb_rms():
+    estimator_rows = [
+        {
+            "baseline": "proposed",
+            "snr_db": -10.0,
+            "failed": False,
+            "position_error_m": error,
+            "position_rmse_m": 999.0,
+            "runtime_s": 1.0,
+        }
+        for error in (3.0, 4.0)
+    ]
+    peb_rows = [
+        {
+            "baseline": "peb",
+            "snr_db": -10.0,
+            "failed": False,
+            "peb_position_m": value,
+            "runtime_s": 1.0,
+        }
+        for value in (1.0, 3.0)
+    ]
+    summary = bench.summarize_rows(
+        estimator_rows + peb_rows,
+        outlier_threshold_m=3.5,
+    )
+    estimator = next(row for row in summary if row["baseline"] == "proposed")
+    peb = next(row for row in summary if row["baseline"] == "peb")
+    assert estimator["position_mean_error_m"] == 3.5
+    assert estimator["position_rmse_m"] == np.sqrt(12.5)
+    assert estimator["position_conditional_rmse_m"] == 3.0
+    assert estimator["position_error_m_mean"] == 3.5
+    assert estimator["position_rmse_m_mean"] == 3.5
+    assert peb["peb_position_m_mean"] == 2.0
+    assert peb["peb_position_m_rms"] == np.sqrt(5.0)
+
+
+def test_constrained_jones_design_reduces_complex_nuisance_dimension():
+    rng = np.random.default_rng(123)
+    k_paths = 3
+    phi = rng.normal(size=(20, 2 * k_paths)) + 1j * rng.normal(
+        size=(20, 2 * k_paths)
+    )
+    derivatives = [
+        rng.normal(size=phi.shape) + 1j * rng.normal(size=phi.shape)
+        for _ in range(4)
+    ]
+    x_true = rng.normal(size=2 * k_paths) + 1j * rng.normal(size=2 * k_paths)
+    design, d_model, beta = _constrained_jones_design(
+        phi, derivatives, x_true, k_paths
+    )
+    assert phi.shape[1] == 2 * k_paths
+    assert design.shape == (phi.shape[0], k_paths)
+    assert d_model.shape == (phi.shape[0], 4)
+    assert beta.shape == (k_paths,)
 
 
 def test_proposed_benchmark_uses_existing_data(monkeypatch):

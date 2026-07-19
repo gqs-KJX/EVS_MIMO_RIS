@@ -1,0 +1,15 @@
+{
+  "command": "/home/gqs/miniconda3/bin/python -m src.experiments.write_ccop_validation_protocol --out-dir results/ccop_full_validation --force-rerun",
+  "cupy": "unavailable",
+  "git_branch": "research/ccop_full_validation",
+  "git_commit": "8330069bb02e4017ddcad9e589908453a7fc4be4",
+  "git_dirty": true,
+  "git_status_porcelain": "M src/baselines/als_cpd.py\n M src/baselines/common.py\n M src/baselines/far_field_omp.py\n M src/baselines/near_field_mmpsr.py\n M src/baselines/nf_ris_groupomp_localgrid_wls.py\n M src/baselines/ris_momp.py\n M src/config.py\n M src/experiments/run_benchmark_comparison.py\n M src/experiments/run_paper_ablation_figures.py\n M src/experiments/run_proposed_ablation.py\n M src/experiments/run_robustness_and_scaling_figures.py\n M src/main_single_proposed.py\n M src/stage2_rescue.py\n M tests/test_benchmark_baselines.py\n M tests/test_fig1_proposed_consistency.py\n M tests/test_paper_ablation_figures.py\n M tests/test_paper_ablation_grouped_parallel.py\n M tests/test_robustness_and_scaling_figures.py\n M tests/test_stage2_ablation_config.py\n M tests/test_stage2_decoupled_clock.py\n?? src/ccop_certified_route.py\n?? src/ccop_jvp.py\n?? src/ccop_recovery.py\n?? src/cp_ngc.py\n?? src/cp_ngc_covariance.py\n?? src/experiments/analyze_ccop_stage3_routes.py\n?? src/experiments/calibrate_cp_ngc_validation.py\n?? src/experiments/ccop_validation_presets.py\n?? src/experiments/check_ccop_jvp_equivalence.py\n?? src/experiments/evaluate_cp_ngc_saved_candidates.py\n?? src/experiments/run_ccop_full_validation.py\n?? src/experiments/run_ccop_integrated_pilot.py\n?? src/experiments/run_ccop_paired_mc.py\n?? src/experiments/run_ccop_recovery_pilot.py\n?? src/experiments/run_cp_ngc_covariance_pilot.py\n?? src/experiments/write_ccop_validation_protocol.py\n?? src/validation_artifacts.py\n?? tests/test_ccop_jvp_math.py\n?? tests/test_ccop_reproducibility.py\n?? tests/test_cp_ngc_projection.py",
+  "numpy": "2.4.6",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+  "python_executable": "/home/gqs/miniconda3/bin/python",
+  "scipy": "1.17.1",
+  "timestamp_utc": "2026-07-15T14:26:00.177254+00:00",
+  "worktree_fingerprint": "37e1e359b5399d804252b979460cd1094d59508fac175e80b0f0606e9c7409ec"
+}

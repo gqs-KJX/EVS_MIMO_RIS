@@ -96,7 +96,7 @@ python -m src.experiments.run_benchmark_comparison \
   --n-trials 50 \
   --paper-k 3 \
   --snr-grid "-30,-25,-20,-15,-10,-5,0,5,10" \
-  --baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb,constrained_jones_peb" \
+  --baselines "als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,mksc_ccop,peb,constrained_jones_peb" \
   --grid-profile medium \
   --baseline-backend cupy \
   --gpu-device 0 \
@@ -113,23 +113,21 @@ The benchmark figure contains:
 
 - `ALS-CPD`: a standalone complex CP tensor baseline. It does not initialize,
   call, or feed the proposed VP.
-- `FF-OMP`: a far-field angular-delay sparse baseline adapted to the current
-  raw EVS-RIS-OFDM observation.
-- `RIS-MOMP`: a RIS-aided multidimensional OMP-style sparse baseline with
-  independent direction and delay group grids.
-- `NF-MMPSR`: a near-field spherical-domain grid sparse baseline with
-  top-candidate local CC refinement.
-- `NF-RIS-GroupOMP-LocalGrid-WLS`: an adapted near-field RIS
-  localization/synchronization baseline using group-OMP coarse estimation,
-  deterministic local-grid refinement, and geometry WLS:
-  `--baselines "als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb"`.
+- `Scale-normalized 4-D Jones-VP`: the frozen scaled-4D comparator.
+- `RIS-MOMP adaptation`: independent `u_x`, `u_y`, and delay dictionaries;
+  coordinate-wise MOMP source competition; and an orthogonal Jones-group LS
+  residual update. It does not build a Cartesian range-angle-delay dictionary.
+- `NF-RIS CPD-OMP-SAGE-WLS adaptation`: sequential rank-one CPD, coarse
+  delay/direction and exact near-field range recovery, cyclic raw-domain SAGE,
+  and local-EFIM-weighted position/clock fusion.
 - `mksc_ccop`: the frozen MKSC-GI-balanced -> CCOP-JVP paper estimator.
 - `PEB`: the data-only Free-Jones EFIM/CRB reference curve. Plots that show
   this curve also include a Constrained-Jones PEB reference unless disabled.
 
-All non-MKSC baselines use the same generated noisy data for each
-seed/SNR/K and are restricted to discrete dictionaries, CP factorization,
-linear LS over selected atoms, and neutral geometry LS post-processing.
+All methods use the same generated noisy data for each seed/SNR/K. The two
+paper-derived methods are explicitly labelled adaptations because the
+repository observation model differs from their SISO/hybrid-MIMO source
+models; their adaptation contracts are documented in `docs_for_codex/verified`.
 
 ## Robustness and system-scaling figures
 
@@ -145,7 +143,7 @@ python -m src.experiments.run_robustness_and_scaling_figures \
   --assumed-k-grid "2,3,4,5" \
   --T-grid "64,128,256,512" \
   --ris-side-grid "16,24,32,48,64" \
-  --baselines "mksc_ccop,ff_omp,ris_momp,nf_mmpsr,peb" \
+  --baselines "mksc_ccop,als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,peb" \
   --baseline-backend cupy \
   --gpu-device 0 \
   --include-constrained-jones-peb \

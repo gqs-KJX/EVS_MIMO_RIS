@@ -149,10 +149,13 @@ SUMMARY_FIELDS = (
     "success_rate",
     "failure_rate",
     "position_rmse_m",
+    "position_mean_error_m",
+    "position_conditional_rmse_m",
     "position_median_m",
     "position_p90_m",
     "position_p95_m",
     "peb_position_m_mean",
+    "peb_position_m_rms",
     "clock_rmse_ns",
     "clock_median_ns",
     "clock_p90_ns",
@@ -879,8 +882,22 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             ),
             VARIANT_LABELS.get(variant, variant),
         )
-        position = _finite(selected, "position_error_m")
-        peb_position = _finite(selected, "peb_position_m")
+        successful_rows = [
+            row
+            for row in selected
+            if str(row.get("failed", "False")).lower() != "true"
+        ]
+        position = _finite(successful_rows, "position_error_m")
+        conditional_position = _finite(
+            [
+                row
+                for row in selected
+                if str(row.get("failed", "False")).lower() != "true"
+                and str(row.get("outlier", "False")).lower() != "true"
+            ],
+            "position_error_m",
+        )
+        peb_position = _finite(successful_rows, "peb_position_m")
         clock = _finite(selected, "clock_error_ns")
         channel = _finite(selected, "channel_nmse")
         runtime = _finite(selected, "deployment_runtime_s")
@@ -934,10 +951,21 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 "success_rate": float(successful / len(selected)) if selected else float("nan"),
                 "failure_rate": float(failed / len(selected)) if selected else float("nan"),
                 "position_rmse_m": float(np.sqrt(np.mean(position**2))) if position.size else float("nan"),
+                "position_mean_error_m": float(np.mean(position))
+                if position.size
+                else float("nan"),
+                "position_conditional_rmse_m": float(
+                    np.sqrt(np.mean(conditional_position**2))
+                )
+                if conditional_position.size
+                else float("nan"),
                 "position_median_m": percentile(position, 50),
                 "position_p90_m": percentile(position, 90),
                 "position_p95_m": percentile(position, 95),
                 "peb_position_m_mean": float(np.mean(peb_position))
+                if peb_position.size
+                else float("nan"),
+                "peb_position_m_rms": float(np.sqrt(np.mean(peb_position**2)))
                 if peb_position.size
                 else float("nan"),
                 "clock_rmse_ns": float(np.sqrt(np.mean(clock**2))) if clock.size else float("nan"),

@@ -1,0 +1,6 @@
+variant,snr_db,n,mean_error_over_peb,median_error_over_peb,p90_error_over_peb,max_error_over_peb,outlier_count_5peb,outlier_rate_5peb,direct_vp_count,ris_only_stage2_then_vp_count,direct_vp_rollback_count,jnpp_decision_count,gof_fail_count
+adaptive_jones_vp_proposed_force_lower_raw,-10.0,96,19.108750582928106,0.6601545736909566,1.7674228370667264,1051.3971454243642,2,0.020833333333333332,0,4,92,96,5
+adaptive_jones_vp_proposed_force_lower_raw,-5.0,96,0.8458731549660771,0.6530356812081428,1.5780035048001024,2.869731303933539,0,0.0,0,1,95,96,3
+adaptive_jones_vp_proposed_force_lower_raw,0.0,96,0.8461313982509923,0.6540793450889137,1.5797401990270812,2.8647681616513125,0,0.0,0,0,96,96,3
+adaptive_jones_vp_proposed_force_lower_raw,5.0,96,0.8462869187469302,0.6550651864145096,1.5807031718162916,2.8619656600345196,0,0.0,0,0,96,96,3
+adaptive_jones_vp_proposed_force_lower_raw,10.0,96,0.8463792966096783,0.6556332880517843,1.5812627613305368,2.8604106186576694,0,0.0,0,0,96,96,3

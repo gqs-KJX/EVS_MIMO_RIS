@@ -1,0 +1,15 @@
+{
+  "command": "/home/u202520081000135/.conda/envs/evs313/bin/python -m src.experiments.run_final_mksc_ccop_robustness --suites scaling --snr-db -10 --scaling-variants scaled_4d,proposed --n-grid 31,47,63,95 --training-grid 32,64,128,256 --array-grid 4,8,16,24 --ris-side-grid 16,32,48,64 --k-grid 2,3,4 --n-trials 50 --seed 20260728 --diagnostic-mode performance --jobs 24 --blas-threads 1 --out-dir results/final_mksc_ccop/robustness_scaling50",
+  "cupy": "14.1.1",
+  "git_branch": "unavailable",
+  "git_commit": "unavailable",
+  "git_dirty": false,
+  "git_status_porcelain": "unavailable",
+  "numpy": "2.4.6",
+  "platform": "Linux-5.4.0-100-generic-x86_64-with-glibc2.28",
+  "python": "3.13.14 | packaged by Anaconda, Inc. | (main, Jun 17 2026, 20:12:46) [GCC 14.3.0]",
+  "python_executable": "/home/u202520081000135/.conda/envs/evs313/bin/python",
+  "scipy": "1.18.0",
+  "timestamp_utc": "2026-07-17T22:01:30.564008+00:00",
+  "worktree_fingerprint": "unavailable"
+}

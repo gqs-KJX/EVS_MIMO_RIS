@@ -1,0 +1,30 @@
+{
+  "n_trials": 1,
+  "snr_grid": [
+    -10.0,
+    -5.0,
+    0.0
+  ],
+  "paper_k": 4,
+  "baselines": [
+    "als_cpd",
+    "proposed",
+    "peb"
+  ],
+  "grid_profile": "medium",
+  "seed": 20260526,
+  "git_commit": "abf2b52d13a3c2dc0c6cb87f4ff849f2d81ee68f",
+  "strict_ris_geometry": false,
+  "timestamp_utc": "2026-06-21T01:37:43.615883+00:00",
+  "command_line": "/home/gqs/EVS-MIMO/NEWfinal/src/experiments/run_benchmark_comparison.py --n-trials 1 --jobs 1 --snr-grid=-10,-5,0 --baselines=als_cpd,proposed,peb --paper-k 4 --out-dir results/als_proposed_peb_fast --no-plots",
+  "jobs": 1,
+  "process_workers": 1,
+  "blas_threads": 1,
+  "estimated_cpu_slots": 1,
+  "memory_budget_gb": null,
+  "memory_per_worker_gb": null,
+  "trim_memory": true,
+  "profile_memory": false,
+  "python": "3.13.12",
+  "numpy": "2.4.6"
+}

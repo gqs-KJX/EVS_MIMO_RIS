@@ -1,0 +1,51 @@
+{
+  "evs_subspace_joint_geometry_stage1_ccop": {
+    "channel_nmse_median": 6.433640128114799e-05,
+    "delay_rmse_median_ns": 4.471835139056949,
+    "n": 5,
+    "outliers": 0,
+    "position_median_m": 0.0008395275098566035,
+    "position_rmse_m": 0.0010507673981890234,
+    "stage1_runtime_median_s": 17.48443504300667
+  },
+  "experiment": {
+    "blas_threads": 1,
+    "ccop_outer_max_iter": 20,
+    "clock_fft_size": 4096,
+    "diagnostic_mode": "performance",
+    "jobs": 1,
+    "joint_max_iter": 30,
+    "joint_num_starts": 4,
+    "refresh_jones_anchor": "preset_default",
+    "routes": [
+      "frozen_stage1_4d_jones_vp",
+      "evs_subspace_joint_geometry_stage1_ccop"
+    ],
+    "runtime_policy": "single-process timing",
+    "seed_split": null,
+    "seeds": [
+      3941391246,
+      1786954284,
+      963467608,
+      2078432783,
+      3310514881
+    ],
+    "snr_db": -10.0,
+    "training_blocks": "config_default"
+  },
+  "frozen_stage1_4d_jones_vp": {
+    "channel_nmse_median": 0.09419888271036637,
+    "delay_rmse_median_ns": 60.467464482254286,
+    "n": 5,
+    "outliers": 4,
+    "position_median_m": 0.31300675746151274,
+    "position_rmse_m": 0.39816405659341225,
+    "stage1_runtime_median_s": 14.2989563250012
+  },
+  "paired": {
+    "introduced_outliers": 0,
+    "n": 5,
+    "position_wins": 5,
+    "rescued_outliers": 4
+  }
+}

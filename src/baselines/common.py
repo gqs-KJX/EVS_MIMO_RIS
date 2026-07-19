@@ -25,7 +25,7 @@ from ..geometry import (
     near_field_spherical_response,
     unit_vector_from_elev_az,
 )
-from ..metrics import position_rmse, relative_nmse
+from ..metrics import position_error, relative_nmse
 from ..utils import scipy_is_available
 
 
@@ -247,8 +247,18 @@ def make_baseline_row(
         "failed": bool(failed),
         "error": str(error),
         "runtime_s": float(result.runtime_s),
+        "position_error_m": (
+            position_error(
+                np.asarray(p_hat, dtype=float), np.asarray(p_true, dtype=float)
+            )
+            if p_hat is not None and p_true is not None
+            else float("nan")
+        ),
+        # Retained for compatibility with pre-2026 benchmark trial CSVs.
         "position_rmse_m": (
-            position_rmse(np.asarray(p_hat, dtype=float), np.asarray(p_true, dtype=float))
+            position_error(
+                np.asarray(p_hat, dtype=float), np.asarray(p_true, dtype=float)
+            )
             if p_hat is not None and p_true is not None
             else float("nan")
         ),
@@ -347,6 +357,17 @@ def make_baseline_row(
         "momp_local_refinement_used": diagnostics.get("momp_local_refinement_used", ""),
         "momp_refinement_levels": diagnostics.get("momp_refinement_levels", ""),
         "momp_refinement_num_evals": diagnostics.get("momp_refinement_num_evals", ""),
+        "momp_coordinate_sweeps": diagnostics.get("momp_coordinate_sweeps", ""),
+        "momp_coordinate_evaluations": diagnostics.get(
+            "momp_coordinate_evaluations", ""
+        ),
+        "momp_source_competitions": diagnostics.get(
+            "momp_source_competitions", ""
+        ),
+        "cartesian_dictionary_materialized": diagnostics.get(
+            "cartesian_dictionary_materialized", ""
+        ),
+        "range_dictionary_used": diagnostics.get("range_dictionary_used", ""),
         "nf_mmpsr_cc_metric": diagnostics.get("nf_mmpsr_cc_metric", ""),
         "nf_mmpsr_top_candidates": diagnostics.get("nf_mmpsr_top_candidates", ""),
         "nf_mmpsr_local_refinement_used": diagnostics.get("nf_mmpsr_local_refinement_used", ""),
@@ -356,6 +377,7 @@ def make_baseline_row(
         "nf_mmpsr_refined_best_score": diagnostics.get("nf_mmpsr_refined_best_score", ""),
         "reference_algorithm": diagnostics.get("reference_algorithm", ""),
         "cpd_omp_adapted_used": diagnostics.get("cpd_omp_adapted_used", ""),
+        "cpd_rank1_sequential": diagnostics.get("cpd_rank1_sequential", ""),
         "near_field_l1_refinement_used": diagnostics.get("near_field_l1_refinement_used", ""),
         "sage_enabled": diagnostics.get("sage_enabled", ""),
         "sage_iterations": diagnostics.get("sage_iterations", ""),
@@ -365,6 +387,7 @@ def make_baseline_row(
         "local_grid_num_evals": diagnostics.get("local_grid_num_evals", ""),
         "wls_enabled": diagnostics.get("wls_enabled", ""),
         "wls_final_cost": diagnostics.get("wls_final_cost", ""),
+        "wls_weight_model": diagnostics.get("wls_weight_model", ""),
         "subris_mode": diagnostics.get("subris_mode", ""),
         "subris_shape": json.dumps(_jsonable(diagnostics.get("subris_shape", "")), separators=(",", ":")),
         "subris_fallback_used": diagnostics.get("subris_fallback_used", ""),

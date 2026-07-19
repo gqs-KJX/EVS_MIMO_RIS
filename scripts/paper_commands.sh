@@ -204,7 +204,7 @@ case "${target}" in
     run_command "${out}" "${PYTHON_BIN}" -m src.experiments.run_benchmark_comparison \
       --n-trials 200 --seed 20260730 \
       --snr-grid=-30,-25,-20,-15,-10,-5,0,5,10,15,20 \
-      --baselines als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop,peb,constrained_jones_peb \
+      --baselines als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,mksc_ccop,peb,constrained_jones_peb \
       --grid-profile fine --baseline-backend cupy --gpu-device 0 \
       --jobs 1 --process-workers 1 --blas-threads 4 --out-dir "${out}"
     ;;
@@ -212,7 +212,7 @@ case "${target}" in
     out="results/final_mksc_ccop/benchmark_runtime30_cpu"
     run_command "${out}" "${PYTHON_BIN}" -m src.experiments.run_benchmark_comparison \
       --n-trials 30 --seed 20260731 --snr-grid=-10,0 \
-      --baselines als_cpd,ff_omp,ris_momp,nf_mmpsr,nf_ris_groupomp_localgrid_wls,scaled_4d,mksc_ccop \
+      --baselines als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,mksc_ccop \
       --grid-profile fine --baseline-backend cpu --runtime-profile --profile-memory \
       --jobs 1 --process-workers 1 --blas-threads 1 --out-dir "${out}"
     ;;
