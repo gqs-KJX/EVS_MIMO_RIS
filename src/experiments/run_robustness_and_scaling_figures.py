@@ -26,7 +26,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(project_root))
     from src.baselines.als_cpd import run_als_cpd_baseline
     from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from src.baselines.ris_momp import run_ris_momp_baseline
+    from src.baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from src.config import default_config
@@ -64,7 +64,7 @@ if __package__ in (None, ""):
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
-    from ..baselines.ris_momp import run_ris_momp_baseline
+    from ..baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from ..config import default_config
@@ -104,7 +104,7 @@ else:
 FIGURE_ORDER = ["fig8", "fig9", "fig10a", "fig10b", "fig10c", "fig11"]
 DEFAULT_FIGURES = ",".join(FIGURE_ORDER)
 DEFAULT_BASELINES = (
-    "mksc_ccop,als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,"
+    "mksc_ccop,als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_vbi_sbl,"
     "peb,constrained_jones_peb"
 )
 ESTIMATOR_BASELINES = (
@@ -112,7 +112,7 @@ ESTIMATOR_BASELINES = (
     "mksc_ccop",
     "als_cpd",
     "scaled_4d",
-    "ris_momp",
+    "ris_vbi_sbl",
     "nf_ris_groupomp_localgrid_wls",
     "stage1_only",
 )
@@ -126,7 +126,7 @@ BASELINE_LABELS = {
     "proposed": "Proposed NGC–LG-RDC",
     "als_cpd": "ALS-CPD + Joint Mapping (Adapted)",
     "scaled_4d": "Scale-normalized 4-D Jones-VP",
-    "ris_momp": "RIS-MOMP adaptation",
+    "ris_vbi_sbl": "VBI/SBL joint localization + channel reconstruction",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
     "stage1_only": "Stage-I Only",
     "mksc_ccop": "Proposed MKSC-GI-balanced + CCOP-JVP",
@@ -389,7 +389,7 @@ def baselines_for_figure(
                 "mksc_ccop",
                 "als_cpd",
                 "scaled_4d",
-                "ris_momp",
+                "ris_vbi_sbl",
                 "nf_ris_groupomp_localgrid_wls",
                 "stage1_only",
             }
@@ -821,7 +821,6 @@ def _configure_assumed_k(config: dict, assumed_k: int) -> dict:
     configured = copy.deepcopy(config)
     configured["K"] = int(assumed_k)
     baselines = copy.deepcopy(configured.get("baselines", {}))
-    baselines.setdefault("ris_momp", {})["max_groups"] = int(assumed_k)
     baselines.setdefault("nf_ris_groupomp_localgrid_wls", {})["max_groups"] = int(assumed_k)
     configured["baselines"] = baselines
     return configured
@@ -1037,7 +1036,7 @@ def run_stage1_only_baseline(data: dict, config: dict) -> BaselineResult:
 
 BASELINE_RUNNERS = {
     "als_cpd": run_als_cpd_baseline,
-    "ris_momp": run_ris_momp_baseline,
+    "ris_vbi_sbl": run_ris_vbi_sbl_baseline,
     "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
     "stage1_only": run_stage1_only_baseline,
 }
@@ -1568,7 +1567,7 @@ def plot_summary(
         "mksc_ccop": ("o", "-"),
         "als_cpd": ("s", "-"),
         "scaled_4d": ("P", "-"),
-        "ris_momp": ("^", "-"),
+        "ris_vbi_sbl": ("^", "-"),
         "nf_ris_groupomp_localgrid_wls": ("*", "-"),
         "stage1_only": ("x", "-"),
         "peb": ("v", "--"),

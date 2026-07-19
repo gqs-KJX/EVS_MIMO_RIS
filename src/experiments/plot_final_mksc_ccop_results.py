@@ -35,6 +35,10 @@ EXPERIMENT_DIRECTORIES = {
     "evs_resolvability": "evs_resolvability_paper200",
 }
 
+BENCHMARK_ADDITIONAL_DIRECTORIES = (
+    "benchmark_vbi_nfris_k3_medium",
+)
+
 DISPLAY_LABELS = {
     "scaled_4d": "Scaled 4-D",
     "old_stage1_ccop": "Stage-I + CCOP",
@@ -48,7 +52,7 @@ DISPLAY_LABELS = {
     "peb": "Free-Jones PEB",
     "constrained_jones_peb": "Constrained-Jones PEB",
     "als_cpd": "ALS-CPD",
-    "ris_momp": "RIS-MOMP adaptation",
+    "ris_vbi_sbl": "RIS-VBI/SBL adaptation",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
     "proposed_scalar": "Scalar",
     "proposed_dual_pol": "Dual-polarized",
@@ -77,8 +81,8 @@ SERIES_COLORS = {
     "peb": "#222222",
     "constrained_jones_peb": "#7A5195",
     "als_cpd": "#009E73",
-    "ris_momp": "#CC79A7",
-    "nf_ris_groupomp_localgrid_wls": "#7A5195",
+    "ris_vbi_sbl": "#CC79A7",
+    "nf_ris_groupomp_localgrid_wls": "#E69F00",
 }
 
 FALLBACK_COLORS = (
@@ -720,15 +724,38 @@ def plot_benchmark_experiment(
     result_dir: str | pathlib.Path,
     output_dir: str | pathlib.Path,
 ) -> list[pathlib.Path]:
-    """Plot every baseline present in benchmark_summary.csv, including bounds."""
+    """Plot the final benchmark from the saved primary and supplemental CSVs."""
 
-    source = pathlib.Path(result_dir) / "benchmark_summary.csv"
-    rows = load_csv_or_json(source)
+    primary_dir = pathlib.Path(result_dir)
+    sources = [primary_dir / "benchmark_summary.csv"]
+    for directory in BENCHMARK_ADDITIONAL_DIRECTORIES:
+        supplemental = primary_dir.parent / directory / "benchmark_summary.csv"
+        if supplemental not in sources:
+            sources.append(supplemental)
+    for source in sources:
+        if not source.is_file():
+            raise FileNotFoundError(source)
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, float]] = set()
+    for source in sources:
+        for row in load_csv_or_json(source):
+            key = (
+                str(row.get("baseline", "")),
+                _as_float(row.get("snr_db")),
+            )
+            if key in seen:
+                raise ValueError(
+                    "duplicate benchmark summary row across sources: "
+                    f"baseline={key[0]!r}, snr_db={key[1]}"
+                )
+            seen.add(key)
+            rows.append(row)
     selected = {
         "als_cpd",
         "scaled_4d",
         "nf_ris_groupomp_localgrid_wls",
-        "ris_momp",
+        "ris_vbi_sbl",
         "mksc_ccop",
         "peb",
         "constrained_jones_peb",
@@ -741,7 +768,7 @@ def plot_benchmark_experiment(
         "als_cpd",
         "scaled_4d",
         "nf_ris_groupomp_localgrid_wls",
-        "ris_momp",
+        "ris_vbi_sbl",
         "mksc_ccop",
         "peb",
         "constrained_jones_peb",
@@ -749,6 +776,14 @@ def plot_benchmark_experiment(
     order = [name for name in preferred if name in available]
     order.extend(name for name in available if name not in order)
     outputs: list[pathlib.Path] = []
+    legend_kwargs = {
+        "frameon": False,
+        "ncol": 2,
+        "loc": "lower center",
+        "bbox_to_anchor": (0.5, 1.01),
+        "borderaxespad": 0.0,
+        "columnspacing": 1.2,
+    }
 
     fig, ax = plt.subplots(figsize=(6.5, 4.1), constrained_layout=True)
     _draw_grouped_curves(
@@ -771,7 +806,7 @@ def plot_benchmark_experiment(
     _style_curve_axis(
         ax, x_label="SNR (dB)", y_label="Position RMSE / PEB (m)", y_scale="log"
     )
-    ax.legend(frameon=False, ncol=2)
+    ax.legend(**legend_kwargs)
     outputs.append(_save_figure(fig, destination / "benchmark_position_rmse.pdf"))
     plt.close(fig)
 
@@ -797,39 +832,48 @@ def plot_benchmark_experiment(
         y_label="Correct-basin conditional RMSE / PEB (m)",
         y_scale="log",
     )
-    ax.legend(frameon=False, ncol=2)
+    ax.legend(**legend_kwargs)
     outputs.append(
         _save_figure(fig, destination / "benchmark_position_conditional_rmse.pdf")
     )
     plt.close(fig)
 
-    outputs.append(
-        plot_csv_or_json(
-            source,
-            destination / "benchmark_channel_nmse.pdf",
-            x_field="snr_db",
-            y_field="y_nmse_mean",
-            group_field="baseline",
-            x_label="SNR (dB)",
-            y_label="Observed-data NMSE",
-            y_scale="log",
-            group_order=order,
-        )
+    fig, ax = plt.subplots(figsize=(6.5, 4.1), constrained_layout=True)
+    _draw_grouped_curves(
+        ax,
+        rows,
+        x_field="snr_db",
+        group_field="baseline",
+        y_getter=lambda row: _as_float(row.get("y_nmse_mean")),
+        group_order=order,
+        positive_only=True,
     )
-    outputs.append(
-        plot_csv_or_json(
-            source,
-            destination / "benchmark_outlier_rate.pdf",
-            x_field="snr_db",
-            y_field="outlier_rate",
-            group_field="baseline",
-            x_label="SNR (dB)",
-            y_label="Outlier probability",
-            group_order=order,
-            ci_fields=("outlier_ci_low", "outlier_ci_high"),
-            y_limits=(0.0, 1.0),
-        )
+    _style_curve_axis(
+        ax, x_label="SNR (dB)", y_label="Observed-data NMSE", y_scale="log"
     )
+    ax.legend(**legend_kwargs)
+    outputs.append(_save_figure(fig, destination / "benchmark_channel_nmse.pdf"))
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.1), constrained_layout=True)
+    _draw_grouped_curves(
+        ax,
+        rows,
+        x_field="snr_db",
+        group_field="baseline",
+        y_getter=lambda row: _as_float(row.get("outlier_rate")),
+        group_order=order,
+        ci_fields=("outlier_ci_low", "outlier_ci_high"),
+    )
+    _style_curve_axis(
+        ax,
+        x_label="SNR (dB)",
+        y_label="Outlier probability",
+        y_limits=(0.0, 1.0),
+    )
+    ax.legend(**legend_kwargs)
+    outputs.append(_save_figure(fig, destination / "benchmark_outlier_rate.pdf"))
+    plt.close(fig)
     return outputs
 
 

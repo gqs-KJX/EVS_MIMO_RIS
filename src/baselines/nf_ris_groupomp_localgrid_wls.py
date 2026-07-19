@@ -28,12 +28,11 @@ from .common import (
     expand_jones_group,
     group_design,
     supports_from_position_clock,
-    training_response_from_direction,
     training_response_from_position,
     vectorize_raw_observation,
 )
 from .factorized_scoring import factorized_fit_supports
-from ..geometry import local_geometry_from_position
+from ..geometry import local_geometry_from_position, near_field_spherical_response
 from ..utils import scipy_is_available
 
 
@@ -41,28 +40,6 @@ def _normalized(value: np.ndarray) -> np.ndarray:
     array = np.asarray(value, dtype=complex).reshape(-1)
     norm = float(np.linalg.norm(array))
     return array / norm if np.isfinite(norm) and norm > 0.0 else array
-
-
-def _direction_candidates(size: int) -> list[tuple[int, int, float, float]]:
-    axis_count = max(3, int(np.ceil(np.sqrt(max(int(size), 3)))))
-    axis = np.linspace(-0.95, 0.95, axis_count, dtype=float)
-    candidates: list[tuple[int, int, float, float]] = []
-    for ux_index, ux in enumerate(axis):
-        for uy_index, uy in enumerate(axis):
-            if ux * ux + uy * uy < 0.999**2:
-                candidates.append(
-                    (int(ux_index), int(uy_index), float(ux), float(uy))
-                )
-    return candidates
-
-
-def _hemisphere_sign(scene: dict, config: dict, panel: int) -> float:
-    bounds = np.asarray(config.get("ue_bounds"), dtype=float)
-    center = np.mean(bounds, axis=1)
-    q_local = np.asarray(scene["rotations"][panel], dtype=float) @ (
-        center - np.asarray(scene["ris_centers"][panel], dtype=float)
-    )
-    return float(np.sign(q_local[2]) or 1.0)
 
 
 def _direction(ux: float, uy: float, sign: float) -> np.ndarray:
@@ -101,6 +78,77 @@ def _position_on_ray(
     return np.asarray(scene["ris_centers"][panel], dtype=float) + (
         np.asarray(scene["rotations"][panel], dtype=float).T
         @ (float(range_m) * np.asarray(direction_local, dtype=float))
+    )
+
+
+def _nf_position_grid(config: dict, cfg: dict) -> np.ndarray:
+    """Coarse near-field UE position grid inside the declared UE bounds.
+
+    The original paper seeds the range/angle search from a far-field CPD
+    estimate.  In the repository's deep near-field regime (range << Fraunhofer
+    distance) the far-field steering dictionary is nearly orthogonal to the true
+    spherical-wave response, so the far-field seed is uninformative.  Following
+    the paper's own near-field distance dictionary (its (38)-(41) step), the
+    coarse spatial estimate is instead obtained directly on a near-field grid.
+    """
+    bounds = np.asarray(config.get("ue_bounds"), dtype=float)
+    nx = int(cfg.get("nf_grid_x", 11))
+    ny = int(cfg.get("nf_grid_y", 11))
+    nz = int(cfg.get("nf_grid_z", 11))
+    gx = np.linspace(bounds[0, 0], bounds[0, 1], max(2, nx))
+    gy = np.linspace(bounds[1, 0], bounds[1, 1], max(2, ny))
+    gz = np.linspace(bounds[2, 0], bounds[2, 1], max(2, nz))
+    return np.array(
+        [[x, y, z] for x in gx for y in gy for z in gz], dtype=float
+    )
+
+
+def _nf_training_matrix(
+    scene: dict, panel: int, positions: np.ndarray
+) -> np.ndarray:
+    """Column-normalized near-field training responses for a position grid.
+
+    The known RIS-BS response and the RIS phase profile are applied once as a
+    batched matrix product to keep the coarse near-field grid affordable.
+    """
+    center = np.asarray(scene["ris_centers"][panel], dtype=float)
+    rotation = np.asarray(scene["rotations"][panel], dtype=float)
+    ris_grid = np.asarray(scene["ris_grid"], dtype=float)
+    wavelength = float(scene["wavelength"])
+    a_rb = np.asarray(scene["a_RB"][panel], dtype=complex)
+    omega = np.asarray(scene["Omega"][panel], dtype=complex)
+    g_columns = np.empty((ris_grid.shape[0], len(positions)), dtype=complex)
+    for index, pos in enumerate(positions):
+        range_m, elevation, azimuth, _ = local_geometry_from_position(
+            np.asarray(pos, dtype=float), center, rotation
+        )
+        a_ur = near_field_spherical_response(
+            range_m, elevation, azimuth, ris_grid, wavelength
+        )
+        g_columns[:, index] = a_rb * a_ur
+    responses = omega @ g_columns
+    norms = np.linalg.norm(responses, axis=0)
+    norms[norms == 0.0] = 1.0
+    return responses / norms[None, :]
+
+
+def _support_from_position(
+    scene: dict, panel: int, position: np.ndarray, tau: float
+) -> dict[str, Any]:
+    """Build a near-field support from an absolute UE position and delay."""
+    center = np.asarray(scene["ris_centers"][panel], dtype=float)
+    rotation = np.asarray(scene["rotations"][panel], dtype=float)
+    q_local = rotation @ (np.asarray(position, dtype=float) - center)
+    range_m = float(np.linalg.norm(q_local)) + 1.0e-15
+    direction_local = q_local / range_m
+    return _near_field_support(
+        scene,
+        int(panel),
+        float(direction_local[0]),
+        float(direction_local[1]),
+        range_m,
+        float(tau),
+        sign=float(np.sign(direction_local[2]) or 1.0),
     )
 
 
@@ -167,68 +215,43 @@ def _match_cpd_component(
     delay_factor: np.ndarray,
     training_factor: np.ndarray,
     available_panels: list[int],
-    directions: list[tuple[int, int, float, float]],
-    ranges: np.ndarray,
+    positions: np.ndarray,
+    nf_matrices: dict[int, np.ndarray],
     taus: np.ndarray,
 ) -> dict[str, Any] | None:
+    """Assign a CPD component to a panel and a near-field UE position.
+
+    The EVS-mode factor selects the physical panel through its Maxwell-Jones
+    subspace, the delay-mode factor selects the ToA on the delay grid, and the
+    training-mode factor is matched against near-field spherical responses over
+    a coarse UE position grid (the paper's near-field distance step, evaluated
+    jointly over angle and range because the far-field seed is invalid here).
+    """
     if not available_panels:
         return None
     tau, tau_index, delay_score = _match_delay_factor(scene, delay_factor, taus)
     target_training = _normalized(training_factor)
-    best: tuple[float, int, int, int, int, float, float, np.ndarray] | None = None
+    best: tuple[float, int, int, float] | None = None
     for panel in available_panels:
         evs_score = _panel_evs_score(scene, config, panel, evs_factor)
-        sign = _hemisphere_sign(scene, config, panel)
-        for direction_index, (ux_index, uy_index, ux, uy) in enumerate(directions):
-            direction_local = _direction(ux, uy, sign)
-            response = _normalized(
-                training_response_from_direction(scene, panel, direction_local)
-            )
-            training_score = float(abs(np.vdot(response, target_training)) ** 2)
-            score = evs_score * training_score
-            if best is None or score > best[0]:
-                best = (
-                    score,
-                    int(panel),
-                    int(direction_index),
-                    int(ux_index),
-                    int(uy_index),
-                    float(ux),
-                    float(uy),
-                    direction_local,
-                )
+        correlations = np.abs(nf_matrices[panel].conj().T @ target_training) ** 2
+        position_index = int(np.argmax(correlations))
+        training_score = float(correlations[position_index])
+        score = evs_score * training_score
+        if best is None or score > best[0]:
+            best = (score, int(panel), position_index, training_score)
     if best is None:
         return None
-    _, panel, direction_index, ux_index, uy_index, ux, uy, direction_local = best
-    range_scores = []
-    for range_m in ranges:
-        position = _position_on_ray(scene, panel, direction_local, float(range_m))
-        response = _normalized(
-            training_response_from_position(
-                scene, panel, position, near_field=True
-            )
-        )
-        range_scores.append(float(abs(np.vdot(response, target_training)) ** 2))
-    range_index = int(np.argmax(range_scores))
-    support = _near_field_support(
-        scene,
-        panel,
-        ux,
-        uy,
-        float(ranges[range_index]),
-        tau,
-        sign=float(np.sign(direction_local[2]) or 1.0),
-    )
+    _, panel, position_index, training_score = best
+    position = np.asarray(positions[position_index], dtype=float)
+    support = _support_from_position(scene, panel, position, tau)
     support.update(
         {
-            "direction_index": int(direction_index),
-            "u_x_index": int(ux_index),
-            "u_y_index": int(uy_index),
-            "range_index": int(range_index),
+            "position_index": int(position_index),
             "tau_index": int(tau_index),
             "cpd_evs_direction_score": float(best[0]),
             "cpd_delay_score": delay_score,
-            "cpd_range_score": float(range_scores[range_index]),
+            "cpd_range_score": float(training_score),
         }
     )
     return support
@@ -246,8 +269,11 @@ def _cpd_omp(
     np.ndarray,
     list[dict[str, Any]],
 ]:
-    directions = _direction_candidates(int(cfg.get("direction_grid_size", 31)))
-    ranges = _range_grid(scene, config, int(cfg.get("range_grid_size", 31)))
+    positions = _nf_position_grid(config, cfg)
+    nf_matrices = {
+        panel: _nf_training_matrix(scene, panel, positions)
+        for panel in range(int(scene["K"]))
+    }
     taus = delay_grid_from_scene(
         scene, config, int(cfg.get("delay_grid_size", 41))
     )
@@ -282,8 +308,8 @@ def _cpd_omp(
             factors[1][:, 0],
             factors[2][:, 0],
             available,
-            directions,
-            ranges,
+            positions,
+            nf_matrices,
             taus,
         )
         if support is None:
@@ -809,7 +835,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(
         "cpd_rank1_sequential": True,
         "cpd_trace": cpd_trace,
         "coarse_direction_delay_grid_size": int(
-            len(_direction_candidates(int(cfg.get("direction_grid_size", 31))))
+            len(_nf_position_grid(config, cfg))
             + int(cfg.get("delay_grid_size", 41))
         ),
         "coarse_selected_groups": selected,
@@ -822,7 +848,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(
         "near_field_l1_refinement_used": False,
         "near_field_one_sparse_refinement_used": bool(cpd_trace),
         "l1_tau_lambda": 0.0,
-        "near_field_distance_search": "one_sparse_1d_exact_near_field_dictionary",
+        "near_field_distance_search": "near_field_position_grid_matched_filter",
         "sage_enabled": sage_enabled,
         **sage_diagnostics,
         "local_grid_enabled": False,
@@ -837,8 +863,7 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(
             np.any(final_p <= bounds_p[:, 0]) or np.any(final_p >= bounds_p[:, 1])
         ),
         "grid_size": int(
-            len(_direction_candidates(int(cfg.get("direction_grid_size", 31))))
-            + int(cfg.get("range_grid_size", 31))
+            len(_nf_position_grid(config, cfg))
             + int(cfg.get("delay_grid_size", 41))
         ),
         "support_size": len(sage_supports),

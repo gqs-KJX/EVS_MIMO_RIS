@@ -27,7 +27,7 @@ if __package__ in (None, ""):
     from src.baselines.als_cpd import run_als_cpd_baseline
     from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
-    from src.baselines.ris_momp import run_ris_momp_baseline
+    from src.baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from src.config import default_config
     from src.main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -63,7 +63,7 @@ else:
     from ..baselines.als_cpd import run_als_cpd_baseline
     from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
-    from ..baselines.ris_momp import run_ris_momp_baseline
+    from ..baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from ..config import default_config
     from ..main_single_proposed import _make_data, run_single_proposed_diagnostic
@@ -99,7 +99,7 @@ else:
 
 DEFAULT_SNR_GRID = "-30,-25,-20,-15,-10,-5,0,5,10,15,20"
 DEFAULT_BASELINES = (
-    "als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_momp,"
+    "als_cpd,scaled_4d,nf_ris_groupomp_localgrid_wls,ris_vbi_sbl,"
     "mksc_ccop,peb,"
     "constrained_jones_peb"
 )
@@ -289,7 +289,7 @@ FIELDNAMES = [
 ]
 BASELINE_LABELS = {
     "als_cpd": "ALS-CPD + Joint Mapping (Adapted)",
-    "ris_momp": "RIS-MOMP adaptation",
+    "ris_vbi_sbl": "VBI/SBL joint localization + channel reconstruction",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS adaptation",
     "proposed": "Legacy NGC–LG-RDC (archived comparator)",
     "scaled_4d": "Scale-normalized 4-D Jones-VP",
@@ -309,9 +309,7 @@ ESTIMATOR_BASELINES = tuple(
 # Keep this explicit: a method must not be moved to the GPU lane merely because
 # it happens to run in a process where a CUDA device is visible.
 GPU_EXTERNAL_BASELINES = frozenset(
-    {
-        "ris_momp",
-    }
+    set()
 )
 
 
@@ -397,7 +395,7 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 2,
                     "geometry_refinement_maxiter": 30,
                 },
-                "ris_momp": {"direction_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "coordinate_sweeps": 1, "local_refinement": False, "refinement_levels": 0},
+                "ris_vbi_sbl": {"nf_grid_x": 7, "nf_grid_y": 7, "nf_grid_z": 5, "delay_grid_size": 61, "vbi_max_iter": 20, "vbi_refine_maxiter": 80},
                 "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "cpd_max_iter": 10, "sage_enabled": True, "sage_iterations": 1, "sage_maxiter": 5, "wls_enabled": True, "wls_max_nfev": 20},
             }
         )
@@ -409,7 +407,7 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 4,
                     "geometry_refinement_maxiter": 60,
                 },
-                "ris_momp": {"direction_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "coordinate_sweeps": 2, "local_refinement": False, "refinement_levels": 0},
+                "ris_vbi_sbl": {"nf_grid_x": 9, "nf_grid_y": 9, "nf_grid_z": 7, "delay_grid_size": 121, "vbi_max_iter": 40, "vbi_refine_maxiter": 200},
                 "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "cpd_max_iter": 80, "sage_enabled": True, "sage_iterations": 2, "sage_maxiter": 30, "wls_enabled": True, "wls_max_nfev": 100},
             }
         )
@@ -421,7 +419,7 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "geometry_refinement_starts": 8,
                     "geometry_refinement_maxiter": 80,
                 },
-                "ris_momp": {"direction_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "coordinate_sweeps": 3, "local_refinement": False, "refinement_levels": 0},
+                "ris_vbi_sbl": {"nf_grid_x": 11, "nf_grid_y": 11, "nf_grid_z": 9, "delay_grid_size": 161, "vbi_max_iter": 60, "vbi_refine_maxiter": 300},
                 "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "cpd_max_iter": 120, "sage_enabled": True, "sage_iterations": 3, "sage_maxiter": 50, "wls_enabled": True, "wls_max_nfev": 150},
             }
         )
@@ -641,7 +639,7 @@ def _peb_row(
 
 BASELINE_RUNNERS = {
     "als_cpd": run_als_cpd_baseline,
-    "ris_momp": run_ris_momp_baseline,
+    "ris_vbi_sbl": run_ris_vbi_sbl_baseline,
     "nf_ris_groupomp_localgrid_wls": run_nf_ris_groupomp_localgrid_wls_baseline,
 }
 

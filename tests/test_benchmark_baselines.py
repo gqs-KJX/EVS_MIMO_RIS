@@ -4,7 +4,7 @@ from src.baselines import (
     als_cpd,
     common,
     nf_ris_groupomp_localgrid_wls,
-    ris_momp,
+    ris_vbi_sbl,
 )
 from src.config import default_config
 from src.main_single_proposed import _make_data
@@ -41,12 +41,13 @@ def _tiny_config():
     )
     config["baselines"] = {
         "als_cpd": {"max_iter": 5, "position_grid_shape": (3, 3, 3)},
-        "ris_momp": {
-            "direction_grid_size": 3,
-            "delay_grid_size": 3,
-            "max_atoms": 1,
-            "coordinate_sweeps": 2,
-            "local_refinement": False,
+        "ris_vbi_sbl": {
+            "nf_grid_x": 3,
+            "nf_grid_y": 3,
+            "nf_grid_z": 3,
+            "delay_grid_size": 5,
+            "vbi_max_iter": 5,
+            "vbi_refine_maxiter": 20,
         },
         "nf_ris_groupomp_localgrid_wls": {
             "direction_grid_size": 3,
@@ -67,7 +68,7 @@ def _tiny_config():
 def test_import_all_benchmark_baseline_modules():
     assert common.BaselineResult
     assert als_cpd.run_als_cpd_baseline
-    assert ris_momp.run_ris_momp_baseline
+    assert ris_vbi_sbl.run_ris_vbi_sbl_baseline
     assert nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline
 
 
@@ -79,7 +80,7 @@ def test_benchmark_default_baselines_include_targeted_nf_and_constrained_peb():
         "als_cpd",
         "scaled_4d",
         "nf_ris_groupomp_localgrid_wls",
-        "ris_momp",
+        "ris_vbi_sbl",
         "mksc_ccop",
         "peb",
         "constrained_jones_peb",
@@ -257,35 +258,17 @@ def test_als_geometry_mapping_uses_common_position_and_unique_panels():
     assert diagnostics["als_geometry_refined_clock_std_ns"] < 1.0e-6
 
 
-def test_ris_momp_recovers_known_multidimensional_support():
+def test_ris_vbi_sbl_runs_and_reports_bayesian_structure():
     config = _tiny_config()
     data = _make_data(config)
-    scene = data["scene"]
-    tau_grid = common.delay_grid_from_scene(scene, config, 3)
-    support = ris_momp._support(
-        scene,
-        config,
-        panel=0,
-        ux=0.0,
-        uy=0.0,
-        tau=float(tau_grid[1]),
-        ux_index=1,
-        uy_index=1,
-        tau_index=1,
-    )
-    atom = common.simple_atom_normalize(common.raw_atom_from_support(scene, config, support))
-    data["Y_noisy"] = atom.reshape(scene["I"], scene["N"], scene["T"])
-    data["Y_true"] = data["Y_noisy"].copy()
-    result = ris_momp.run_ris_momp_baseline(data, config)
-    assert result.selected_support[0]["u_x_index"] == support["u_x_index"]
-    assert result.selected_support[0]["u_y_index"] == support["u_y_index"]
-    assert result.selected_support[0]["tau_index"] == support["tau_index"]
-    assert result.diagnostics["dictionary_mode"] == "ris_momp_independent_ux_uy_delay"
-    assert result.diagnostics["group_omp"] is False
-    assert result.diagnostics["model_variant"] == "far_field_ris_momp_adaptation"
-    assert result.diagnostics["momp_group_omp_enabled"] is False
-    assert result.diagnostics["cartesian_dictionary_materialized"] is False
-    assert result.diagnostics["range_dictionary_used"] is False
+    data["Y_noisy"] = data["Y_true"].copy()
+    result = ris_vbi_sbl.run_ris_vbi_sbl_baseline(data, config)
+    assert result.diagnostics["model_variant"] == "variational_bayesian_sbl_adaptation"
+    assert result.diagnostics["dictionary_mode"] == "ris_vbi_sbl_near_field_per_panel"
+    assert result.diagnostics["unique_panel_constraint"] is True
+    assert np.all(np.isfinite(result.p_u))
+    assert np.isfinite(result.delta_t)
+    assert result.Y_hat.shape == data["Y_noisy"].shape
 
 
 def test_nf_ris_adaptation_runs_cpd_sage_and_fim_weighted_wls():
@@ -321,7 +304,7 @@ def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
     data["Y_noisy"] = data["Y_true"].copy()
 
     als_cpd.run_als_cpd_baseline(data, config)
-    ris_momp.run_ris_momp_baseline(data, config)
+    ris_vbi_sbl.run_ris_vbi_sbl_baseline(data, config)
     nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(data, config)
 
 

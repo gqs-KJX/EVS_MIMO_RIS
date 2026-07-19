@@ -47,7 +47,7 @@ def test_trim_memory_cli_is_recorded_in_robustness_tasks_and_metadata():
             "--n-trials",
             "1",
             "--baselines",
-            "ris_momp",
+            "ris_vbi_sbl",
             "--calibration-std-grid",
             "0",
             "--assumed-k-grid",
@@ -87,12 +87,12 @@ def test_fig8_fig9_tasks_are_grouped_by_trial(
             "--n-trials",
             "2",
             "--baselines",
-            "ris_momp",
+            "ris_vbi_sbl",
             grid_flag,
             grid_value,
         ]
     )
-    tasks = figures.build_tasks(args, figure, ["ris_momp"])
+    tasks = figures.build_tasks(args, figure, ["ris_vbi_sbl"])
     assert len(tasks) == 2
     assert tasks[0]["group_values"] == expected
 
@@ -188,7 +188,7 @@ def test_one_trial_all_baselines_share_noisy_hash(figure, monkeypatch):
 
     monkeypatch.setattr(figures, "_proposed_result_row", fake_proposed)
     monkeypatch.setitem(figures.BASELINE_RUNNERS, "als_cpd", fake_baseline)
-    monkeypatch.setitem(figures.BASELINE_RUNNERS, "ris_momp", fake_baseline)
+    monkeypatch.setitem(figures.BASELINE_RUNNERS, "ris_vbi_sbl", fake_baseline)
     monkeypatch.setitem(
         figures.BASELINE_RUNNERS,
         "nf_ris_groupomp_localgrid_wls",
@@ -205,7 +205,7 @@ def test_one_trial_all_baselines_share_noisy_hash(figure, monkeypatch):
         "baselines": [
             "proposed",
             "als_cpd",
-            "ris_momp",
+            "ris_vbi_sbl",
             "nf_ris_groupomp_localgrid_wls",
         ],
         "blas_threads": 1,
@@ -225,7 +225,6 @@ def test_k_mismatch_changes_estimator_order_not_true_data_order():
     assert true_data["scene"]["K"] == 1
     assert estimator_data["scene"]["K"] == 2
     assert configured["K"] == 2
-    assert configured["baselines"]["ris_momp"]["max_groups"] == 2
     assert (
         configured["baselines"]["nf_ris_groupomp_localgrid_wls"]["max_groups"]
         == 2

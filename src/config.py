@@ -430,13 +430,14 @@ def default_config() -> dict:
                 "gpu_memory_fraction": None,
                 "dtype": "complex128",
             },
-            "ris_momp": {
-                "direction_grid_size": 31,
-                "delay_grid_size": 41,
-                "coordinate_sweeps": 2,
-                "local_refinement": False,
-                "refinement_levels": 0,
-                "refinement_shrink": 0.5,
+            "ris_vbi_sbl": {
+                "nf_grid_x": 9,
+                "nf_grid_y": 9,
+                "nf_grid_z": 7,
+                "delay_grid_size": 121,
+                "vbi_max_iter": 40,
+                "vbi_tol": 1.0e-6,
+                "vbi_refine_maxiter": 200,
             },
             "nf_ris_groupomp_localgrid_wls": {
                 "direction_grid_size": 31,
