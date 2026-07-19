@@ -1963,6 +1963,7 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
     free_rank_deficient = True
     free_efim_scaled = None
     free_schur_relerr = float("nan")
+    free_min_eigenvalue = float("nan")
     try:
         diag = data_only_efim_diagnostic(
             data["Y_true"],
@@ -1975,6 +1976,7 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
         )
         efim = np.asarray(diag["data_only_scaled_efim"], dtype=float)
         free_efim_scaled = efim.copy()
+        free_min_eigenvalue = float(np.min(np.linalg.eigvalsh(efim)))
         parameter_order = diag.get(
             "data_only_scaled_efim_parameter_order",
             ["p_x_m", "p_y_m", "p_z_m", "c_delta_t_m"],
@@ -2089,6 +2091,7 @@ def _peb_from_efim(data: dict, config: dict) -> dict[str, Any]:
             anchored.get("peb_fim_rank_chi_anchored", 0)
         ),
         "peb_fim_cond_chi_free": free_condition_chi,
+        "efim_min_eigenvalue_chi_free": free_min_eigenvalue,
         "peb_fim_cond_chi_constrained": float(
             constrained.get("peb_fim_cond_chi_constrained", float("inf"))
         ),

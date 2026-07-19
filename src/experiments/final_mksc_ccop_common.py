@@ -121,6 +121,9 @@ TRIAL_FIELDS = (
     "selected_candidate",
     "stage1_evs_union_rank",
     "stage1_evs_retained_energy_fraction",
+    "stage1_delay_sigma_k",
+    "stage1_delay_sigma_kplus1_over_k",
+    "stage1_delay_subspace_condition",
     "stage1_assignment_margin",
     "stage1_max_rank1_ratio",
     "common_geometry_hessian_min_eig",
@@ -582,6 +585,34 @@ def _stage1_delay_diagnostics(stage1: dict, data: dict) -> dict[str, Any]:
         }
 
 
+def _delay_subspace_scalars(stage1: dict, k_paths: int) -> dict[str, float]:
+    """Scalar summaries of the delay-subspace singular spectrum (rank-K monitoring)."""
+    try:
+        sigma = np.sort(
+            np.abs(
+                np.asarray(
+                    stage1["stage1_delay_singular_values"], dtype=float
+                ).ravel()
+            )
+        )[::-1]
+    except (KeyError, TypeError, ValueError):
+        sigma = np.array([], dtype=float)
+    if k_paths <= 0 or sigma.size < k_paths or sigma[k_paths - 1] <= 0.0:
+        return {
+            "stage1_delay_sigma_k": float("nan"),
+            "stage1_delay_sigma_kplus1_over_k": float("nan"),
+            "stage1_delay_subspace_condition": float("nan"),
+        }
+    sigma_k = float(sigma[k_paths - 1])
+    return {
+        "stage1_delay_sigma_k": sigma_k,
+        "stage1_delay_sigma_kplus1_over_k": (
+            float(sigma[k_paths] / sigma_k) if sigma.size > k_paths else float("nan")
+        ),
+        "stage1_delay_subspace_condition": float(sigma[0] / sigma_k),
+    }
+
+
 def run_paper_variant(
     variant: str,
     *,
@@ -730,6 +761,7 @@ def run_paper_variant(
                 "stage1_evs_retained_energy_fraction": float(
                     stage1.get("stage1_evs_retained_energy_fraction", 1.0)
                 ),
+                **_delay_subspace_scalars(stage1, int(data["scene"]["K"])),
                 "stage1_assignment_margin": float(
                     stage1.get("stage1_assignment_margin", np.nan)
                 ),

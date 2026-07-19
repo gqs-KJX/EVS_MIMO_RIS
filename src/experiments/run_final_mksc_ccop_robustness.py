@@ -54,6 +54,9 @@ ROBUST_FIELDS = TRIAL_FIELDS + (
     "colored_noise_rho",
     "noise_handling",
     "position_index",
+    "efim_min_eigenvalue",
+    "efim_condition_number",
+    "efim_rank_deficient",
 )
 POSITION_SUMMARY_FIELDS = (
     "position_index",
@@ -270,10 +273,21 @@ def _task_rows(task: dict[str, Any]) -> list[dict[str, Any]]:
         profile_memory=bool(task.get("profile_memory", False)),
     )
     geometry_peb = float("nan")
+    efim_min_eigenvalue = float("nan")
+    efim_condition_number = float("nan")
+    efim_rank_deficient = ""
     if scenario == "positions" and bool(task.get("position_peb", False)):
         try:
-            geometry_peb = float(
-                _peb_from_efim(data, config).get("peb_free_jones_m", np.nan)
+            peb_diag = _peb_from_efim(data, config)
+            geometry_peb = float(peb_diag.get("peb_free_jones_m", np.nan))
+            efim_min_eigenvalue = float(
+                peb_diag.get("efim_min_eigenvalue_chi_free", np.nan)
+            )
+            efim_condition_number = float(
+                peb_diag.get("peb_fim_cond_chi_free", np.nan)
+            )
+            efim_rank_deficient = bool(
+                int(peb_diag.get("peb_fim_rank_chi_free", 0)) < 4
             )
         except (KeyError, ValueError, np.linalg.LinAlgError, FloatingPointError):
             geometry_peb = float("nan")
@@ -290,6 +304,9 @@ def _task_rows(task: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
                 "position_index": task.get("position_index", ""),
                 "peb_position_m": geometry_peb,
+                "efim_min_eigenvalue": efim_min_eigenvalue,
+                "efim_condition_number": efim_condition_number,
+                "efim_rank_deficient": efim_rank_deficient,
                 "reference_type": (
                     "matched_data_only_free_jones_geometry_diagnostic"
                     if np.isfinite(geometry_peb)
