@@ -55,6 +55,22 @@ DEFAULT_SNR_VARIANTS = (
     "proposed",
 )
 DEFAULT_RECEIVER_VARIANTS = ("proposed",)
+DEFAULT_C3_MATRIX_VARIANTS = (
+    "old_4d",
+    "scaled_4d",
+    "old_stage1_ccop",
+    "mksc_gi_refresh_4d_seconds",
+    "mksc_gi_refresh_4d_distance_m",
+    "proposed",
+)
+DEFAULT_CLOCK_UNIT_VARIANTS = (
+    "mksc_gi_refresh_4d_seconds",
+    "mksc_gi_refresh_4d_nanoseconds",
+    "mksc_gi_refresh_4d_distance_m",
+    "mksc_gi_refresh_ccop_seconds",
+    "mksc_gi_refresh_ccop_nanoseconds",
+    "mksc_gi_refresh_ccop_distance_m",
+)
 
 
 def _float_grid(value: str) -> list[float]:
@@ -296,10 +312,19 @@ def _tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
         append(
             "clock_units",
             "clock_parameterization",
-            "seconds_vs_distance_profile",
+            "seconds_vs_nanoseconds_vs_distance",
             args.focus_snr_db,
-            ["old_4d", "scaled_4d", "old_stage1_ccop", "proposed"],
+            args.clock_unit_variants,
         )
+    if "c3_matrix" in suites:
+        for snr_db in args.snr_grid:
+            append(
+                "c3_matrix",
+                "snr_db",
+                snr_db,
+                snr_db,
+                args.c3_variants,
+            )
     if "receiver" in suites:
         for snr_db in args.snr_grid:
             append(
@@ -344,6 +369,40 @@ def _write_markdown(path: pathlib.Path, summary: list[dict], paired: list[dict])
             "{position_p95_m:.6g} | {catastrophic_rate:.3%} | {clock_rmse_ns:.6g} | {channel_nmse_p95:.6g} | "
             "{runtime_median_s:.6g} | {peak_rss_max_mb:.6g} |".format(**row)
         )
+    c3_rows = [
+        row for row in summary if row["suite"] in {"c3_matrix", "clock_units"}
+    ]
+    if c3_rows:
+        lines.extend(
+            [
+                "",
+                "## C3 initializer/solver and clock-unit controls",
+                "",
+                (
+                    "CCOP unit-labelled rows deliberately invoke the same "
+                    "profiled 3-D solver: the unit label is not exposed as "
+                    "an optimization coordinate."
+                ),
+                "",
+                (
+                    "| Suite | SNR/x | Variant | Initializer | Inner solver | "
+                    "Clock units | Dim. | Eval. median | Clock RMSE (ns) | "
+                    "All-pos. cert. | Trajectory max gap/tol. |"
+                ),
+                "|---|---:|---|---|---|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in c3_rows:
+            lines.append(
+                "| {suite} | {x_value} | {variant} | {initializer_family} | "
+                "{inner_solver} | {clock_parameterization} | "
+                "{nonlinear_dim_median:.0f} | "
+                "{optimizer_evaluations_median:.3g} | {clock_rmse_ns:.6g} | "
+                "{clock_all_positions_certified_rate:.3g} | "
+                "{clock_certificate_gap_ratio_max_over_positions_max:.3g} |".format(
+                    **row
+                )
+            )
     if paired:
         lines.extend(
             [
@@ -503,6 +562,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--receiver-variants", default=",".join(DEFAULT_RECEIVER_VARIANTS)
     )
+    parser.add_argument(
+        "--c3-variants", default=",".join(DEFAULT_C3_MATRIX_VARIANTS)
+    )
+    parser.add_argument(
+        "--clock-unit-variants",
+        default=",".join(DEFAULT_CLOCK_UNIT_VARIANTS),
+    )
     parser.add_argument("--paired-reference", default="scaled_4d")
     parser.add_argument("--paired-candidate", default="proposed")
     parser.add_argument(
@@ -531,7 +597,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     args.suites = _csv_list(args.suites)
     unknown_suites = set(args.suites) - {
-        "components", "snr", "compression", "clock_units", "receiver", "training"
+        "components",
+        "snr",
+        "compression",
+        "clock_units",
+        "c3_matrix",
+        "receiver",
+        "training",
     }
     if unknown_suites:
         parser.error(f"unknown suites: {sorted(unknown_suites)}")
@@ -541,10 +613,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.component_variants = _csv_list(args.component_variants)
     args.snr_variants = _csv_list(args.snr_variants)
     args.receiver_variants = _csv_list(args.receiver_variants)
+    args.c3_variants = _csv_list(args.c3_variants)
+    args.clock_unit_variants = _csv_list(args.clock_unit_variants)
     unknown_variants = (
         set(args.component_variants)
         | set(args.snr_variants)
         | set(args.receiver_variants)
+        | set(args.c3_variants)
+        | set(args.clock_unit_variants)
         | {str(args.paired_reference), str(args.paired_candidate)}
     ) - set(PAPER_VARIANTS)
     if unknown_variants:

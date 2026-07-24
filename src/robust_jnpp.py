@@ -421,6 +421,7 @@ def _minimize_subset(
             success = bool(info.get("success", False))
         candidates.append(
             {
+                "start_p_u": np.asarray(start, dtype=float).copy(),
                 "p_u": p_hat,
                 "subset": tuple(int(k) for k in subset),
                 "subset_objective": float(value),
@@ -429,7 +430,12 @@ def _minimize_subset(
             }
         )
     candidates.sort(key=lambda item: item["subset_objective"])
-    return candidates[:1], {"jnpp_gradient_mode": gradient_mode, **counters, **check}
+    selected = (
+        candidates
+        if bool(config.get("jnpp_record_all_start_candidates", False))
+        else candidates[:1]
+    )
+    return selected, {"jnpp_gradient_mode": gradient_mode, **counters, **check}
 
 
 def _clock_postcheck(p_u: np.ndarray, tau_stage1: np.ndarray, scene: dict, config: dict) -> dict:

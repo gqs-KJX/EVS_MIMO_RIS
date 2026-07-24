@@ -129,7 +129,20 @@ FIELDNAMES = [
     "y_nmse",
     "range_rmse_m",
     "tau_rmse_s",
+    "clock_estimate_ns",
+    "clock_native_estimate_ns",
     "clock_error_ns",
+    "clock_panel_mad_ns",
+    "clock_num_panels",
+    "clock_expected_panels",
+    "clock_complete_panel_set",
+    "clock_invalid",
+    "clock_invalid_reason",
+    "clock_catastrophic",
+    "clock_catastrophic_threshold_ns",
+    "clock_extraction_rule",
+    "clock_delay_source",
+    "clock_panel_estimates_ns",
     "clock_certified",
     "raw_objective_final",
     "stage1_runtime_s",
@@ -514,6 +527,11 @@ def _final_mksc_ccop_row(
     )
     if bool(route_row["failed"]):
         raise RuntimeError(str(route_row["error"]))
+    clock_error_ns = float(route_row["clock_error_ns"])
+    clock_threshold_ns = float(
+        config.get("benchmark_clock_catastrophic_threshold_ns", 1.0)
+    )
+    clock_invalid = not np.isfinite(clock_error_ns)
     return {
         "baseline": baseline,
         "trial_id": int(trial_id),
@@ -542,7 +560,15 @@ def _final_mksc_ccop_row(
         "reference_algorithm": "frozen_final_paper_route",
         "global_vp_backend": "numpy_cpu",
         "global_vp_gpu_used": False,
-        "clock_error_ns": float(route_row["clock_error_ns"]),
+        "clock_error_ns": clock_error_ns,
+        "clock_invalid": clock_invalid,
+        "clock_invalid_reason": "native_clock_unavailable" if clock_invalid else "",
+        "clock_catastrophic": bool(
+            not clock_invalid and clock_error_ns > clock_threshold_ns
+        ),
+        "clock_catastrophic_threshold_ns": clock_threshold_ns,
+        "clock_extraction_rule": "native_common_clock_parameter",
+        "clock_delay_source": "baseline_native_delta_t",
         "clock_certified": route_row["clock_certified"],
         "stage1_runtime_s": float(route_row["stage1_runtime_s"]),
         "global_vp_runtime_s": float(route_row["stage3_runtime_s"]),
@@ -651,6 +677,7 @@ def _failure_row(
     exc: BaseException,
     data: dict | None = None,
 ) -> dict[str, Any]:
+    clock_evaluated = baseline in ESTIMATOR_BASELINES
     return {
         "baseline": baseline,
         "trial_id": int(trial_id),
@@ -667,6 +694,13 @@ def _failure_row(
         "y_nmse": float("nan"),
         "range_rmse_m": float("nan"),
         "tau_rmse_s": float("nan"),
+        "clock_error_ns": float("nan"),
+        "clock_invalid": True if clock_evaluated else "",
+        "clock_invalid_reason": "baseline_failed" if clock_evaluated else "",
+        "clock_catastrophic": False if clock_evaluated else "",
+        "clock_catastrophic_threshold_ns": config.get(
+            "benchmark_clock_catastrophic_threshold_ns", 1.0
+        ),
         "raw_objective_final": float("nan"),
         "support_size": 0,
         "grid_size": "",
@@ -698,6 +732,9 @@ def _config_for_trial_snr(task: dict[str, Any], snr_db: float) -> dict:
     config["baselines"]["backend_config"] = dict(task.get("backend_config", {}))
     config["baselines"]["trim_memory"] = bool(
         task.get("trim_memory", _WORKER_TRIM_MEMORY)
+    )
+    config["benchmark_clock_catastrophic_threshold_ns"] = float(
+        task.get("clock_catastrophic_threshold_ns", 1.0)
     )
     config.setdefault("global_vp", {}).update(dict(task.get("global_vp", {})))
     return config
@@ -928,11 +965,21 @@ def summarize_csv(
                     "nmse": [],
                     "clock": [],
                     "clock_certificate": [],
+                    "clock_invalid": [],
+                    "clock_catastrophic": [],
                     "peb": [],
                     "runtime": [],
                 },
             )
             group["n"] += 1
+            clock_invalid = _to_bool_or_none(row.get("clock_invalid"))
+            clock_catastrophic = _to_bool_or_none(
+                row.get("clock_catastrophic")
+            )
+            if clock_invalid is not None:
+                group["clock_invalid"].append(clock_invalid)
+                if not clock_invalid and clock_catastrophic is not None:
+                    group["clock_catastrophic"].append(clock_catastrophic)
             if str(row.get("failed")).lower() == "true":
                 continue
             group["success"] += 1
@@ -950,6 +997,9 @@ def summarize_csv(
         position_stats = _summary_stats(group["position_error"])
         nmse_stats = _summary_stats(group["nmse"])
         clock_stats = _summary_stats(group["clock"])
+        clock_rates = _clock_rate_summary(
+            group["clock_invalid"], group["clock_catastrophic"]
+        )
         peb_stats = _summary_stats(group["peb"])
         runtime_stats = _summary_stats(group["runtime"], percentiles=False)
         finite_position = np.asarray(group["position_error"], dtype=float)
@@ -995,11 +1045,15 @@ def summarize_csv(
             "position_mean_error_m": position_stats["mean"],
             "position_conditional_rmse_m": _rms(conditional_position),
             "peb_position_m_rms": _rms(finite_peb),
+            "clock_rmse_ns": _rms(group["clock"]),
+            "clock_median_abs_error_ns": clock_stats["median"],
+            "clock_p95_abs_error_ns": clock_stats["p95"],
             "clock_certificate_rate": (
                 float(np.mean(group["clock_certificate"]))
                 if group["clock_certificate"]
                 else float("nan")
             ),
+            **clock_rates,
         }
         for name, value in position_stats.items():
             row_summary[f"position_error_m_{name}"] = value
@@ -1021,6 +1075,17 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _to_bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    return None
 
 
 def _position_error_from_row(row: Mapping[str, Any]) -> float:
@@ -1055,6 +1120,58 @@ def _binomial_interval(successes: int, total: int, alpha: float = 0.05):
         return low, high, "Clopper-Pearson exact"
     except ImportError:
         return float("nan"), float("nan"), "scipy_unavailable"
+
+
+def _clock_rate_summary(
+    invalid_flags: list[bool],
+    catastrophic_flags: list[bool],
+) -> dict[str, Any]:
+    evaluated_count = len(invalid_flags)
+    invalid_count = int(sum(invalid_flags))
+    valid_count = int(evaluated_count - invalid_count)
+    catastrophic_count = int(sum(catastrophic_flags))
+    catastrophic_total = len(catastrophic_flags)
+    combined_count = int(invalid_count + catastrophic_count)
+    invalid_low, invalid_high, invalid_method = _binomial_interval(
+        invalid_count, evaluated_count
+    )
+    catastrophic_low, catastrophic_high, catastrophic_method = _binomial_interval(
+        catastrophic_count, catastrophic_total
+    )
+    combined_low, combined_high, combined_method = _binomial_interval(
+        combined_count, evaluated_count
+    )
+    return {
+        "clock_evaluated_count": evaluated_count,
+        "clock_valid_count": valid_count,
+        "clock_invalid_count": invalid_count,
+        "clock_invalid_rate": (
+            float(invalid_count / evaluated_count)
+            if evaluated_count
+            else float("nan")
+        ),
+        "clock_invalid_ci_low": invalid_low,
+        "clock_invalid_ci_high": invalid_high,
+        "clock_invalid_ci_method": invalid_method,
+        "clock_catastrophic_count": catastrophic_count,
+        "clock_catastrophic_rate": (
+            float(catastrophic_count / catastrophic_total)
+            if catastrophic_total
+            else float("nan")
+        ),
+        "clock_catastrophic_ci_low": catastrophic_low,
+        "clock_catastrophic_ci_high": catastrophic_high,
+        "clock_catastrophic_ci_method": catastrophic_method,
+        "clock_catastrophic_or_invalid_count": combined_count,
+        "clock_catastrophic_or_invalid_rate": (
+            float(combined_count / evaluated_count)
+            if evaluated_count
+            else float("nan")
+        ),
+        "clock_catastrophic_or_invalid_ci_low": combined_low,
+        "clock_catastrophic_or_invalid_ci_high": combined_high,
+        "clock_catastrophic_or_invalid_ci_method": combined_method,
+    }
 
 
 def _summary_stats(values: list[float], percentiles: bool = True) -> dict[str, float]:
@@ -1122,6 +1239,21 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
         clock_stats = _summary_stats(
             [_to_float(row.get("clock_error_ns")) for row in success]
         )
+        clock_invalid_flags: list[bool] = []
+        clock_catastrophic_flags: list[bool] = []
+        for row in group:
+            clock_invalid = _to_bool_or_none(row.get("clock_invalid"))
+            clock_catastrophic = _to_bool_or_none(
+                row.get("clock_catastrophic")
+            )
+            if clock_invalid is None:
+                continue
+            clock_invalid_flags.append(clock_invalid)
+            if not clock_invalid and clock_catastrophic is not None:
+                clock_catastrophic_flags.append(clock_catastrophic)
+        clock_rates = _clock_rate_summary(
+            clock_invalid_flags, clock_catastrophic_flags
+        )
         clock_certificates = [
             str(row.get("clock_certified", "")).lower() == "true"
             for row in success
@@ -1175,11 +1307,17 @@ def summarize_rows(rows: list[dict[str, Any]], outlier_threshold_m: float | None
             "position_mean_error_m": position_stats["mean"],
             "position_conditional_rmse_m": _rms(conditional_position),
             "peb_position_m_rms": _rms(finite_peb),
+            "clock_rmse_ns": _rms(
+                [_to_float(row.get("clock_error_ns")) for row in success]
+            ),
+            "clock_median_abs_error_ns": clock_stats["median"],
+            "clock_p95_abs_error_ns": clock_stats["p95"],
             "clock_certificate_rate": (
                 float(np.mean(clock_certificates))
                 if clock_certificates
                 else float("nan")
             ),
+            **clock_rates,
         }
         for name, value in position_stats.items():
             row_summary[f"position_error_m_{name}"] = value
@@ -1384,6 +1522,7 @@ def _write_summary_markdown(
     out_dir: pathlib.Path,
     command_line: str,
     outlier_threshold_m: float,
+    clock_catastrophic_threshold_ns: float,
     runtime_rows: list[dict[str, Any]],
 ) -> None:
     lines = [
@@ -1410,6 +1549,34 @@ def _write_summary_markdown(
         (
             "Fig.7(c) defines an outlier as position error greater than "
             f"{outlier_threshold_m:g} m."
+        ),
+        "",
+        (
+            "External clocks use each baseline's estimated position and raw "
+            "panel delays: `median_k(tau_hat_k - "
+            "(||p_hat-r_k||+d_RB,k)/c0)`, with one unique delay required for "
+            "every physical panel and no clock-bound clipping."
+        ),
+        "",
+        (
+            "Clock catastrophic means absolute clock error greater than "
+            f"{clock_catastrophic_threshold_ns:g} ns. Invalid clocks are "
+            "reported separately and in the combined catastrophic-or-invalid "
+            "rate."
+        ),
+        "",
+        "Per-baseline clock delay sources:",
+        "",
+        "- `als_cpd`: CP-ALS delay factor after joint unique-panel mapping.",
+        "",
+        (
+            "- `nf_ris_groupomp_localgrid_wls`: SAGE-refined panel delay with "
+            "that baseline's WLS position."
+        ),
+        "",
+        (
+            "- `ris_vbi_sbl`: per-panel VBI/SBL delay with that baseline's "
+            "fused position."
         ),
         "",
         "## Table I: runtime and memory comparison",
@@ -1482,7 +1649,7 @@ def _git_dirty() -> bool:
 
 def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]) -> dict[str, Any]:
     return {
-        "benchmark_layout_version": 2,
+        "benchmark_layout_version": 3,
         "n_trials": int(args.n_trials),
         "snr_grid": [float(value) for value in snr_grid],
         "paper_k": int(args.paper_k),
@@ -1490,6 +1657,9 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "grid_profile": str(args.grid_profile),
         "seed": int(args.seed),
         "outlier_threshold_m": float(args.outlier_threshold_m),
+        "clock_catastrophic_threshold_ns": float(
+            args.clock_catastrophic_threshold_ns
+        ),
         "profile_memory": bool(args.profile_memory),
         "runtime_profile": bool(args.runtime_profile),
         "memory_snapshot_fallback": "proc_self_status_vmrss",
@@ -1595,6 +1765,9 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
                 "respect_existing_blas_env": bool(args.respect_existing_blas_env),
                 "trim_memory": bool(args.trim_memory),
                 "profile_memory": bool(args.profile_memory),
+                "clock_catastrophic_threshold_ns": float(
+                    args.clock_catastrophic_threshold_ns
+                ),
                 "strict_ris_geometry": bool(args.strict_ris_geometry),
                 "backend_config": {
                     "backend": str(args.baseline_backend),
@@ -1948,6 +2121,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     parser.add_argument("--strict-ris-geometry", action="store_true")
+    parser.add_argument(
+        "--clock-catastrophic-threshold-ns",
+        type=float,
+        default=1.0,
+        help=(
+            "frozen absolute clock-error threshold for the clock "
+            "catastrophic rate (default: 1 ns)"
+        ),
+    )
     add_global_vp_args(parser)
     parser.add_argument("--grid-profile", choices=("coarse", "medium", "fine"), default="medium")
     parser.add_argument(
@@ -1995,6 +2177,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--progress-heartbeat-s must be positive")
     if args.paper_k <= 0:
         raise ValueError("--paper-k must be positive")
+    if args.clock_catastrophic_threshold_ns <= 0.0:
+        raise ValueError("--clock-catastrophic-threshold-ns must be positive")
     if args.blas_threads != "auto" and int(args.blas_threads) <= 0:
         raise ValueError("--blas-threads must be positive or 'auto'")
     if args.gpu_batch_size is not None and args.gpu_batch_size <= 0:
@@ -2308,6 +2492,7 @@ def main(argv: list[str] | None = None) -> None:
         out_dir,
         args.command_line,
         float(args.outlier_threshold_m),
+        float(args.clock_catastrophic_threshold_ns),
         runtime_rows,
     )
     if not args.no_plots:

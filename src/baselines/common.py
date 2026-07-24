@@ -42,6 +42,21 @@ class BaselineResult:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+DEFAULT_CLOCK_CATASTROPHIC_THRESHOLD_NS = 1.0
+CLOCK_EXTRACTION_RULE = (
+    "median_k(tau_hat_k-(norm(p_hat-r_k)+d_RB_k)/c0);"
+    "unique_physical_panels;no_clipping"
+)
+
+_CLOCK_DELAY_SOURCES = {
+    "als_cpd": "cp_als_delay_factor_with_joint_unique_panel_mapping",
+    "nf_ris_groupomp_localgrid_wls": (
+        "sage_refined_panel_delay_with_baseline_wls_position"
+    ),
+    "ris_vbi_sbl": "per_panel_vbi_sbl_delay_with_baseline_fused_position",
+}
+
+
 def vectorize_raw_observation(Y: np.ndarray) -> np.ndarray:
     """Vectorize raw-domain observations in the repository's VP ordering."""
     return np.asarray(Y, dtype=complex).reshape(-1)
@@ -109,6 +124,161 @@ def _nested_get(container: Any, path: tuple[str, ...], default: Any = "") -> Any
             return default
         current = current.get(key, default)
     return current
+
+
+def extract_common_clock(
+    result: BaselineResult,
+    data: dict,
+    config: dict,
+) -> dict[str, Any]:
+    """Extract one auditable common clock estimate from a baseline result.
+
+    External baselines are evaluated from their own position and raw
+    panel-delay supports.  A successful external result must supply one finite
+    delay for every physical panel; duplicate or incomplete panel sets are
+    marked invalid rather than silently imputed.  The median aggregation is
+    deliberately unweighted and is not clipped to the estimator clock bounds.
+    """
+    scene = data.get("scene", {})
+    threshold_ns = _finite_float(
+        config.get(
+            "benchmark_clock_catastrophic_threshold_ns",
+            DEFAULT_CLOCK_CATASTROPHIC_THRESHOLD_NS,
+        ),
+        DEFAULT_CLOCK_CATASTROPHIC_THRESHOLD_NS,
+    )
+    native_s = _finite_float(result.delta_t)
+    output: dict[str, Any] = {
+        "clock_estimate_ns": float("nan"),
+        "clock_native_estimate_ns": (
+            native_s * 1.0e9 if np.isfinite(native_s) else float("nan")
+        ),
+        "clock_error_ns": float("nan"),
+        "clock_panel_mad_ns": float("nan"),
+        "clock_num_panels": 0,
+        "clock_expected_panels": int(scene.get("K", config.get("K", 0))),
+        "clock_complete_panel_set": False,
+        "clock_invalid": True,
+        "clock_invalid_reason": "clock_inputs_unavailable",
+        "clock_catastrophic": False,
+        "clock_catastrophic_threshold_ns": threshold_ns,
+        "clock_extraction_rule": CLOCK_EXTRACTION_RULE,
+        "clock_delay_source": _CLOCK_DELAY_SOURCES.get(
+            result.name, "selected_support_panel_delay"
+        ),
+        "clock_panel_estimates_ns": "[]",
+    }
+
+    # Internal routes expose a native common-clock parameter but do not expose
+    # raw panel supports through BaselineResult.  Preserve that existing route;
+    # the standardized support-residual rule below is mandatory for external
+    # baselines.
+    if (
+        result.name in {"proposed", "scaled_4d", "mksc_ccop"}
+        and not result.selected_support
+    ):
+        true_s = _finite_float(scene.get("delta_t_true"))
+        if np.isfinite(native_s) and np.isfinite(true_s):
+            error_ns = abs(native_s - true_s) * 1.0e9
+            output.update(
+                {
+                    "clock_estimate_ns": native_s * 1.0e9,
+                    "clock_error_ns": error_ns,
+                    "clock_complete_panel_set": True,
+                    "clock_invalid": False,
+                    "clock_invalid_reason": "",
+                    "clock_catastrophic": bool(error_ns > threshold_ns),
+                    "clock_extraction_rule": "native_common_clock_parameter",
+                    "clock_delay_source": "baseline_native_delta_t",
+                }
+            )
+        return output
+
+    p_hat = (
+        np.asarray(result.p_u, dtype=float).reshape(-1)
+        if result.p_u is not None
+        else np.asarray([])
+    )
+    centers = np.asarray(scene.get("ris_centers", []), dtype=float)
+    d_rb = np.asarray(scene.get("d_RB", []), dtype=float).reshape(-1)
+    c0 = _finite_float(scene.get("c0"))
+    expected_panels = int(output["clock_expected_panels"])
+    if (
+        p_hat.size != 3
+        or not np.all(np.isfinite(p_hat))
+        or centers.shape != (expected_panels, 3)
+        or d_rb.size != expected_panels
+        or not np.all(np.isfinite(centers))
+        or not np.all(np.isfinite(d_rb))
+        or not np.isfinite(c0)
+        or c0 <= 0.0
+    ):
+        output["clock_invalid_reason"] = "invalid_position_or_scene_geometry"
+        return output
+
+    panel_values: dict[int, float] = {}
+    for support in result.selected_support or []:
+        if (
+            not isinstance(support, dict)
+            or "panel" not in support
+            or "tau" not in support
+        ):
+            continue
+        try:
+            panel = int(support["panel"])
+            tau_s = float(support["tau"])
+        except (TypeError, ValueError):
+            continue
+        if panel < 0 or panel >= expected_panels or not np.isfinite(tau_s):
+            continue
+        if panel in panel_values:
+            output["clock_invalid_reason"] = "duplicate_physical_panel_delay"
+            return output
+        geometric_s = (
+            np.linalg.norm(p_hat - centers[panel]) + float(d_rb[panel])
+        ) / c0
+        panel_values[panel] = float(tau_s - geometric_s)
+
+    ordered_panels = sorted(panel_values)
+    replicas_s = np.asarray(
+        [panel_values[panel] for panel in ordered_panels], dtype=float
+    )
+    output["clock_num_panels"] = int(replicas_s.size)
+    output["clock_panel_estimates_ns"] = json.dumps(
+        [
+            {"panel": int(panel), "delta_t_ns": float(panel_values[panel] * 1.0e9)}
+            for panel in ordered_panels
+        ],
+        separators=(",", ":"),
+    )
+    if replicas_s.size != expected_panels or ordered_panels != list(
+        range(expected_panels)
+    ):
+        output["clock_invalid_reason"] = "incomplete_physical_panel_set"
+        return output
+    if not np.all(np.isfinite(replicas_s)):
+        output["clock_invalid_reason"] = "nonfinite_panel_clock_residual"
+        return output
+
+    estimate_s = float(np.median(replicas_s))
+    mad_ns = float(np.median(np.abs(replicas_s - estimate_s)) * 1.0e9)
+    true_s = _finite_float(scene.get("delta_t_true"))
+    if not np.isfinite(true_s):
+        output["clock_invalid_reason"] = "true_clock_unavailable"
+        return output
+    error_ns = abs(estimate_s - true_s) * 1.0e9
+    output.update(
+        {
+            "clock_estimate_ns": estimate_s * 1.0e9,
+            "clock_error_ns": error_ns,
+            "clock_panel_mad_ns": mad_ns,
+            "clock_complete_panel_set": True,
+            "clock_invalid": False,
+            "clock_invalid_reason": "",
+            "clock_catastrophic": bool(error_ns > threshold_ns),
+        }
+    )
+    return output
 
 
 def proposed_trace_diagnostics(result: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +406,7 @@ def make_baseline_row(
     selected_support = result.selected_support or []
     diagnostics = result.diagnostics or {}
     row_warning = warning or str(diagnostics.get("warning", ""))
+    clock_metrics = extract_common_clock(result, data, config)
     return {
         "baseline": baseline or result.name,
         "trial_id": int(trial_id),
@@ -265,6 +436,8 @@ def make_baseline_row(
         "y_nmse": y_nmse,
         "range_rmse_m": _rmse_array(result.components.get("ranges"), true_components.get("ranges")),
         "tau_rmse_s": _rmse_array(result.components.get("taus"), true_components.get("taus")),
+        **clock_metrics,
+        "clock_certified": "",
         "raw_objective_final": raw_objective,
         "support_size": len(selected_support),
         "grid_size": diagnostics.get("grid_size", ""),

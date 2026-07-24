@@ -137,6 +137,10 @@ class CommonClockJonesProfiler:
         self._last_orbit: dict | None = None
         self.position_evaluations = 0
         self.clock_interval_evaluations = 0
+        self.clock_profile_evaluations = 0
+        self.clock_profile_certified_count = 0
+        self.clock_profile_max_certificate_gap_objective = 0.0
+        self.clock_profile_max_certificate_gap_ratio = 0.0
 
     def _validate_assumptions(self) -> None:
         mode = _global_vp_mode(self.config)
@@ -585,6 +589,22 @@ class CommonClockJonesProfiler:
         point["gradient_reliable"] = bool(
             point["clock_certified"] and not point["clock_branch_ambiguous"]
         )
+        certificate_tolerance_objective = float(
+            score_tolerance / float(orbit["y_size"])
+        )
+        certificate_gap_ratio = float(
+            objective_gap / certificate_tolerance_objective
+        )
+        self.clock_profile_evaluations += 1
+        self.clock_profile_certified_count += int(certified)
+        self.clock_profile_max_certificate_gap_objective = max(
+            self.clock_profile_max_certificate_gap_objective,
+            objective_gap,
+        )
+        self.clock_profile_max_certificate_gap_ratio = max(
+            self.clock_profile_max_certificate_gap_ratio,
+            certificate_gap_ratio,
+        )
         point["gradient_p"] = self.envelope_gradient(point, orbit=orbit)
         return point
 
@@ -829,6 +849,22 @@ def refine_ccop_jvp(
             "ccop_clock_interval_evaluations": int(
                 profiler.clock_interval_evaluations
             ),
+            "ccop_clock_profile_evaluations": int(
+                profiler.clock_profile_evaluations
+            ),
+            "ccop_clock_profile_certified_count": int(
+                profiler.clock_profile_certified_count
+            ),
+            "ccop_clock_profiles_all_certified": bool(
+                profiler.clock_profile_certified_count
+                == profiler.clock_profile_evaluations
+            ),
+            "ccop_clock_profile_max_certificate_gap_objective": float(
+                profiler.clock_profile_max_certificate_gap_objective
+            ),
+            "ccop_clock_profile_max_certificate_gap_ratio": float(
+                profiler.clock_profile_max_certificate_gap_ratio
+            ),
             "clock_branch_ambiguous_seen": bool(cache["branch_ambiguous_seen"]),
             "outer_branch_safeguard_used": bool(
                 any(name == "ccop_powell_branch_safeguard" for name, _ in candidates)
@@ -864,16 +900,24 @@ def refine_four_dimensional_jvp_experimental(
     same Jones-eliminated objective as :class:`CommonClockJonesProfiler`, but
     does *not* profile the clock.  ``clock_coordinate='distance_m'`` uses
     ``c0 * delta_t`` and therefore isolates numerical parameter scaling;
-    ``'seconds'`` preserves the raw clock coordinate for evaluation-budget
-    comparisons.  Neither choice changes the physical dictionary.
+    ``'nanoseconds'`` uses ``1e9 * delta_t``; and ``'seconds'`` preserves
+    the raw clock coordinate for evaluation-budget comparisons.  None of
+    these choices changes the physical dictionary.
     """
-    if clock_coordinate not in {"seconds", "distance_m"}:
-        raise ValueError("clock_coordinate must be 'seconds' or 'distance_m'")
+    if clock_coordinate not in {"seconds", "nanoseconds", "distance_m"}:
+        raise ValueError(
+            "clock_coordinate must be 'seconds', 'nanoseconds', or "
+            "'distance_m'"
+        )
     profiler = CommonClockJonesProfiler(y_raw, init_estimate, scene, config)
     xi0 = _initial_xi_from_stage1(init_estimate, scene, config)
     p_bounds = np.asarray(config["ue_bounds"], dtype=float)
     t_bounds = np.asarray(config["delta_t_bounds"], dtype=float)
-    clock_scale = 1.0 if clock_coordinate == "seconds" else float(scene["c0"])
+    clock_scale = {
+        "seconds": 1.0,
+        "nanoseconds": 1.0e9,
+        "distance_m": float(scene["c0"]),
+    }[clock_coordinate]
     lower = np.r_[p_bounds[:, 0], t_bounds[0] * clock_scale]
     upper = np.r_[p_bounds[:, 1], t_bounds[1] * clock_scale]
     start = np.clip(np.r_[xi0[:3], xi0[3] * clock_scale], lower, upper)

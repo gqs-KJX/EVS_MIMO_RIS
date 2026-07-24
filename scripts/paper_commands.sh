@@ -30,6 +30,7 @@ Required gates:
 Formal accuracy targets:
   components_paper400          compact component ablation, seed 20260721
   snr_internal_paper200        position/clock/channel/tail SNR curves
+  c3_clock_units_paper100      strong-init 4-D/CCOP and clock-unit control
   receiver_information_paper200 scalar/dual-pol/full-EVS plus matched PEB
   compression_matched_paper200 raw-delay versus MKSC compression
   benchmark_accuracy200_gpu    external benchmark accuracy with CuPy
@@ -182,6 +183,16 @@ case "${target}" in
       --snr-variants scaled_4d,old_stage1_ccop,mksc_gi_4_no_refresh_ccop,proposed \
       --n-trials 200 --seed 20260722 --bootstrap-replicates 10000 \
       --diagnostic-mode performance --jobs 8 --blas-threads 1 --out-dir "${out}"
+    ;;
+  c3_clock_units_paper100)
+    out="results/final_mksc_ccop/c3_clock_units_paper100"
+    run_command "${out}" "${PYTHON_BIN}" -m src.experiments.run_final_mksc_ccop_ablation \
+      --suites c3_matrix --snr-grid=-10 --focus-snr-db -10 \
+      --n-trials 100 --seed 20260732 --bootstrap-replicates 5000 \
+      --diagnostic-mode performance --jobs 4 --blas-threads 1 \
+      --c3-variants old_4d,scaled_4d,old_stage1_ccop,mksc_gi_refresh_4d_seconds,mksc_gi_refresh_4d_nanoseconds,mksc_gi_refresh_4d_distance_m,proposed,mksc_gi_refresh_ccop_seconds,mksc_gi_refresh_ccop_nanoseconds,mksc_gi_refresh_ccop_distance_m \
+      --paired-reference mksc_gi_refresh_4d_distance_m \
+      --paired-candidate proposed --out-dir "${out}"
     ;;
   receiver_information_paper200)
     out="results/final_mksc_ccop/receiver_information_paper200"

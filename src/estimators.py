@@ -918,6 +918,8 @@ def initialize_from_hankel(
     config: dict,
     *,
     delay_z_tensor: np.ndarray | None = None,
+    delay_poles_override: np.ndarray | None = None,
+    delay_diagnostics_override: dict | None = None,
 ) -> dict:
     """A-IMDF-inspired RIS-EVS initializer.
 
@@ -926,7 +928,9 @@ def initialize_from_hankel(
     algorithm. The RIS-EVS model requires coupled LS recovery of joint EVS-RIS
     factors and rank-one SVD splitting. Default Stage-I uses coarse assignment
     screening and applies exact near-field projection only to shortlisted
-    column-panel pairs.
+    column-panel pairs. ``delay_poles_override`` is a diagnostic injection
+    point; normal callers leave it unset, and B/Q are still rebuilt jointly
+    from the supplied mother poles.
     """
     assert z_tensor.shape == (scene["I"], scene["P"], scene["L"], scene["T"])
     if delay_z_tensor is None:
@@ -959,7 +963,29 @@ def initialize_from_hankel(
     forward_backward = bool(config.get("stage1_forward_backward", True))
     tls = bool(config.get("stage1_tls", True))
     delay_start = time.perf_counter()
-    if delay_method == "aimdf_fullfreq_tls":
+    if delay_poles_override is not None:
+        poles_raw = np.asarray(delay_poles_override, dtype=complex).reshape(-1).copy()
+        if poles_raw.size != int(scene["K"]):
+            raise ValueError("delay_poles_override must contain exactly K poles")
+        if not np.all(np.isfinite(poles_raw)) or np.any(
+            np.abs(poles_raw) <= config["eps"]
+        ):
+            raise ValueError("delay_poles_override contains invalid poles")
+        delay_diagnostics = dict(delay_diagnostics_override or {})
+        delay_diagnostics.setdefault("delay_method", "provided_poles_override")
+        delay_diagnostics.setdefault("singular_values", np.array([], dtype=float))
+        delay_diagnostics.setdefault(
+            "pole_magnitudes_before_unit_circle", np.abs(poles_raw)
+        )
+        delay_diagnostics.setdefault("forward_backward", forward_backward)
+        delay_diagnostics.setdefault("tls", tls)
+        delay_diagnostics.setdefault("snapshot_sketch_dim", None)
+        delay_diagnostics.setdefault(
+            "subspace_solver",
+            config.get("stage1_delay_subspace_solver", "svd"),
+        )
+        delay_method = str(delay_diagnostics["delay_method"])
+    elif delay_method == "aimdf_fullfreq_tls":
         poles_raw, delay_diagnostics = estimate_poles_aimdf_tls_from_hankel_with_diagnostics(
             delay_observation,
             scene["K"],

@@ -628,6 +628,41 @@ def test_final_component_ablation_is_compact_and_keeps_ccop_evidence():
     assert args.paired_candidate == "proposed"
 
 
+def test_c3_matrix_and_clock_units_cover_missing_good_initializer_cells():
+    args = final_ablation.parse_args(
+        [
+            "--suites",
+            "c3_matrix,clock_units",
+            "--snr-grid=-10,0",
+            "--n-trials",
+            "1",
+        ]
+    )
+    assert args.c3_variants == [
+        "old_4d",
+        "scaled_4d",
+        "old_stage1_ccop",
+        "mksc_gi_refresh_4d_seconds",
+        "mksc_gi_refresh_4d_distance_m",
+        "proposed",
+    ]
+    assert args.clock_unit_variants == [
+        "mksc_gi_refresh_4d_seconds",
+        "mksc_gi_refresh_4d_nanoseconds",
+        "mksc_gi_refresh_4d_distance_m",
+        "mksc_gi_refresh_ccop_seconds",
+        "mksc_gi_refresh_ccop_nanoseconds",
+        "mksc_gi_refresh_ccop_distance_m",
+    ]
+    tasks = final_ablation._tasks(args)
+    c3_tasks = [task for task in tasks if task["suite"] == "c3_matrix"]
+    clock_tasks = [task for task in tasks if task["suite"] == "clock_units"]
+    assert len(c3_tasks) == 2
+    assert len(clock_tasks) == 1
+    assert c3_tasks[0]["variants"] == args.c3_variants
+    assert clock_tasks[0]["variants"] == args.clock_unit_variants
+
+
 def test_final_summary_keeps_failures_in_catastrophic_denominator():
     rows = [
         {

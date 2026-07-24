@@ -131,6 +131,75 @@ def test_proposed_trace_diagnostics_are_csv_visible():
     assert row["ngc_rescue_requested"] is True
 
 
+def test_external_clock_uses_raw_panel_delays_and_frozen_median():
+    p_hat = np.array([1.0, 0.5, 0.8])
+    centers = np.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]]
+    )
+    d_rb = np.array([2.0, 2.5, 3.0])
+    c0 = 299_792_458.0
+    panel_clock_ns = np.array([4.0, 5.0, 9.0])
+    supports = []
+    for panel, clock_ns in enumerate(panel_clock_ns):
+        geometric_s = (
+            np.linalg.norm(p_hat - centers[panel]) + d_rb[panel]
+        ) / c0
+        supports.append(
+            {
+                "panel": panel,
+                "tau": geometric_s + clock_ns * 1.0e-9,
+            }
+        )
+    data = {
+        "scene": {
+            "K": 3,
+            "p_u_true": p_hat.copy(),
+            "delta_t_true": 5.0e-9,
+            "ris_centers": centers,
+            "d_RB": d_rb,
+            "c0": c0,
+        },
+        "true_components": {},
+        "Y_true": np.ones((1, 1, 1), dtype=complex),
+        "Y_noisy": np.ones((1, 1, 1), dtype=complex),
+        "noise_variance": 0.0,
+    }
+    config = {
+        "seed": 1,
+        "SNR_dB": 0.0,
+        "K": 3,
+        "benchmark_clock_catastrophic_threshold_ns": 1.0,
+    }
+    result = common.BaselineResult(
+        name="als_cpd",
+        p_u=p_hat,
+        delta_t=6.5e-9,
+        Y_hat=data["Y_true"].copy(),
+        raw_objective_final=0.0,
+        selected_support=supports,
+    )
+    row = common.make_baseline_row(result, data, config)
+
+    assert np.isclose(row["clock_estimate_ns"], 5.0)
+    assert np.isclose(row["clock_native_estimate_ns"], 6.5)
+    assert np.isclose(row["clock_error_ns"], 0.0, atol=1.0e-12)
+    assert np.isclose(row["clock_panel_mad_ns"], 1.0)
+    assert row["clock_num_panels"] == 3
+    assert row["clock_complete_panel_set"] is True
+    assert row["clock_invalid"] is False
+    assert row["clock_catastrophic"] is False
+    assert "no_clipping" in row["clock_extraction_rule"]
+    for field in (
+        "clock_estimate_ns",
+        "clock_native_estimate_ns",
+        "clock_error_ns",
+        "clock_invalid",
+        "clock_catastrophic",
+        "clock_extraction_rule",
+    ):
+        assert field in bench.FIELDNAMES
+
+
 def test_linear_ls_fit_recovers_known_complex_coefficients():
     rng = np.random.default_rng(1)
     Phi = rng.normal(size=(8, 2)) + 1j * rng.normal(size=(8, 2))
@@ -303,9 +372,18 @@ def test_baseline_wrappers_do_not_call_proposed_vp(monkeypatch):
     data = _make_data(config)
     data["Y_noisy"] = data["Y_true"].copy()
 
-    als_cpd.run_als_cpd_baseline(data, config)
-    ris_vbi_sbl.run_ris_vbi_sbl_baseline(data, config)
-    nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(data, config)
+    results = [
+        als_cpd.run_als_cpd_baseline(data, config),
+        ris_vbi_sbl.run_ris_vbi_sbl_baseline(data, config),
+        nf_ris_groupomp_localgrid_wls.run_nf_ris_groupomp_localgrid_wls_baseline(
+            data, config
+        ),
+    ]
+    for result in results:
+        row = common.make_baseline_row(result, data, config)
+        assert row["clock_invalid"] is False
+        assert np.isfinite(row["clock_estimate_ns"])
+        assert np.isfinite(row["clock_error_ns"])
 
 
 def test_benchmark_plot_metric_mapping_uses_peb_for_peb():
@@ -349,6 +427,40 @@ def test_benchmark_summary_distinguishes_mean_error_rmse_and_peb_rms():
     assert estimator["position_rmse_m_mean"] == 3.5
     assert peb["peb_position_m_mean"] == 2.0
     assert peb["peb_position_m_rms"] == np.sqrt(5.0)
+
+
+def test_benchmark_summary_reports_clock_tail_and_invalid_rates():
+    rows = [
+        {
+            "baseline": "als_cpd",
+            "snr_db": -10.0,
+            "failed": False,
+            "clock_error_ns": error,
+            "clock_invalid": False,
+            "clock_catastrophic": error > 1.0,
+            "runtime_s": 1.0,
+        }
+        for error in (3.0, 4.0)
+    ]
+    rows.append(
+        {
+            "baseline": "als_cpd",
+            "snr_db": -10.0,
+            "failed": True,
+            "clock_error_ns": float("nan"),
+            "clock_invalid": True,
+            "clock_catastrophic": False,
+            "runtime_s": float("nan"),
+        }
+    )
+    summary = bench.summarize_rows(rows)[0]
+
+    assert np.isclose(summary["clock_rmse_ns"], np.sqrt(12.5))
+    assert np.isclose(summary["clock_median_abs_error_ns"], 3.5)
+    assert np.isclose(summary["clock_p95_abs_error_ns"], 3.95)
+    assert np.isclose(summary["clock_invalid_rate"], 1.0 / 3.0)
+    assert np.isclose(summary["clock_catastrophic_rate"], 1.0)
+    assert np.isclose(summary["clock_catastrophic_or_invalid_rate"], 1.0)
 
 
 def test_constrained_jones_design_reduces_complex_nuisance_dimension():

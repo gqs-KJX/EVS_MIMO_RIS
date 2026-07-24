@@ -211,7 +211,7 @@ def default_config() -> dict:
         "wavelength": wavelength,
         "delta_f": 5.0e6,
         "delta_t_true": 5.0e-9,
-        "p_B": np.array([0.0, 0.0, 1.0]),
+        "p_B": np.array([-22.5, -12.5, 2.0]),
         "p_u_true": np.array([1.25, 0.55, 0.75]),
         "ris_centers": np.array(
             [

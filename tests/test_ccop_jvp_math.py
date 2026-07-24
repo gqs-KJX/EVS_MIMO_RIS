@@ -280,6 +280,9 @@ def test_clock_trigonometric_fft_derivatives_and_certificate_match_references():
     )
     profile = profiler.profile_clock(position)
     assert profile["clock_certified"]
+    assert profiler.clock_profile_evaluations == 1
+    assert profiler.clock_profile_certified_count == 1
+    assert profiler.clock_profile_max_certificate_gap_ratio <= 1.0
     assert profile["score"] + 1.0e-9 >= float(np.max(values))
     assert abs(profile["score"] - reference_score) / max(abs(reference_score), 1.0) < 1.0e-10
     assert profile["clock_certificate_gap_score"] <= profile["clock_certificate_tolerance_score"]
@@ -321,6 +324,13 @@ def test_near_clock_branch_switch_is_flagged_and_uses_outer_safeguard():
     assert result["clock_branch_ambiguous_seen"]
     assert result["outer_branch_safeguard_used"]
     assert "Powell" in result["optimizer"]["method"]
+    assert result["ccop_clock_profile_evaluations"] > 0
+    assert (
+        result["ccop_clock_profile_certified_count"]
+        == result["ccop_clock_profile_evaluations"]
+    )
+    assert result["ccop_clock_profiles_all_certified"]
+    assert result["ccop_clock_profile_max_certificate_gap_ratio"] <= 1.0
 
 
 def test_clock_distance_reparameterization_preserves_exact_objective():
@@ -344,6 +354,33 @@ def test_clock_distance_reparameterization_preserves_exact_objective():
         atol=1.0e-14,
     )
     assert abs(result["total_objective_final"] - reference["total_objective"]) < 1.0e-12
+
+    nanosecond_result = refine_four_dimensional_jvp_experimental(
+        y_noisy,
+        init,
+        scene,
+        config,
+        clock_coordinate="nanoseconds",
+        max_iter=0,
+        max_evaluations=1,
+    )
+    nanosecond_reference = profiler.evaluate_clock(
+        nanosecond_result["p_u"], nanosecond_result["delta_t"]
+    )
+    assert nanosecond_result["clock_coordinate"] == "nanoseconds"
+    assert np.isclose(
+        nanosecond_result["optimized_coordinate"][3],
+        1.0e9 * nanosecond_result["delta_t"],
+        rtol=0.0,
+        atol=1.0e-14,
+    )
+    assert (
+        abs(
+            nanosecond_result["total_objective_final"]
+            - nanosecond_reference["total_objective"]
+        )
+        < 1.0e-12
+    )
 
 
 def test_incumbent_ccop_selector_is_monotonic_for_exact_same_objective():

@@ -53,6 +53,12 @@ PAPER_VARIANTS = (
     "proposed",
     "mksc_gi_7_refresh_ccop",
     "oracle_position_start_ccop",
+    "mksc_gi_refresh_4d_seconds",
+    "mksc_gi_refresh_4d_nanoseconds",
+    "mksc_gi_refresh_4d_distance_m",
+    "mksc_gi_refresh_ccop_seconds",
+    "mksc_gi_refresh_ccop_nanoseconds",
+    "mksc_gi_refresh_ccop_distance_m",
 )
 
 VARIANT_LABELS = {
@@ -66,9 +72,53 @@ VARIANT_LABELS = {
     "proposed": "MKSC-GI-balanced + CCOP-JVP",
     "mksc_gi_7_refresh_ccop": "MKSC-GI (7 starts + refresh) + CCOP-JVP",
     "oracle_position_start_ccop": "Oracle-position-start CCOP (reference)",
+    "mksc_gi_refresh_4d_seconds": (
+        "MKSC-GI (4 starts + refresh) + 4-D VP [seconds]"
+    ),
+    "mksc_gi_refresh_4d_nanoseconds": (
+        "MKSC-GI (4 starts + refresh) + 4-D VP [nanoseconds]"
+    ),
+    "mksc_gi_refresh_4d_distance_m": (
+        "MKSC-GI (4 starts + refresh) + 4-D VP [clock range, m]"
+    ),
+    "mksc_gi_refresh_ccop_seconds": (
+        "MKSC-GI (4 starts + refresh) + CCOP [seconds label]"
+    ),
+    "mksc_gi_refresh_ccop_nanoseconds": (
+        "MKSC-GI (4 starts + refresh) + CCOP [nanoseconds label]"
+    ),
+    "mksc_gi_refresh_ccop_distance_m": (
+        "MKSC-GI (4 starts + refresh) + CCOP [clock range label, m]"
+    ),
     "free_jones_peb": "Data-only free-Jones PEB",
     "constrained_jones_peb": "Constrained-Jones PEB (reference)",
 }
+
+FOUR_D_CLOCK_COORDINATES = {
+    "old_4d": "seconds",
+    "scaled_4d": "distance_m",
+    "mksc_gi_refresh_4d_seconds": "seconds",
+    "mksc_gi_refresh_4d_nanoseconds": "nanoseconds",
+    "mksc_gi_refresh_4d_distance_m": "distance_m",
+}
+
+CCOP_CLOCK_UNIT_VARIANTS = {
+    "mksc_gi_refresh_ccop_seconds": "seconds",
+    "mksc_gi_refresh_ccop_nanoseconds": "nanoseconds",
+    "mksc_gi_refresh_ccop_distance_m": "distance_m",
+}
+
+GOOD_INITIALIZER_VARIANTS = frozenset(
+    {
+        "proposed",
+        *(
+            variant
+            for variant in FOUR_D_CLOCK_COORDINATES
+            if variant.startswith("mksc_gi_refresh_")
+        ),
+        *CCOP_CLOCK_UNIT_VARIANTS,
+    }
+)
 
 TRIAL_FIELDS = (
     "suite",
@@ -79,6 +129,12 @@ TRIAL_FIELDS = (
     "snr_db",
     "variant",
     "variant_label",
+    "initializer_family",
+    "inner_solver",
+    "clock_parameterization",
+    "clock_coordinate_scale_per_second",
+    "clock_parameterization_affects_solver",
+    "nonlinear_dim",
     "failed",
     "error",
     "resolved_config_hash",
@@ -113,9 +169,20 @@ TRIAL_FIELDS = (
     "rss_mb_after",
     "memory_measurement",
     "optimizer_evaluations",
+    "optimizer_iterations",
     "clock_interval_evaluations",
+    "clock_profile_evaluations",
+    "clock_profile_certified_count",
+    "clock_profiles_all_certified",
     "clock_certified",
     "clock_certificate_gap",
+    "clock_certificate_tolerance",
+    "clock_certificate_gap_ratio",
+    "clock_certificate_gap_max_over_positions",
+    "clock_certificate_gap_ratio_max_over_positions",
+    "clock_fft_peak_gap",
+    "clock_branch_gap_tolerance",
+    "clock_bnb_splits",
     "clock_branch_ambiguous",
     "outer_safeguard_used",
     "selected_candidate",
@@ -146,6 +213,11 @@ SUMMARY_FIELDS = (
     "x_value",
     "variant",
     "variant_label",
+    "initializer_family",
+    "inner_solver",
+    "clock_parameterization",
+    "clock_coordinate_scale_per_second",
+    "clock_parameterization_affects_solver",
     "n",
     "n_failed",
     "n_success",
@@ -183,8 +255,19 @@ SUMMARY_FIELDS = (
     "common_geometry_runtime_median_s",
     "anchor_refresh_runtime_median_s",
     "stage3_runtime_median_s",
+    "nonlinear_dim_median",
+    "optimizer_evaluations_median",
+    "optimizer_iterations_median",
+    "clock_profile_evaluations_median",
+    "clock_all_positions_certified_rate",
     "clock_certificate_rate",
     "clock_certificate_gap_p95",
+    "clock_certificate_tolerance_p95",
+    "clock_certificate_gap_ratio_p95",
+    "clock_certificate_gap_max_over_positions_max",
+    "clock_certificate_gap_ratio_max_over_positions_p95",
+    "clock_certificate_gap_ratio_max_over_positions_max",
+    "clock_fft_peak_gap_median",
     "stage1_basin_acquisition_rate",
     "stage1_delay_rmse_ns_median",
     "stage1_delay_rmse_ns_p95",
@@ -458,7 +541,7 @@ def _stage1_for_variant(
         return cache.joint(1, False)
     if variant == "mksc_gi_4_no_refresh_ccop":
         return cache.joint(4, False)
-    if variant == "proposed":
+    if variant in GOOD_INITIALIZER_VARIANTS:
         return cache.joint(4, True)
     if variant == "mksc_gi_7_refresh_ccop":
         return cache.joint(7, True)
@@ -613,6 +696,46 @@ def _delay_subspace_scalars(stage1: dict, k_paths: int) -> dict[str, float]:
     }
 
 
+def _variant_execution_metadata(variant: str, scene: dict) -> dict[str, Any]:
+    if variant in {"old_4d", "scaled_4d", "old_stage1_ccop"}:
+        initializer_family = "frozen_stage1"
+    elif variant in GOOD_INITIALIZER_VARIANTS:
+        initializer_family = "mksc_gi_4_starts_refresh"
+    else:
+        initializer_family = f"component_specific:{variant}"
+
+    if variant in FOUR_D_CLOCK_COORDINATES:
+        parameterization = FOUR_D_CLOCK_COORDINATES[variant]
+        scale = {
+            "seconds": 1.0,
+            "nanoseconds": 1.0e9,
+            "distance_m": float(scene["c0"]),
+        }[parameterization]
+        inner_solver = "explicit_4d_lbfgsb"
+        affects_solver = True
+        nonlinear_dim = 4
+    else:
+        parameterization = CCOP_CLOCK_UNIT_VARIANTS.get(
+            variant, "profiled_unit_free"
+        )
+        scale = {
+            "seconds": 1.0,
+            "nanoseconds": 1.0e9,
+            "distance_m": float(scene["c0"]),
+        }.get(parameterization, float("nan"))
+        inner_solver = "ccop_profiled_3d"
+        affects_solver = False
+        nonlinear_dim = 3
+    return {
+        "initializer_family": initializer_family,
+        "inner_solver": inner_solver,
+        "clock_parameterization": parameterization,
+        "clock_coordinate_scale_per_second": scale,
+        "clock_parameterization_affects_solver": affects_solver,
+        "nonlinear_dim": nonlinear_dim,
+    }
+
+
 def run_paper_variant(
     variant: str,
     *,
@@ -629,6 +752,7 @@ def run_paper_variant(
     if variant not in PAPER_VARIANTS:
         raise ValueError(f"unknown variant {variant!r}")
     stage1_cache = cache if cache is not None else Stage1Cache(data, config)
+    execution_metadata = _variant_execution_metadata(variant, data["scene"])
     row = {field: "" for field in TRIAL_FIELDS}
     row.update(
         {
@@ -640,6 +764,7 @@ def run_paper_variant(
             "snr_db": float(config["SNR_dB"]),
             "variant": variant,
             "variant_label": VARIANT_LABELS[variant],
+            **execution_metadata,
             "failed": False,
             "error": "",
             "resolved_config_hash": canonical_hash(config),
@@ -659,24 +784,14 @@ def run_paper_variant(
         stage1, stage1_times = _stage1_for_variant(variant, stage1_cache)
         xi0 = _initial_xi_from_stage1(stage1, data["scene"], config)
         stage3_start = time.perf_counter()
-        if variant == "old_4d":
+        if variant in FOUR_D_CLOCK_COORDINATES:
             final = _quiet_call(
                 refine_four_dimensional_jvp_experimental,
                 data["Y_noisy"],
                 copy.deepcopy(stage1),
                 data["scene"],
                 config,
-                clock_coordinate="seconds",
-                max_iter=80,
-            )
-        elif variant == "scaled_4d":
-            final = _quiet_call(
-                refine_four_dimensional_jvp_experimental,
-                data["Y_noisy"],
-                copy.deepcopy(stage1),
-                data["scene"],
-                config,
-                clock_coordinate="distance_m",
+                clock_coordinate=FOUR_D_CLOCK_COORDINATES[variant],
                 max_iter=80,
             )
         else:
@@ -705,6 +820,18 @@ def run_paper_variant(
                 final.get("clock_global_gap", final.get("clock_objective_gap", np.nan)),
             ),
         )
+        certificate_tolerance = (
+            float(final.get("clock_certificate_tolerance_score", np.nan))
+            / max(np.size(data["Y_noisy"]), 1)
+        )
+        certificate_gap_ratio = (
+            float(certificate_gap) / certificate_tolerance
+            if np.isfinite(float(certificate_gap))
+            and np.isfinite(certificate_tolerance)
+            and certificate_tolerance > 0.0
+            else float("nan")
+        )
+        is_four_dimensional = variant in FOUR_D_CLOCK_COORDINATES
         row.update(
             {
                 "stage1_output_hash": canonical_hash(
@@ -735,18 +862,83 @@ def run_paper_variant(
                 "optimizer_evaluations": int(
                     optimizer.get("n_eval", final.get("ccop_position_evaluations", 0))
                 ),
+                "optimizer_iterations": int(optimizer.get("n_iter", 0)),
                 "clock_interval_evaluations": int(
                     final.get("ccop_clock_interval_evaluations", 0)
                 ),
+                "clock_profile_evaluations": (
+                    int(final.get("ccop_clock_profile_evaluations", 0))
+                    if not is_four_dimensional
+                    else 0
+                ),
+                "clock_profile_certified_count": (
+                    int(final.get("ccop_clock_profile_certified_count", 0))
+                    if not is_four_dimensional
+                    else 0
+                ),
+                "clock_profiles_all_certified": (
+                    bool(final.get("ccop_clock_profiles_all_certified", False))
+                    if not is_four_dimensional
+                    else ""
+                ),
                 "clock_certified": (
                     bool(final.get("clock_certified", False))
-                    if variant not in {"old_4d", "scaled_4d"}
+                    if not is_four_dimensional
                     else ""
                 ),
                 "clock_certificate_gap": (
                     float(certificate_gap)
-                    if variant not in {"old_4d", "scaled_4d"}
+                    if not is_four_dimensional
                     else float("nan")
+                ),
+                "clock_certificate_tolerance": (
+                    certificate_tolerance
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_certificate_gap_ratio": (
+                    certificate_gap_ratio
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_certificate_gap_max_over_positions": (
+                    float(
+                        final.get(
+                            "ccop_clock_profile_max_certificate_gap_objective",
+                            np.nan,
+                        )
+                    )
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_certificate_gap_ratio_max_over_positions": (
+                    float(
+                        final.get(
+                            "ccop_clock_profile_max_certificate_gap_ratio",
+                            np.nan,
+                        )
+                    )
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_fft_peak_gap": (
+                    float(final.get("clock_fft_peak_gap_objective", np.nan))
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_branch_gap_tolerance": (
+                    float(
+                        final.get(
+                            "clock_branch_gap_tolerance_objective", np.nan
+                        )
+                    )
+                    if not is_four_dimensional
+                    else float("nan")
+                ),
+                "clock_bnb_splits": (
+                    int(final.get("clock_bnb_splits", 0))
+                    if not is_four_dimensional
+                    else 0
                 ),
                 "clock_branch_ambiguous": bool(
                     final.get("clock_branch_ambiguous_seen", False)
@@ -849,6 +1041,36 @@ def run_paired_variants(
     hashes = {str(row["y_noisy_hash"]) for row in rows}
     if len(hashes) != 1:
         raise RuntimeError(f"paired variants did not share Y_noisy: {sorted(hashes)}")
+    for initializer_family in {
+        str(row.get("initializer_family", "")) for row in rows
+    }:
+        stage1_hashes = {
+            str(row["stage1_output_hash"])
+            for row in rows
+            if str(row.get("initializer_family", "")) == initializer_family
+            and str(row.get("failed", "False")).lower() != "true"
+            and str(row.get("stage1_output_hash", ""))
+        }
+        if len(stage1_hashes) > 1:
+            raise RuntimeError(
+                "paired variants did not share the declared initializer: "
+                f"family={initializer_family} hashes={sorted(stage1_hashes)}"
+            )
+    ccop_unit_rows = [
+        row
+        for row in rows
+        if str(row.get("variant", "")) in CCOP_CLOCK_UNIT_VARIANTS
+        and str(row.get("failed", "False")).lower() != "true"
+    ]
+    if len(ccop_unit_rows) > 1:
+        candidate_hashes = {
+            str(row.get("candidate_hash", "")) for row in ccop_unit_rows
+        }
+        if len(candidate_hashes) != 1:
+            raise RuntimeError(
+                "CCOP changed under a clock-unit label even though the clock "
+                f"is profiled: hashes={sorted(candidate_hashes)}"
+            )
     return rows
 
 
@@ -939,11 +1161,35 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         geometry_runtime = _finite(selected, "common_geometry_runtime_s")
         refresh_runtime = _finite(selected, "anchor_refresh_runtime_s")
         stage3_runtime = _finite(selected, "stage3_runtime_s")
+        nonlinear_dim = _finite(selected, "nonlinear_dim")
+        optimizer_evaluations = _finite(selected, "optimizer_evaluations")
+        optimizer_iterations = _finite(selected, "optimizer_iterations")
+        clock_profile_evaluations = _finite(
+            selected, "clock_profile_evaluations"
+        )
         certificate_gap = _finite(selected, "clock_certificate_gap")
+        certificate_tolerance = _finite(
+            selected, "clock_certificate_tolerance"
+        )
+        certificate_gap_ratio = _finite(
+            selected, "clock_certificate_gap_ratio"
+        )
+        trajectory_certificate_gap = _finite(
+            selected, "clock_certificate_gap_max_over_positions"
+        )
+        trajectory_certificate_gap_ratio = _finite(
+            selected, "clock_certificate_gap_ratio_max_over_positions"
+        )
+        fft_peak_gap = _finite(selected, "clock_fft_peak_gap")
         certificate_values = [
             str(row.get("clock_certified", "")).lower() == "true"
             for row in selected
             if str(row.get("clock_certified", "")).lower() in {"true", "false"}
+        ]
+        all_positions_certificate_values = [
+            str(row.get("clock_profiles_all_certified", "")).lower() == "true"
+            for row in selected
+            if str(row.get("clock_profiles_all_certified", "")) != ""
         ]
         stage1_delay_rmse = _finite(selected, "stage1_delay_rmse_ns")
         hessian_minimum = _finite(selected, "common_geometry_hessian_min_eig")
@@ -977,6 +1223,19 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 "x_value": x_value,
                 "variant": variant,
                 "variant_label": variant_label,
+                "initializer_family": str(
+                    selected[0].get("initializer_family", "")
+                ),
+                "inner_solver": str(selected[0].get("inner_solver", "")),
+                "clock_parameterization": str(
+                    selected[0].get("clock_parameterization", "")
+                ),
+                "clock_coordinate_scale_per_second": selected[0].get(
+                    "clock_coordinate_scale_per_second", float("nan")
+                ),
+                "clock_parameterization_affects_solver": selected[0].get(
+                    "clock_parameterization_affects_solver", ""
+                ),
                 "n": len(selected),
                 "n_failed": int(failed),
                 "n_success": int(successful),
@@ -1038,12 +1297,43 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 "common_geometry_runtime_median_s": percentile(geometry_runtime, 50),
                 "anchor_refresh_runtime_median_s": percentile(refresh_runtime, 50),
                 "stage3_runtime_median_s": percentile(stage3_runtime, 50),
+                "nonlinear_dim_median": percentile(nonlinear_dim, 50),
+                "optimizer_evaluations_median": percentile(
+                    optimizer_evaluations, 50
+                ),
+                "optimizer_iterations_median": percentile(
+                    optimizer_iterations, 50
+                ),
+                "clock_profile_evaluations_median": percentile(
+                    clock_profile_evaluations, 50
+                ),
+                "clock_all_positions_certified_rate": (
+                    float(np.mean(all_positions_certificate_values))
+                    if all_positions_certificate_values
+                    else float("nan")
+                ),
                 "clock_certificate_rate": (
                     float(np.mean(certificate_values))
                     if certificate_values
                     else float("nan")
                 ),
                 "clock_certificate_gap_p95": percentile(certificate_gap, 95),
+                "clock_certificate_tolerance_p95": percentile(
+                    certificate_tolerance, 95
+                ),
+                "clock_certificate_gap_ratio_p95": percentile(
+                    certificate_gap_ratio, 95
+                ),
+                "clock_certificate_gap_max_over_positions_max": percentile(
+                    trajectory_certificate_gap, 100
+                ),
+                "clock_certificate_gap_ratio_max_over_positions_p95": percentile(
+                    trajectory_certificate_gap_ratio, 95
+                ),
+                "clock_certificate_gap_ratio_max_over_positions_max": percentile(
+                    trajectory_certificate_gap_ratio, 100
+                ),
+                "clock_fft_peak_gap_median": percentile(fft_peak_gap, 50),
                 "stage1_basin_acquisition_rate": float(
                     sum(
                         str(row.get("stage1_basin_acquired", "False")).lower()
