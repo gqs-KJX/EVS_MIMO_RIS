@@ -679,9 +679,18 @@ def build_jones_basis_evs_atoms(scene: dict, config: dict, path_index: int | Non
 
 
 def delay_response(scene: dict, tau: float) -> np.ndarray:
-    n_idx = np.arange(int(scene["N"]), dtype=float)
-    pole = np.exp(-1j * 2.0 * np.pi * float(scene["delta_f"]) * float(tau))
-    return pole ** n_idx
+    n_idx = np.asarray(
+        scene.get("subcarrier_indices", np.arange(int(scene["N"]))),
+        dtype=float,
+    )
+    return np.exp(
+        -1j
+        * 2.0
+        * np.pi
+        * float(scene["delta_f"])
+        * float(tau)
+        * n_idx
+    )
 
 
 def training_response_from_position(scene: dict, panel: int, p_u: np.ndarray, *, near_field: bool = True) -> np.ndarray:

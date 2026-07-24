@@ -48,7 +48,10 @@ def _hermitian(matrix: np.ndarray) -> np.ndarray:
 
 def common_clock_frequency_phase(scene: dict, delta_t_s: float) -> np.ndarray:
     """Return the unit-modulus OFDM phase defining the common-clock orbit."""
-    n_index = np.arange(int(scene["N"]), dtype=float)
+    n_index = np.asarray(
+        scene.get("subcarrier_indices", np.arange(int(scene["N"]))),
+        dtype=float,
+    )
     return np.exp(
         -1j
         * 2.0
@@ -311,7 +314,12 @@ class CommonClockJonesProfiler:
         """Evaluate the orbit-reduced objective at one fixed position and clock."""
         orbit = self._position_orbit(p_u) if orbit is None else orbit
         theta = self.omega0 * float(delta_t_s)
-        n_power = np.arange(int(self.scene["N"]), dtype=float)
+        n_power = np.asarray(
+            self.scene.get(
+                "subcarrier_indices", np.arange(int(self.scene["N"]))
+            ),
+            dtype=float,
+        )
         phase = np.exp(1j * n_power * theta)
         rhs = phase @ orbit["u"]
         try:

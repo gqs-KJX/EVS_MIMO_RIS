@@ -86,10 +86,15 @@ def build_local_fix_records(
         if not reason:
             range_m, theta, phi = (float(value) for value in ris_eta[panel])
             search = local_ris_search_config(scene, config, panel)
+            azimuth_in_domain = any(
+                search["az_bounds"][0] <= phi + 2.0 * np.pi * shift
+                <= search["az_bounds"][1]
+                for shift in range(-2, 3)
+            )
             if not (
                 search["range_bounds"][0] <= range_m <= search["range_bounds"][1]
                 and search["elev_bounds"][0] <= theta <= search["elev_bounds"][1]
-                and search["az_bounds"][0] <= phi <= search["az_bounds"][1]
+                and azimuth_in_domain
             ):
                 reason = "local_geometry_out_of_domain"
         local_position = np.full(3, np.nan, dtype=float)

@@ -211,6 +211,9 @@ def default_config() -> dict:
         "wavelength": wavelength,
         "delta_f": 5.0e6,
         "delta_t_true": 5.0e-9,
+        "geometry_version": "mixed_nf_ff_oriented_v2",
+        "ris_orientation_mode": "ue_box_bs_maximin",
+        "subcarrier_index_mode": "centered",
         "p_B": np.array([-22.5, -12.5, 2.0]),
         "p_u_true": np.array([1.25, 0.55, 0.75]),
         "ris_centers": np.array(
@@ -219,6 +222,28 @@ def default_config() -> dict:
                 [5.10, 2.10, 1.15],
                 [4.80, 0.00, 1.25],
             ]
+        ),
+        # Deterministic UE-box/BS maximin normals with wall-like roll.
+        # Rows are the local x/y/normal axes, i.e. global-to-RIS rotations.
+        "ris_rotations": np.array(
+            [
+                [
+                    [-0.400667526567494, -0.916223517027524, 0.0],
+                    [-0.024164650827696, 0.010567280469848, 0.999652140613847],
+                    [-0.915904800077313, 0.400528150607651, -0.026374187497493],
+                ],
+                [
+                    [0.521179345875954, -0.853447180224010, 0.0],
+                    [-0.045057557158057, -0.027515549539037, 0.998605383060052],
+                    [-0.852256948329118, -0.520452500331444, -0.052794781214499],
+                ],
+                [
+                    [-0.015857896981016, -0.999874255645849, 0.0],
+                    [-0.108407871531637, 0.001719337055608, 0.994105013200351],
+                    [-0.993980010107507, 0.015764414887643, -0.108421504923749],
+                ],
+            ],
+            dtype=float,
         ),
         "ue_bounds": np.array(
             [
@@ -243,9 +268,9 @@ def default_config() -> dict:
         "stage1_ris_residual_type": "exact_shortlisted_projection",
         "stage1_assignment_num_exact_permutations": 2,
         "ris_search": {
-            "range_bounds": (2.5, 6.5),
-            "elev_bounds": (-0.45, 0.25),
-            "az_bounds": (-np.pi, np.pi),
+            "bounds_mode": "induced_by_ue_box",
+            "range_guard_m": 0.05,
+            "angle_guard_deg": 2.0,
             "num_range": 9,
             "num_elev": 5,
             "num_az": 13,
@@ -270,6 +295,12 @@ def default_config() -> dict:
             "use_fresnel_warm_start": True,
             "stage2_warm_start_mode": "coarse_exact_multistart",
             "stage2_warm_start_shortlist_size": 4,
+        },
+        "spatial_narrowband_audit": {
+            "enabled": True,
+            "max_phase_residual_rad": np.pi / 8.0,
+            "preferred_aligned_residual": 0.05,
+            "hard_aligned_residual": 0.10,
         },
         "num_structured_iters": 1,
         "stage2_ris_rescue_max_iters": 1,

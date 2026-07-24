@@ -6,12 +6,14 @@ import numpy as np
 
 from .geometry import (
     far_field_ris_response,
+    induced_local_geometry_bounds,
     local_geometry_from_position,
     make_ris_grid,
     maxwell_matrix,
     near_field_spherical_response,
     polarization_vector,
     ula_steering,
+    validate_ris_rotations,
 )
 from .utils import check_finite, complex_awgn
 
@@ -35,7 +37,27 @@ def generate_scene(config: dict, rng: np.random.Generator) -> dict:
     m_r = mx * my
     wavelength = config["wavelength"]
     ris_grid = make_ris_grid(mx, my, wavelength / 2.0, wavelength / 2.0)
-    rotations = np.repeat(np.eye(3)[None, :, :], k_paths, axis=0)
+    if "ris_rotations" not in config:
+        raise ValueError(
+            "config['ris_rotations'] is required by geometry/model v2"
+        )
+    rotations = validate_ris_rotations(
+        config["ris_rotations"], expected_count=k_paths
+    )[:k_paths].copy()
+
+    subcarrier_index_mode = str(
+        config.get("subcarrier_index_mode", "legacy_zero_based")
+    )
+    if subcarrier_index_mode == "centered":
+        subcarrier_indices = (
+            np.arange(config["N"], dtype=float) - (config["N"] - 1) / 2.0
+        )
+    elif subcarrier_index_mode in {"legacy_zero_based", "zero_based"}:
+        subcarrier_indices = np.arange(config["N"], dtype=float)
+    else:
+        raise ValueError(
+            f"unknown subcarrier_index_mode {subcarrier_index_mode!r}"
+        )
 
     omega = np.empty((k_paths, config["T"], m_r), dtype=complex)
     for k in range(k_paths):
@@ -49,6 +71,26 @@ def generate_scene(config: dict, rng: np.random.Generator) -> dict:
             f"config requests K={k_paths} RIS paths but only "
             f"{ris_centers.shape[0]} ris_centers are configured"
         )
+    search_config = dict(config["ris_search"])
+    bounds_mode = str(search_config.get("bounds_mode", "manual"))
+    ris_search_bounds = []
+    if bounds_mode == "induced_by_ue_box":
+        range_guard_m = float(search_config.get("range_guard_m", 0.05))
+        angle_guard_rad = np.deg2rad(
+            float(search_config.get("angle_guard_deg", 2.0))
+        )
+        for k in range(k_paths):
+            ris_search_bounds.append(
+                induced_local_geometry_bounds(
+                    ris_centers[k],
+                    rotations[k],
+                    config["ue_bounds"],
+                    range_guard_m=range_guard_m,
+                    angle_guard_rad=angle_guard_rad,
+                )
+            )
+    elif bounds_mode != "manual":
+        raise ValueError(f"unknown RIS bounds_mode {bounds_mode!r}")
     receiver_mode = str(config.get("receiver_mode", config.get("evs_selection", "full_6d")))
     evs_component_mask = evs_component_selection(receiver_mode)
     evs_observation_mask = np.tile(evs_component_mask, config["M_A"]).astype(bool)
@@ -102,6 +144,13 @@ def generate_scene(config: dict, rng: np.random.Generator) -> dict:
         "beta_true": beta_true,
         "delta_t_true": float(config["delta_t_true"]),
         "delta_f": float(config["delta_f"]),
+        "geometry_version": str(config.get("geometry_version", "legacy")),
+        "ris_orientation_mode": str(
+            config.get("ris_orientation_mode", "explicit")
+        ),
+        "subcarrier_index_mode": subcarrier_index_mode,
+        "subcarrier_indices": subcarrier_indices,
+        "ris_search_bounds": ris_search_bounds,
         "wavelength": wavelength,
         "c0": float(config["c0"]),
     }
@@ -157,7 +206,14 @@ def channel_components(
 
         tau = (range_m + scene["d_RB"][k]) / scene["c0"] + delta_t
         pole = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau)
-        d_delay[k] = pole ** np.arange(scene["N"])
+        d_delay[k] = np.exp(
+            -1j
+            * 2.0
+            * np.pi
+            * scene["delta_f"]
+            * tau
+            * np.asarray(scene["subcarrier_indices"], dtype=float)
+        )
 
         ranges[k] = range_m
         elevations[k] = elev

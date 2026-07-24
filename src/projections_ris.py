@@ -15,6 +15,7 @@ import numpy as np
 
 from .geometry import (
     elev_az_from_unit_vector,
+    induced_local_geometry_bounds,
     near_field_spherical_response,
     unit_vector_from_elev_az,
 )
@@ -93,48 +94,38 @@ def local_ris_search_config(scene: dict, config: dict, path: int) -> dict:
     """Build RIS-specific geometry-search bounds from UE position bounds."""
     base = dict(config["ris_search"])
     base["panel_index"] = int(path)
-    ue_bounds = np.asarray(config["ue_bounds"], dtype=float)
-    corners = np.array(
-        [
-            [x, y, z]
-            for x in ue_bounds[0]
-            for y in ue_bounds[1]
-            for z in ue_bounds[2]
-        ],
-        dtype=float,
-    )
-    ranges = []
-    elevations = []
-    azimuths = []
-    for corner in corners:
-        q_local = scene["rotations"][path] @ (corner - scene["ris_centers"][path])
-        range_m = np.linalg.norm(q_local)
-        if range_m <= 0.0:
-            continue
-        elev, az = elev_az_from_unit_vector(q_local / range_m)
-        ranges.append(range_m)
-        elevations.append(elev)
-        azimuths.append(az)
+    bounds_mode = str(base.get("bounds_mode", "manual"))
+    if bounds_mode == "induced_by_ue_box":
+        saved_bounds = scene.get("ris_search_bounds", [])
+        if len(saved_bounds) > int(path):
+            panel_bounds = dict(saved_bounds[int(path)])
+        else:
+            panel_bounds = induced_local_geometry_bounds(
+                scene["ris_centers"][path],
+                scene["rotations"][path],
+                config["ue_bounds"],
+                range_guard_m=float(base.get("range_guard_m", 0.05)),
+                angle_guard_rad=np.deg2rad(
+                    float(base.get("angle_guard_deg", 2.0))
+                ),
+            )
+        base.update(panel_bounds)
+    elif bounds_mode == "explicit_per_panel":
+        for key in ("range_bounds", "elev_bounds", "az_bounds"):
+            values = np.asarray(base[key], dtype=float)
+            if values.ndim != 2 or values.shape[1] != 2:
+                raise ValueError(f"{key} must have shape (num_ris, 2)")
+            base[key] = tuple(float(value) for value in values[int(path)])
+    elif bounds_mode != "manual":
+        raise ValueError(f"unknown RIS bounds_mode {bounds_mode!r}")
 
-    range_margin = float(base.get("local_range_margin", 0.35))
-    angle_margin = float(base.get("local_angle_margin", 0.10))
-    global_r_min, global_r_max = base["range_bounds"]
-    global_e_min, global_e_max = base["elev_bounds"]
-    base["range_bounds"] = (
-        max(global_r_min, float(np.min(ranges) - range_margin)),
-        min(global_r_max, float(np.max(ranges) + range_margin)),
-    )
-    base["elev_bounds"] = (
-        max(global_e_min, float(np.min(elevations) - angle_margin)),
-        min(global_e_max, float(np.max(elevations) + angle_margin)),
-    )
-
-    azimuths = np.asarray(azimuths)
-    center = np.angle(np.mean(np.exp(1j * azimuths)))
-    diffs = np.angle(np.exp(1j * (azimuths - center)))
-    az_min = center + float(np.min(diffs) - angle_margin)
-    az_max = center + float(np.max(diffs) + angle_margin)
-    base["az_bounds"] = (az_min, az_max)
+    for key in ("range_bounds", "elev_bounds", "az_bounds"):
+        if key not in base:
+            raise ValueError(f"RIS search configuration is missing {key!r}")
+        lower, upper = (float(value) for value in base[key])
+        if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+            raise ValueError(f"invalid panel {path} {key}: {(lower, upper)}")
+        base[key] = (lower, upper)
     return base
 
 

@@ -670,7 +670,9 @@ def test_single_ris_has_snr_independent_position_floor():
 
     assert errors[0] > 0.1
     assert errors[1] > 0.1
-    assert errors[1] >= 0.8 * errors[0]
+    # The oriented-v2 panel improves conditioning slightly, but one RIS still
+    # retains a large, SNR-independent localization floor.
+    assert errors[1] >= 0.75 * errors[0]
 
 
 def test_pipeline_default_skips_legacy_structured_refinement(monkeypatch):

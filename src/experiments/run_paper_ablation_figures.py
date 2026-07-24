@@ -32,7 +32,7 @@ if __package__ in (None, ""):
     from src.channel_model import channel_components, evs_component_selection
     from src.config import default_config
     from src.diagnostics import estimate_position_from_ris_eta
-    from src.geometry import polarization_vector
+    from src.geometry import polarization_vector, solve_ue_box_bs_maximin_rotation
     from src.estimators import (
         reconstruct_raw_tensor_from_structured_estimate,
         estimate_position_from_local_ris,
@@ -76,7 +76,7 @@ else:
     from ..channel_model import channel_components, evs_component_selection
     from ..config import default_config
     from ..diagnostics import estimate_position_from_ris_eta
-    from ..geometry import polarization_vector
+    from ..geometry import polarization_vector, solve_ue_box_bs_maximin_rotation
     from ..estimators import (
         reconstruct_raw_tensor_from_structured_estimate,
         estimate_position_from_local_ris,
@@ -614,6 +614,23 @@ def set_number_of_ris_paths(config: dict, k_paths: int) -> dict:
             extra.append([x_offset, y_offset, z_offset])
         ris_centers = np.vstack([ris_centers, np.asarray(extra, dtype=float)])
     config["ris_centers"] = ris_centers
+    rotations = np.asarray(config.get("ris_rotations", []), dtype=float)
+    if rotations.shape[0] < k_paths:
+        resolved = []
+        for panel in range(k_paths):
+            initial = (
+                rotations[panel, 2]
+                if rotations.ndim == 3 and panel < rotations.shape[0]
+                else None
+            )
+            rotation, _ = solve_ue_box_bs_maximin_rotation(
+                ris_centers[panel],
+                config["p_B"],
+                config["ue_bounds"],
+                initial_normal=initial,
+            )
+            resolved.append(rotation)
+        config["ris_rotations"] = np.asarray(resolved, dtype=float)
     config["jnpp_max_candidates"] = max(int(config.get("jnpp_max_candidates", 1)), 1 + k_paths)
     config["jnpp_top_assignments"] = min(3, math.factorial(k_paths))
     return config

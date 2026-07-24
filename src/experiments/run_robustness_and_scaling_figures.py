@@ -30,6 +30,7 @@ if __package__ in (None, ""):
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from src.config import default_config
+    from src.geometry import solve_ue_box_bs_maximin_rotation
     from src.experiments.resource_control import (
         apply_thread_limits,
         assert_row_is_light,
@@ -68,6 +69,7 @@ else:
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
     from ..config import default_config
+    from ..geometry import solve_ue_box_bs_maximin_rotation
     from .resource_control import (
         apply_thread_limits,
         assert_row_is_light,
@@ -552,6 +554,19 @@ def make_config(
         position = ue_position_on_centroid_ray(config, float(r_ue_m))
         config["ue_bounds"] = translated_ue_bounds(config, position)
         config["p_u_true"] = position
+        config["ris_rotations"] = np.asarray(
+            [
+                solve_ue_box_bs_maximin_rotation(
+                    center,
+                    config["p_B"],
+                    config["ue_bounds"],
+                )[0]
+                for center in np.asarray(config["ris_centers"], dtype=float)[
+                    : int(config["K"])
+                ]
+            ],
+            dtype=float,
+        )
         bounds = np.asarray(config["ue_bounds"], dtype=float)
         assert np.all(position > bounds[:, 0])
         assert np.all(position < bounds[:, 1])
@@ -1123,38 +1138,17 @@ def adjust_config_for_resolvability(config: dict, delta_tau_min_ns: float) -> di
         p_u, p_B, ris_centers[idx[2]], t2, delta_t, c0
     )
     config["ris_centers"] = ris_centers
-
-    # Moving the panels changes the physically admissible UE-to-RIS ranges.
-    # Expand the estimator range coverage before Stage-I builds panel-local
-    # bounds; otherwise the intersection can be empty (the former 20 ns bug).
-    ue_bounds = np.asarray(config["ue_bounds"], dtype=float)
-    corners = np.array(
+    config["ris_rotations"] = np.asarray(
         [
-            [x, y, z]
-            for x in ue_bounds[0]
-            for y in ue_bounds[1]
-            for z in ue_bounds[2]
+            solve_ue_box_bs_maximin_rotation(
+                center,
+                config["p_B"],
+                config["ue_bounds"],
+            )[0]
+            for center in ris_centers
         ],
         dtype=float,
     )
-    coverage_ranges = np.asarray(
-        [np.linalg.norm(corner - center) for center in ris_centers for corner in corners],
-        dtype=float,
-    )
-    ris_search = dict(config["ris_search"])
-    old_lower, old_upper = map(float, ris_search["range_bounds"])
-    range_margin = float(ris_search.get("local_range_margin", 0.35))
-    ris_search["range_bounds"] = (
-        max(1.0e-6, min(old_lower, float(np.min(coverage_ranges)) - range_margin)),
-        max(old_upper, float(np.max(coverage_ranges)) + range_margin),
-    )
-    config["ris_search"] = ris_search
-    true_ranges = np.linalg.norm(ris_centers - p_u[None, :], axis=1)
-    if not np.all(
-        (true_ranges > ris_search["range_bounds"][0])
-        & (true_ranges < ris_search["range_bounds"][1])
-    ):
-        raise ValueError("Fig.11 true UE-to-RIS range lies outside RIS search bounds")
 
     # Recompute actual delays
     final_delays = []

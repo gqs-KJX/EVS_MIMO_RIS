@@ -8,6 +8,7 @@ from src.config import default_config
 from src.experiments import run_final_mksc_ccop_robustness as final_robustness
 from src.experiments import run_robustness_and_scaling_figures as figures
 from src.main_single_proposed import _make_data
+from src.projections_ris import local_ris_search_config
 
 
 def _tiny_config(k_paths: int = 1) -> dict:
@@ -328,16 +329,24 @@ def test_rue_sweep_translates_bounds_and_strictly_contains_truth():
         np.testing.assert_allclose(np.diff(bounds, axis=1), original_span)
 
 
-def test_resolvability_expands_ris_range_bounds_for_20ns():
+def test_resolvability_induces_panel_range_bounds_for_20ns():
     config = figures.make_config(4006735837, 0.0, 3)
     varied = figures.adjust_config_for_resolvability(config, 20.0)
     truth = np.asarray(varied["p_u_true"], dtype=float)
     centers = np.asarray(varied["ris_centers"], dtype=float)
     ranges = np.linalg.norm(centers - truth[None, :], axis=1)
-    lower, upper = varied["ris_search"]["range_bounds"]
-    assert np.all(ranges > lower)
-    assert np.all(ranges < upper)
-    assert upper > 9.5
+    scene = figures.generate_scene(
+        varied, np.random.default_rng(int(varied["seed"]))
+    )
+    panel_bounds = np.asarray(
+        [
+            local_ris_search_config(scene, varied, panel)["range_bounds"]
+            for panel in range(int(varied["K"]))
+        ]
+    )
+    assert np.all(ranges > panel_bounds[:, 0])
+    assert np.all(ranges < panel_bounds[:, 1])
+    assert np.max(panel_bounds[:, 1]) > 9.5
 
 
 def test_failed_only_summary_reports_nan_outlier_rate():

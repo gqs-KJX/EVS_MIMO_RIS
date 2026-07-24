@@ -220,7 +220,9 @@ def _build_global_vp_cache(scene: dict) -> dict:
     ]
     return {
         "rho": np.asarray(scene["ris_grid"], dtype=float),
-        "n_idx": np.arange(scene["N"], dtype=float),
+        "n_idx": np.asarray(
+            scene.get("subcarrier_indices", np.arange(scene["N"])), dtype=float
+        ),
         "Omega_aRB": omega_arb,
         "R_GR": [np.asarray(scene["rotations"][k], dtype=float) for k in range(scene["K"])],
         "ris_centers": np.asarray(scene["ris_centers"], dtype=float),
@@ -519,7 +521,9 @@ def _build_global_dictionary(
     n_dim = scene["N"]
     t_dim = scene["T"]
     kappa = 2.0 * np.pi / scene["wavelength"]
-    n_idx = np.arange(n_dim, dtype=float)
+    n_idx = np.asarray(
+        scene.get("subcarrier_indices", np.arange(n_dim)), dtype=float
+    )
     num_atoms = int(sum(basis.shape[1] for basis in evs_bases))
 
     phi = np.empty((i_dim * n_dim * t_dim, num_atoms), dtype=complex)
@@ -559,7 +563,9 @@ def _build_global_dictionary(
         tau[k] = tau_k
         pole = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau_k)
         poles[k] = pole
-        d_vec = pole ** np.arange(n_dim)
+        d_vec = np.exp(
+            -1j * 2.0 * np.pi * scene["delta_f"] * tau_k * n_idx
+        )
         d_mat[:, k] = d_vec
 
         rho = scene["ris_grid"]
@@ -677,8 +683,10 @@ def _make_global_vp_gpu_context(
         "omega": [backend.asarray(scene["Omega"][k], dtype=cp.complex128) for k in range(scene["K"])],
         "a_rb": [backend.asarray(scene["a_RB"][k], dtype=cp.complex128) for k in range(scene["K"])],
         "d_rb": backend.asarray(scene["d_RB"], dtype=cp.float64),
-        "n_idx": cp.arange(scene["N"], dtype=cp.float64),
-        "n_idx_power": cp.arange(scene["N"], dtype=cp.int64),
+        "n_idx": backend.asarray(
+            scene.get("subcarrier_indices", np.arange(scene["N"])),
+            dtype=cp.float64,
+        ),
         "weight": None if weight is None else backend.asarray(weight),
         "tau_stage1": backend.asarray(stage1_factors["tau_phys"], dtype=cp.float64),
         "base_regularizer": backend.asarray(
@@ -745,7 +753,14 @@ def _build_global_dictionary_cupy(
         tau[k] = tau_k
         pole = cp.exp(-1j * 2.0 * cp.pi * float(scene["delta_f"]) * tau_k)
         poles[k] = pole
-        d_vec = pole ** context["n_idx_power"]
+        d_vec = cp.exp(
+            -1j
+            * 2.0
+            * cp.pi
+            * float(scene["delta_f"])
+            * tau_k
+            * context["n_idx"]
+        )
         d_mat[:, k] = d_vec
 
         diff = q_vec[None, :] - context["ris_grid"]
@@ -1205,7 +1220,9 @@ def _dynamic_vp_factors(
     n_dim = int(scene["N"])
     t_dim = int(scene["T"])
     kappa = 2.0 * np.pi / float(scene["wavelength"])
-    n_power = np.arange(n_dim)
+    n_power = np.asarray(
+        scene.get("subcarrier_indices", np.arange(n_dim)), dtype=float
+    )
     d_mat = np.empty((n_dim, k_paths), dtype=complex)
     c_mat = np.empty((t_dim, k_paths), dtype=complex)
     poles = np.empty(k_paths, dtype=complex)
@@ -1235,7 +1252,9 @@ def _dynamic_vp_factors(
         tau[k] = tau_k
         pole = np.exp(-1j * 2.0 * np.pi * scene["delta_f"] * tau_k)
         poles[k] = pole
-        d_mat[:, k] = pole ** n_power
+        d_mat[:, k] = np.exp(
+            -1j * 2.0 * np.pi * scene["delta_f"] * tau_k * n_power
+        )
 
         rho = scene["ris_grid"]
         diff = q_vec[None, :] - rho

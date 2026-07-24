@@ -430,15 +430,20 @@ class FactorizedPositionClockScorer:
         taus = (
             ranges + np.asarray(self.scene["d_RB"], dtype=float)[None, :]
         ) / float(self.scene["c0"]) + clocks[:, None]
-        n_index = np.arange(int(self.scene["N"]), dtype=float)
-        poles = np.exp(
+        n_index = np.asarray(
+            self.scene.get(
+                "subcarrier_indices", np.arange(int(self.scene["N"]))
+            ),
+            dtype=float,
+        )
+        delays = np.exp(
             -1j
             * 2.0
             * np.pi
             * float(self.scene["delta_f"])
-            * taus
+            * taus[:, :, None]
+            * n_index[None, None, :]
         )
-        delays = poles[:, :, None] ** n_index[None, None, :]
         delays /= np.linalg.norm(delays, axis=2, keepdims=True)
 
         xp = self.xp
