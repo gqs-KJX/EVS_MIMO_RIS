@@ -41,3 +41,4 @@ tmp/
 # OS/editor
 .DS_Store
 .vscode/
+evs_environment.yml
