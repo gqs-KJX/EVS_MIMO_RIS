@@ -133,11 +133,13 @@ def extract_common_clock(
 ) -> dict[str, Any]:
     """Extract one auditable common clock estimate from a baseline result.
 
-    External baselines are evaluated from their own position and raw
-    panel-delay supports.  A successful external result must supply one finite
-    delay for every physical panel; duplicate or incomplete panel sets are
-    marked invalid rather than silently imputed.  The median aggregation is
-    deliberately unweighted and is not clipped to the estimator clock bounds.
+    Baselines that explicitly expose a jointly estimated common clock use that
+    native parameter.  Other external baselines are evaluated from their own
+    position and raw panel-delay supports.  A successful residual-based result
+    must supply one finite delay for every physical panel; duplicate or
+    incomplete panel sets are marked invalid rather than silently imputed.  The
+    median aggregation is deliberately unweighted and is not clipped to the
+    estimator clock bounds.
     """
     scene = data.get("scene", {})
     threshold_ns = _finite_float(
@@ -169,14 +171,11 @@ def extract_common_clock(
         "clock_panel_estimates_ns": "[]",
     }
 
-    # Internal routes expose a native common-clock parameter but do not expose
-    # raw panel supports through BaselineResult.  Preserve that existing route;
-    # the standardized support-residual rule below is mandatory for external
-    # baselines.
-    if (
-        result.name in {"proposed", "scaled_4d", "mksc_ccop"}
-        and not result.selected_support
-    ):
+    native_joint_clock = (
+        result.diagnostics.get("clock_output_semantics")
+        == "native_joint_common_clock"
+    )
+    if native_joint_clock:
         true_s = _finite_float(scene.get("delta_t_true"))
         if np.isfinite(native_s) and np.isfinite(true_s):
             error_ns = abs(native_s - true_s) * 1.0e9
@@ -192,7 +191,8 @@ def extract_common_clock(
                     "clock_delay_source": "baseline_native_delta_t",
                 }
             )
-        return output
+        else:
+            return output
 
     p_hat = (
         np.asarray(result.p_u, dtype=float).reshape(-1)
@@ -213,7 +213,8 @@ def extract_common_clock(
         or not np.isfinite(c0)
         or c0 <= 0.0
     ):
-        output["clock_invalid_reason"] = "invalid_position_or_scene_geometry"
+        if not native_joint_clock:
+            output["clock_invalid_reason"] = "invalid_position_or_scene_geometry"
         return output
 
     panel_values: dict[int, float] = {}
@@ -232,7 +233,8 @@ def extract_common_clock(
         if panel < 0 or panel >= expected_panels or not np.isfinite(tau_s):
             continue
         if panel in panel_values:
-            output["clock_invalid_reason"] = "duplicate_physical_panel_delay"
+            if not native_joint_clock:
+                output["clock_invalid_reason"] = "duplicate_physical_panel_delay"
             return output
         geometric_s = (
             np.linalg.norm(p_hat - centers[panel]) + float(d_rb[panel])
@@ -254,14 +256,19 @@ def extract_common_clock(
     if replicas_s.size != expected_panels or ordered_panels != list(
         range(expected_panels)
     ):
-        output["clock_invalid_reason"] = "incomplete_physical_panel_set"
+        if not native_joint_clock:
+            output["clock_invalid_reason"] = "incomplete_physical_panel_set"
         return output
     if not np.all(np.isfinite(replicas_s)):
-        output["clock_invalid_reason"] = "nonfinite_panel_clock_residual"
+        if not native_joint_clock:
+            output["clock_invalid_reason"] = "nonfinite_panel_clock_residual"
         return output
 
     estimate_s = float(np.median(replicas_s))
     mad_ns = float(np.median(np.abs(replicas_s - estimate_s)) * 1.0e9)
+    output["clock_panel_mad_ns"] = mad_ns
+    if native_joint_clock:
+        return output
     true_s = _finite_float(scene.get("delta_t_true"))
     if not np.isfinite(true_s):
         output["clock_invalid_reason"] = "true_clock_unavailable"

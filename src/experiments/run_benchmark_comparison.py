@@ -491,6 +491,7 @@ def _proposed_row(data: dict, config: dict, trial_id: int, baseline: str) -> dic
         runtime_s=runtime_s,
         diagnostics={
             "dictionary_mode": "proposed_ngc_adaptive_jones_vp",
+            "clock_output_semantics": "native_joint_common_clock",
             **proposed_trace_diagnostics(result),
         },
     )

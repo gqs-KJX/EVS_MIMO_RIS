@@ -348,6 +348,7 @@ def run_ris_vbi_sbl_baseline(data: dict, config: dict) -> BaselineResult:
             "per_panel_mean_field_vbi_with_ard_spatial_prior_free_gaussian_delay_"
             "and_jones_gain;_geometric_common_clock_fusion"
         ),
+        "clock_output_semantics": "native_joint_common_clock",
         "vbi_max_iter": max_iter,
         "vbi_tol": tol,
         "grid_size": int(len(positions) + len(taus)),

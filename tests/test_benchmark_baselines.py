@@ -200,6 +200,37 @@ def test_external_clock_uses_raw_panel_delays_and_frozen_median():
         assert field in bench.FIELDNAMES
 
 
+def test_native_joint_clock_semantics_uses_result_delta_t():
+    config = _tiny_config()
+    data = _make_data(config)
+    result = common.BaselineResult(
+        name="ris_vbi_sbl",
+        p_u=np.asarray(data["scene"]["p_u_true"], dtype=float),
+        delta_t=5.25e-9,
+        Y_hat=np.asarray(data["Y_true"]),
+        raw_objective_final=0.0,
+        selected_support=[
+            {"panel": 0, "tau": 100.0e-9},
+        ],
+        diagnostics={
+            "clock_output_semantics": "native_joint_common_clock",
+        },
+    )
+
+    row = common.make_baseline_row(result, data, config)
+
+    assert np.isclose(row["clock_estimate_ns"], 5.25)
+    assert np.isclose(
+        row["clock_estimate_ns"], row["clock_native_estimate_ns"]
+    )
+    assert np.isclose(row["clock_error_ns"], 0.25)
+    assert row["clock_extraction_rule"] == "native_common_clock_parameter"
+    assert row["clock_delay_source"] == "baseline_native_delta_t"
+    assert row["clock_num_panels"] == 1
+    assert np.isclose(row["clock_panel_mad_ns"], 0.0)
+    assert row["clock_panel_estimates_ns"] != "[]"
+
+
 def test_linear_ls_fit_recovers_known_complex_coefficients():
     rng = np.random.default_rng(1)
     Phi = rng.normal(size=(8, 2)) + 1j * rng.normal(size=(8, 2))
@@ -334,10 +365,18 @@ def test_ris_vbi_sbl_runs_and_reports_bayesian_structure():
     result = ris_vbi_sbl.run_ris_vbi_sbl_baseline(data, config)
     assert result.diagnostics["model_variant"] == "variational_bayesian_sbl_adaptation"
     assert result.diagnostics["dictionary_mode"] == "ris_vbi_sbl_near_field_per_panel"
+    assert (
+        result.diagnostics["clock_output_semantics"]
+        == "native_joint_common_clock"
+    )
     assert result.diagnostics["unique_panel_constraint"] is True
     assert np.all(np.isfinite(result.p_u))
     assert np.isfinite(result.delta_t)
     assert result.Y_hat.shape == data["Y_noisy"].shape
+    row = common.make_baseline_row(result, data, config)
+    assert np.isclose(
+        row["clock_estimate_ns"], row["clock_native_estimate_ns"]
+    )
 
 
 def test_nf_ris_adaptation_runs_cpd_sage_and_fim_weighted_wls():
