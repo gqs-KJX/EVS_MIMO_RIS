@@ -767,6 +767,204 @@ def _ris_search_bounds(search_config: dict) -> tuple[np.ndarray, np.ndarray]:
     return lower, upper
 
 
+def _rectangular_lattice_spacing(
+    ris_grid: np.ndarray,
+) -> tuple[int, int, float, float] | None:
+    """Return (mx, my, dx, dy) when the panel is a uniform rectangular lattice."""
+    if ris_grid.ndim != 2 or ris_grid.shape[1] != 3:
+        return None
+    if not np.allclose(ris_grid[:, 2], ris_grid[0, 2]):
+        return None
+    x_values = np.unique(np.round(ris_grid[:, 0], decimals=12))
+    y_values = np.unique(np.round(ris_grid[:, 1], decimals=12))
+    mx, my = int(x_values.size), int(y_values.size)
+    if mx < 2 or my < 2 or mx * my != int(ris_grid.shape[0]):
+        return None
+    dx_all = np.diff(x_values)
+    dy_all = np.diff(y_values)
+    if not (np.allclose(dx_all, dx_all[0]) and np.allclose(dy_all, dy_all[0])):
+        return None
+    # ``make_ris_grid`` stores elements in ``indexing="ij"`` order, so element
+    # ``m = i * my + j`` sits at ``(x_values[i], y_values[j])``.
+    expected_x = np.repeat(x_values, my)
+    expected_y = np.tile(y_values, mx)
+    if not (
+        np.allclose(ris_grid[:, 0], expected_x)
+        and np.allclose(ris_grid[:, 1], expected_y)
+    ):
+        return None
+    return mx, my, float(dx_all[0]), float(dy_all[0])
+
+
+def _beamspace_coarse_candidates(
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    search_config: dict,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    weight: np.ndarray | None,
+    eps: float,
+) -> tuple[list[np.ndarray], dict]:
+    """Return Nyquist-rate direction-cosine acquisition candidates for one panel.
+
+    The default coarse dictionary samples ``(elevation, azimuth)`` with a fixed
+    number of points, so its angular step is set by the search bounds alone.  A
+    planar RIS, however, resolves directions at the Rayleigh limit
+    ``lambda / aperture``, which shrinks as the panel grows.  For an
+    electrically large RIS the fixed-count angular step therefore exceeds one
+    mainlobe width and the coarse peak can land on a sidelobe or miss the
+    mainlobe entirely; local refinement cannot recover from such a start.  The
+    failure is worst when the panel boresight lies inside the search region,
+    because the spherical parameterization is singular there and the induced
+    azimuth bounds degenerate to the full circle.
+
+    Sampling the transverse direction cosines ``(u, v)`` instead removes both
+    problems: the mainlobe has a constant width ``lambda / D`` in ``(u, v)``
+    regardless of orientation, and the boresight is an ordinary interior point.
+    After a Fresnel dechirp at each trial range the correlation becomes a plane
+    wave sum over a uniform lattice, so the whole oversampled beam-space score
+    is one zero-padded 2-D DFT per range.  Cost is therefore independent of the
+    beam-space grid density.
+
+    Only candidate starts are produced here; selection still uses the exact
+    weighted spherical objective, so this can only lower the achieved residual.
+    """
+    diagnostics: dict = {
+        "beamspace_used": False,
+        "beamspace_reason": "",
+        "beamspace_num_candidates": 0,
+        "beamspace_num_range": 0,
+        "beamspace_nfft": (0, 0),
+        "beamspace_u_step": float("nan"),
+        "beamspace_rayleigh_u": float("nan"),
+    }
+    lattice = _rectangular_lattice_spacing(np.asarray(ris_grid, dtype=float))
+    if lattice is None:
+        diagnostics["beamspace_reason"] = "non_rectangular_ris_grid"
+        return [], diagnostics
+    mx, my, dx, dy = lattice
+    num_candidates = max(int(search_config.get("beamspace_num_candidates", 4)), 1)
+    num_range = max(int(search_config.get("beamspace_num_range", 9)), 1)
+    oversample = max(int(search_config.get("beamspace_oversample", 4)), 1)
+    max_bins = max(int(search_config.get("beamspace_max_fft_bins", 512)), 8)
+
+    nfft_x = min(int(oversample * mx), max_bins)
+    nfft_y = min(int(oversample * my), max_bins)
+    if nfft_x < mx or nfft_y < my:
+        diagnostics["beamspace_reason"] = "fft_budget_below_aperture"
+        return [], diagnostics
+
+    kappa = 2.0 * np.pi / float(wavelength)
+    a_eff = np.asarray(omega, dtype=complex) * np.asarray(a_rb, dtype=complex)[None, :]
+    # <h(eta), c> = u(eta)^H (a_eff^H W c), so one adjoint pass removes the
+    # T-dimension from every subsequent beam-space evaluation.
+    g_vec = a_eff.conj().T @ _apply_weight(np.asarray(c_tilde, dtype=complex), weight)
+    rho = np.asarray(ris_grid, dtype=float)
+    rho_sq = rho[:, 0] ** 2 + rho[:, 1] ** 2
+
+    # Direction cosines implied by the DFT bin frequencies.
+    u_axis = wavelength * np.fft.fftshift(np.fft.fftfreq(nfft_x)) / dx
+    v_axis = wavelength * np.fft.fftshift(np.fft.fftfreq(nfft_y)) / dy
+    u_mesh, v_mesh = np.meshgrid(u_axis, v_axis, indexing="ij")
+    w_sq = 1.0 - u_mesh**2 - v_mesh**2
+    visible = w_sq > 1.0e-9
+    w_mesh = np.sqrt(np.maximum(w_sq, 0.0))
+
+    # Restrict to the panel search bounds (elevation is measured from the
+    # panel plane, so ``sin(elevation)`` is exactly the normal cosine ``w``).
+    # The elements lie in the local z = 0 plane, so ``||q - rho||`` is unchanged
+    # by mirroring ``w -> -w``: the phase-only response is front/back ambiguous
+    # and only ``w >= 0`` is enumerated here.  That matches the elevation bounds
+    # induced by a UE box in front of the panel, which are non-negative.
+    admissible = visible & (w_mesh >= np.sin(lower[1]) - 1.0e-9)
+    admissible &= w_mesh <= np.sin(upper[1]) + 1.0e-9
+    az_span = float(upper[2] - lower[2])
+    if az_span < 2.0 * np.pi - 1.0e-6:
+        az_mesh = np.arctan2(v_mesh, u_mesh)
+        wrapped = lower[2] + np.mod(az_mesh - lower[2], 2.0 * np.pi)
+        admissible &= wrapped <= upper[2] + 1.0e-9
+    if not np.any(admissible):
+        diagnostics["beamspace_reason"] = "empty_admissible_beamspace"
+        return [], diagnostics
+
+    range_grid = np.linspace(float(lower[0]), float(upper[0]), num_range)
+    scores = np.full((num_range, nfft_x, nfft_y), -np.inf, dtype=float)
+    for index, range_m in enumerate(range_grid):
+        safe_range = max(float(range_m), float(eps))
+        # Fresnel dechirp: removes the quadratic aperture phase at this range so
+        # that the residual correlation is a plane wave sum over the lattice.
+        dechirped = g_vec * np.exp(1j * kappa * rho_sq / (2.0 * safe_range))
+        spectrum = np.fft.fft2(
+            dechirped.reshape(mx, my), s=(nfft_x, nfft_y)
+        )
+        magnitude = np.abs(np.fft.fftshift(spectrum))
+        scores[index] = np.where(admissible, magnitude, -np.inf)
+
+    if not np.any(np.isfinite(scores)):
+        diagnostics["beamspace_reason"] = "nonfinite_beamspace_scores"
+        return [], diagnostics
+
+    # The aperture resolves direction far better than range, so the shortlist is
+    # built over distinct directions and the range is then scanned separately
+    # with the exact spherical phase at the selected direction.
+    angular_scores = np.max(scores, axis=0)
+    guard_x = max(int(round(oversample / 2)), 1)
+    guard_y = max(int(round(oversample / 2)), 1)
+    num_range_refine = max(int(search_config.get("beamspace_num_range_refine", 41)), 2)
+    range_scan = np.linspace(float(lower[0]), float(upper[0]), num_range_refine)
+
+    candidates: list[np.ndarray] = []
+    working = angular_scores.copy()
+    for _ in range(num_candidates):
+        flat = int(np.argmax(working))
+        if not np.isfinite(working.flat[flat]):
+            break
+        x_idx, y_idx = np.unravel_index(flat, working.shape)
+        u_val = float(u_mesh[x_idx, y_idx])
+        v_val = float(v_mesh[x_idx, y_idx])
+        w_val = float(w_mesh[x_idx, y_idx])
+        elevation = float(np.arcsin(np.clip(w_val, -1.0, 1.0)))
+        azimuth = float(np.arctan2(v_val, u_val))
+        if az_span < 2.0 * np.pi - 1.0e-6:
+            azimuth = float(lower[2] + np.mod(azimuth - lower[2], 2.0 * np.pi))
+
+        # Exact-phase range scan along the selected direction, still at O(M_R)
+        # per trial range because the T-dimension was removed by ``g_vec``.
+        direction = np.array(
+            [u_val, v_val, np.sqrt(max(1.0 - u_val**2 - v_val**2, 0.0))], dtype=float
+        )
+        offsets = range_scan[:, None] * direction[None, :]
+        distances = np.linalg.norm(offsets[:, None, :] - rho[None, :, :], axis=2)
+        phases = np.exp(-1j * kappa * (distances - range_scan[:, None]))
+        range_scores = np.abs(phases.conj() @ g_vec)
+        best_range = float(range_scan[int(np.argmax(range_scores))])
+        eta_candidate = np.array([best_range, elevation, azimuth], dtype=float)
+        # Guard against float edges so the candidate survives the bounds filter.
+        eta_candidate[0] = float(np.clip(eta_candidate[0], lower[0], upper[0]))
+        eta_candidate[1] = float(np.clip(eta_candidate[1], lower[1], upper[1]))
+        eta_candidate[2] = float(np.clip(eta_candidate[2], lower[2], upper[2]))
+        candidates.append(eta_candidate)
+
+        x_lo, x_hi = max(x_idx - guard_x, 0), min(x_idx + guard_x + 1, nfft_x)
+        y_lo, y_hi = max(y_idx - guard_y, 0), min(y_idx + guard_y + 1, nfft_y)
+        working[x_lo:x_hi, y_lo:y_hi] = -np.inf
+
+    diagnostics.update(
+        {
+            "beamspace_used": bool(candidates),
+            "beamspace_num_candidates": int(len(candidates)),
+            "beamspace_num_range": int(num_range),
+            "beamspace_nfft": (int(nfft_x), int(nfft_y)),
+            "beamspace_u_step": float(u_axis[1] - u_axis[0]) if nfft_x > 1 else float("nan"),
+            "beamspace_rayleigh_u": float(wavelength / (mx * dx)),
+        }
+    )
+    return candidates, diagnostics
+
+
 def _ris_grid_candidates(
     search_config: dict,
     lower: np.ndarray,
@@ -952,6 +1150,31 @@ def _project_ris_factor_wesvp_ms(
 
     starts.append((best_coarse_eta, "exact_grid"))
     j_grid_before_refine = float(best_coarse_value)
+
+    # Nyquist-rate beam-space acquisition.  The fixed-count angular dictionary
+    # above is undersampled once the panel aperture exceeds a few tens of
+    # wavelengths, so add direction-cosine candidates that are sampled at the
+    # array's own Rayleigh limit.  These are only extra starts: the selection
+    # below still minimizes the exact weighted spherical objective.
+    beamspace_diagnostics: dict = {"beamspace_used": False, "beamspace_reason": "disabled"}
+    use_beamspace = bool(search_config.get("use_beamspace_acquisition", True))
+    if use_beamspace and not use_local_grid:
+        beamspace_begin = time.perf_counter()
+        beamspace_candidates, beamspace_diagnostics = _beamspace_coarse_candidates(
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            lower,
+            upper,
+            weight,
+            eps,
+        )
+        for rank, eta_candidate in enumerate(beamspace_candidates, start=1):
+            starts.append((eta_candidate, f"beamspace_{rank}"))
+        timing["stage2_time_ris_warm_start"] += time.perf_counter() - beamspace_begin
 
     use_qd = bool(search_config.get("use_qd_init", False)) and projection_mode == "wesvp_ms"
     qd_attempted = bool(use_qd)
@@ -1290,6 +1513,15 @@ def _project_ris_factor_wesvp_ms(
         "J_qd_before_refine": j_qd_before_refine,
         "J_selected_after_refine": float(best_value),
         "fresnel_used_as_start": bool(fresnel_used_as_start),
+        "beamspace_used_as_start": bool(
+            beamspace_diagnostics.get("beamspace_used", False)
+        ),
+        "beamspace_selected": bool(str(best_eta_source).startswith("beamspace")),
+        **{
+            key: value
+            for key, value in beamspace_diagnostics.items()
+            if key != "beamspace_used"
+        },
         "analytic_jacobian_used": bool(analytic_jacobian_used),
         "lifted_available": lifted_best is not None,
         "lifted_used": False,
@@ -1463,6 +1695,11 @@ def _project_ris_factor_legacy(
         : int(search_config.get("num_exact_refine_starts", 6))
     ]:
         refine_starts.append(eta_candidate)
+    # NOTE: this legacy path is only reached by the ``exact_projection`` and
+    # ``legacy_fast_projection`` reference modes with a full grid of its own,
+    # or with prescreened starts that the beam-space augmented coarse stage has
+    # already produced.  It is deliberately left unaugmented so that
+    # ``exact_projection`` remains an independent full-grid reference.
 
     unique_starts = []
     for eta_start in refine_starts:

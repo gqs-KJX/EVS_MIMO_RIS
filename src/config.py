@@ -295,6 +295,20 @@ def default_config() -> dict:
             "use_fresnel_warm_start": True,
             "stage2_warm_start_mode": "coarse_exact_multistart",
             "stage2_warm_start_shortlist_size": 4,
+            # Nyquist-rate direction-cosine acquisition.  The (elevation,
+            # azimuth) dictionary above has a fixed point count, so its angular
+            # step is set by the search bounds and becomes coarser than one
+            # panel mainlobe (lambda / aperture) as the RIS grows.  These
+            # candidates are sampled at the array's own Rayleigh limit and are
+            # scored by the same exact spherical residual, so enabling them can
+            # only lower the achieved per-panel residual.  Set False to
+            # reproduce the pre-fix acquisition behaviour.
+            "use_beamspace_acquisition": True,
+            "beamspace_oversample": 4,
+            "beamspace_num_candidates": 4,
+            "beamspace_num_range": 9,
+            "beamspace_num_range_refine": 41,
+            "beamspace_max_fft_bins": 512,
         },
         "spatial_narrowband_audit": {
             "enabled": True,

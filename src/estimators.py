@@ -22,6 +22,8 @@ from .projections_delay import (
 )
 from .projections_evs import project_evs_factor
 from .projections_ris import (
+    _beamspace_coarse_candidates,
+    _ris_search_bounds,
     compressed_exact_response,
     local_ris_search_config,
     project_ris_factor,
@@ -445,6 +447,28 @@ def _coarse_ris_factor_projection(
     for eta_local, h_model in zip(grid_candidates, grid_responses):
         value, alpha = scaled_residual(c_tilde, h_model, eps)
         candidates.append((float(value), eta_local, alpha, h_model))
+    # Mirror the batched path: augment the fixed-count angular dictionary with
+    # Nyquist-rate direction-cosine candidates scored by the same residual.
+    if bool(search_config.get("use_beamspace_acquisition", True)):
+        lower, upper = _ris_search_bounds(search_config)
+        beamspace_etas, _ = _beamspace_coarse_candidates(
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            lower,
+            upper,
+            None,
+            eps,
+        )
+        for eta_local in beamspace_etas:
+            h_model = compressed_exact_response(
+                eta_local, omega, a_rb, ris_grid, wavelength
+            )
+            value, alpha = scaled_residual(c_tilde, h_model, eps)
+            candidates.append((float(value), np.asarray(eta_local, dtype=float), alpha, h_model))
     candidates.sort(key=lambda item: item[0])
     assert candidates, "empty RIS coarse codebook"
     value, eta_local, alpha, h_model = candidates[0]
@@ -516,10 +540,33 @@ def _coarse_ris_factor_projections_batched(
             * scale
         )
         guarded = order[values[order] <= cutoff + roundoff_guard]
+        # ``grid_candidates`` is a fixed-count angular dictionary, so its step is
+        # coarser than one panel mainlobe for an electrically large RIS.  Add
+        # Nyquist-rate direction-cosine candidates and score every candidate with
+        # the same exact spherical residual, so the selection below is a minimum
+        # over a superset and can only improve.
+        candidate_etas: list[np.ndarray] = [
+            np.asarray(grid_candidates[int(index)], dtype=float) for index in guarded
+        ]
+        if bool(search_config.get("use_beamspace_acquisition", True)):
+            lower, upper = _ris_search_bounds(search_config)
+            beamspace_etas, _ = _beamspace_coarse_candidates(
+                c_tilde,
+                omega,
+                a_rb,
+                ris_grid,
+                wavelength,
+                search_config,
+                lower,
+                upper,
+                None,
+                eps,
+            )
+            candidate_etas.extend(beamspace_etas)
         exact_ranked = []
-        for candidate_index in guarded:
+        for candidate_index, eta_candidate in enumerate(candidate_etas):
             exact_response = compressed_exact_response(
-                grid_candidates[int(candidate_index)],
+                eta_candidate,
                 omega,
                 a_rb,
                 ris_grid,
@@ -539,13 +586,13 @@ def _coarse_ris_factor_projections_batched(
         projections.append(
             {
                 "c": alpha * h_model,
-                "eta_local": grid_candidates[best_index],
+                "eta_local": candidate_etas[best_index],
                 "alpha": alpha,
                 "data_residual": value,
                 "relative_residual": float(np.sqrt(value / c_norm_sq)),
                 "selected_model": "coarse_correlation",
                 "coarse_refine_starts": [
-                    np.asarray(grid_candidates[item[1]], dtype=float)
+                    np.asarray(candidate_etas[item[1]], dtype=float)
                     for item in exact_ranked[:num_refine_starts]
                 ],
                 "stage1_time_ris_codebook_build": (
