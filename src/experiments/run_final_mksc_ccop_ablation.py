@@ -253,6 +253,16 @@ def _tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
     suites = set(args.suites)
     tasks: list[dict[str, Any]] = []
 
+    # Every suite of this runner evaluates the reference RIS geometry, so the
+    # acquisition setting is a property of the run, not of a suite.  It is
+    # applied here rather than in ``make_paper_config`` because that builder is
+    # shared with the robustness runner, which sweeps the RIS side length and
+    # must keep the fixed-count dictionary at the small array sizes where the
+    # beam-space direction-cosine grid becomes the coarser of the two.
+    acquisition_override = {
+        "ris_search": {"coarse_codebook_mode": str(args.coarse_codebook_mode)}
+    }
+
     def append(
         suite: str,
         x_name: str,
@@ -262,6 +272,11 @@ def _tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
         overrides: dict | None = None,
         **extra: Any,
     ) -> None:
+        merged_overrides = dict(overrides or {})
+        merged_overrides["ris_search"] = {
+            **dict(merged_overrides.get("ris_search", {})),
+            **acquisition_override["ris_search"],
+        }
         for trial_id, seed in enumerate(seeds):
             tasks.append(
                 {
@@ -272,7 +287,7 @@ def _tasks(args: argparse.Namespace) -> list[dict[str, Any]]:
                     "seed": seed,
                     "snr_db": float(snr_db),
                     "variants": list(variants),
-                    "overrides": dict(overrides or {}),
+                    "overrides": dict(merged_overrides),
                     "diagnostic_mode": args.diagnostic_mode,
                     "outlier_threshold_m": args.outlier_threshold_m,
                     "blas_threads": args.blas_threads,
@@ -553,6 +568,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--snr-grid", default="-30,-25,-20,-15,-10,-5,0,5,10,15,20"
     )
     parser.add_argument("--focus-snr-db", type=float, default=-10.0)
+    parser.add_argument(
+        "--coarse-codebook-mode",
+        choices=("beamspace_only", "union"),
+        default="beamspace_only",
+        help=(
+            "RIS acquisition candidate set. 'beamspace_only' (default) matches "
+            "run_benchmark_comparison.make_config, so this runner and the "
+            "external benchmark measure the same estimator; 'union' also scores "
+            "the legacy fixed-count angular dictionary, which is the published "
+            "acquisition and is redundant at the reference array size."
+        ),
+    )
     parser.add_argument("--training-grid", default="32,64,128,256")
     parser.add_argument("--receiver-modes", default="scalar,dual_pol,full_6d")
     parser.add_argument(
@@ -660,6 +687,11 @@ def main(argv: list[str] | None = None) -> None:
             first_seed,
             args.focus_snr_db,
             diagnostic_mode=args.diagnostic_mode,
+            overrides={
+                "ris_search": {
+                    "coarse_codebook_mode": str(args.coarse_codebook_mode)
+                }
+            },
         ),
         "resolved_base_config.json",
     )

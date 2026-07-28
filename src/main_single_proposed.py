@@ -224,8 +224,8 @@ if __package__ in (None, ""):
         solve_stage2_pllg as _solve_stage2_pllg_backend,
     )
     from src.global_vp import data_only_efim_diagnostic, distance_to_box_boundary
-    from src.tensor_utils import hankelize_frequency
-    from src.utils import scipy_is_available
+    from src.tensor_utils import blocked_squared_error, hankelize_frequency
+    from src.utils import copy_estimate, scipy_is_available
 else:
     from .channel_model import (
         add_awgn,
@@ -274,8 +274,8 @@ else:
         solve_stage2_pllg as _solve_stage2_pllg_backend,
     )
     from .global_vp import data_only_efim_diagnostic, distance_to_box_boundary
-    from .tensor_utils import hankelize_frequency
-    from .utils import scipy_is_available
+    from .tensor_utils import blocked_squared_error, hankelize_frequency
+    from .utils import copy_estimate, scipy_is_available
 
 
 FINAL_PROPOSED_STAGE2_POLICY = "ngc_certified_ris_only"
@@ -1346,7 +1346,7 @@ def run_direct_vp_branch(
     """Run the direct Stage-I initialized raw-domain VP-WNLS branch."""
     scene = data["scene"]
     final, vp_s = _run_global_vp_branch(
-        data["Y_noisy"], copy.deepcopy(stage1_estimate), scene, config, "none"
+        data["Y_noisy"], copy_estimate(stage1_estimate), scene, config, "none"
     )
     timing = dict(base_timing)
     timing.update(
@@ -1360,7 +1360,7 @@ def run_direct_vp_branch(
     return _make_branch_result(
         data=data,
         estimate_initial=stage1_estimate,
-        estimate_used=copy.deepcopy(stage1_estimate),
+        estimate_used=copy_estimate(stage1_estimate),
         structured_diag=_empty_structured_diag(),
         final=final,
         timing=timing,
@@ -4059,7 +4059,7 @@ def _print_stage2_summary_table(results: dict) -> dict:
     initial_values = {
         "Y_NMSE_true": relative_nmse(initial_y_hat, results["Y_true"]),
         "Z_NMSE_true": relative_nmse(results["estimate_initial"]["Z_hat"], results["Z_true"]),
-        "global_Z_SSE": float(np.linalg.norm(results["estimate_initial"]["Z_hat"] - results["Z_noisy"]) ** 2),
+        "global_Z_SSE": blocked_squared_error(results["estimate_initial"]["Z_hat"], results["Z_noisy"]),
         **initial_geom,
         "num_EVS_accepted": 0.0,
         "num_delay_accepted": 0.0,
@@ -4070,7 +4070,7 @@ def _print_stage2_summary_table(results: dict) -> dict:
     structured_values = {
         "Y_NMSE_true": relative_nmse(structured_y_hat, results["Y_true"]),
         "Z_NMSE_true": relative_nmse(results["estimate_used"]["Z_hat"], results["Z_true"]),
-        "global_Z_SSE": float(np.linalg.norm(results["estimate_used"]["Z_hat"] - results["Z_noisy"]) ** 2),
+        "global_Z_SSE": blocked_squared_error(results["estimate_used"]["Z_hat"], results["Z_noisy"]),
         **structured_geom,
         "num_EVS_accepted": float(
             sum(

@@ -331,7 +331,15 @@ def make_paper_config(
     config = apply_ccop_stage1_preset(config, "balanced")
     if overrides:
         for key, value in overrides.items():
-            if key in {"global_vp", "ccop_jvp", "ccop_stage1_joint_geometry"}:
+            # ``ris_search`` is merged rather than replaced: a caller that wants
+            # to change one acquisition switch must not silently drop the grid
+            # sizes, bounds and refine-start budget that sit beside it.
+            if key in {
+                "global_vp",
+                "ccop_jvp",
+                "ccop_stage1_joint_geometry",
+                "ris_search",
+            }:
                 merged = copy.deepcopy(config.get(key, {}))
                 merged.update(copy.deepcopy(value))
                 config[key] = merged

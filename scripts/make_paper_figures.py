@@ -39,6 +39,87 @@ FINAL = RES / "final_mksc_ccop"
 # Lowest SNR shown in the SNR sweeps; set from the command line.
 SNR_MIN = -10.0
 
+# ------------------------------------------------------------- campaigns ----
+# Each figure names its inputs by logical dataset key, never by directory, so
+# that a re-run of the campaign is a one-line change here rather than an edit
+# scattered over nine plotting functions.  ``frozen`` is the 2026-07-19/21
+# release; ``v3`` is the 2026-07-28 re-run on the optimized source tree, whose
+# external benchmark is a single 13-point artifact instead of the three-way
+# split (main grid / high-SNR completion / external clock) the frozen campaign
+# needed.  Any key mapped to a list is concatenated in order.
+CAMPAIGNS = {
+    "frozen": {
+        "snr_internal": [FINAL / "snr_internal_paper480"],
+        "components": [FINAL / "components_paper480"],
+        "receiver": [FINAL / "receiver_information_paper480"],
+        "compression": [FINAL / "compression_matched_paper480"],
+        "benchmark": [
+            RES / "benchmark_full_k3_medium-480-final",
+            RES / "benchmark_full_k3_medium-480-final-snr15to30",
+        ],
+        "benchmark_clock": [RES / "benchmark_clock_external_480"],
+        "maxwell_mismatch": [FINAL / "maxwell_mismatch_paper480"],
+        "colored_noise": [FINAL / "colored_noise_boundary480"],
+        "ris_calibration": [FINAL / "ris_bs_calibration_boundary480"],
+        "model_order": [FINAL / "model_order_mismatch480"],
+        "positions": [FINAL / "positions50x480"],
+        "resolvability": [FINAL / "evs_resolvability_paper480"],
+        "scaling": [FINAL / "robustness_scaling480"],
+        "benchmark_runtime": [FINAL / "benchmark_runtime30_cpu"],
+        "components_cost": [FINAL / "components_cost30_cpu"],
+    },
+    "v3": {
+        "snr_internal": [RES / "paper_v3" / "snr_internal_480"],
+        "components": [RES / "paper_v3" / "components_480"],
+        "receiver": [RES / "paper_v3" / "receiver_information_480"],
+        "compression": [RES / "paper_v3" / "compression_matched_480"],
+        "benchmark": [RES / "paper_v3" / "benchmark_matched_480"],
+        "benchmark_clock": [RES / "paper_v3" / "benchmark_matched_480"],
+        "maxwell_mismatch": [RES / "paper_v3" / "maxwell_mismatch_480"],
+        "colored_noise": [RES / "paper_v3" / "colored_noise_boundary_480"],
+        "ris_calibration": [RES / "paper_v3" / "ris_bs_calibration_boundary_480"],
+        "model_order": [RES / "paper_v3" / "model_order_mismatch_480"],
+        "positions": [RES / "paper_v3" / "positions50x480"],
+        "resolvability": [RES / "paper_v3" / "evs_resolvability_480"],
+        "scaling": [RES / "paper_v3" / "robustness_scaling_480"],
+        "benchmark_runtime": [RES / "paper_v3" / "benchmark_runtime30_cpu"],
+        "components_cost": [RES / "paper_v3" / "components_cost30_cpu"],
+    },
+    # 10 trials per cell.  A pipeline smoke test, NOT a source of paper
+    # numbers: at n = 10 a Clopper-Pearson interval on a rate spans roughly
+    # +-30 percentage points and the paired bootstrap / McNemar statistics the
+    # frozen protocol reports are meaningless.  The two cost entries point at
+    # the 30-trial serialized suites, which are authoritative.
+    "verify10": {
+        "snr_internal": [RES / "paper_verify10" / "snr_internal"],
+        "components": [RES / "paper_verify10" / "components_m10"],
+        "receiver": [RES / "paper_verify10" / "receiver_information"],
+        "compression": [RES / "paper_verify10" / "compression_matched"],
+        "benchmark": [RES / "paper_verify10" / "benchmark_matched"],
+        "benchmark_clock": [RES / "paper_verify10" / "benchmark_matched"],
+        "maxwell_mismatch": [RES / "paper_verify10" / "maxwell_mismatch"],
+        "colored_noise": [RES / "paper_verify10" / "colored_noise_boundary"],
+        "ris_calibration": [RES / "paper_verify10" / "ris_bs_calibration_boundary"],
+        "model_order": [RES / "paper_verify10" / "model_order_mismatch"],
+        "positions": [RES / "paper_verify10" / "positions50"],
+        "resolvability": [RES / "paper_verify10" / "evs_resolvability"],
+        "scaling": [RES / "paper_verify10" / "robustness_scaling"],
+        "benchmark_runtime": [RES / "paper_v3" / "benchmark_runtime30_cpu"],
+        "components_cost": [RES / "paper_v3" / "components_cost30_cpu"],
+    },
+}
+
+# Active dataset map; set from the command line by ``--campaign``.
+DATA = CAMPAIGNS["frozen"]
+
+
+def ds(key: str, filename: str) -> list[dict]:
+    """Load and concatenate ``filename`` across every directory of dataset ``key``."""
+    rows: list[dict] = []
+    for directory in DATA[key]:
+        rows.extend(load(directory / filename))
+    return rows
+
 # ----------------------------------------------------------------- style ----
 COL_W = 3.5   # IEEE single column [in]
 DBL_W = 7.16  # IEEE double column [in]
@@ -235,8 +316,8 @@ def fig_geometry(out: pathlib.Path) -> None:
 
 # ============================================================ fig: internal ==
 def fig_internal(out: pathlib.Path) -> None:
-    S = snr_rows(load(FINAL / "snr_internal_paper480" / "ablation_summary.csv"))
-    P = snr_rows(load(FINAL / "snr_internal_paper480" / "ablation_paired.csv"))
+    S = snr_rows(ds("snr_internal", "ablation_summary.csv"))
+    P = snr_rows(ds("snr_internal", "ablation_paired.csv"))
     series = [
         ("proposed", "Proposed MKSC-GI + CCOP-JVP", C["proposed"], MK["proposed"], "-"),
         ("mksc_gi_4_no_refresh_ccop", "MKSC-GI, no anchor refresh", C["gi4"], MK["gi4"], "--"),
@@ -331,8 +412,8 @@ def fig_internal(out: pathlib.Path) -> None:
 
 # =========================================================== fig: ablation ==
 def fig_ablation(out: pathlib.Path) -> None:
-    A = load(FINAL / "components_paper480" / "ablation_summary.csv")
-    T = load(FINAL / "components_paper480" / "ablation_trials.csv")
+    A = ds("components", "ablation_summary.csv")
+    T = ds("components", "ablation_trials.csv")
     order = [
         ("old_stage1_ccop", "R3", "R3: frozen Stage-I", C["r3"]),
         ("mksc_delay_ccop", "A1", "A1: + MKSC delay compression", C["a1"]),
@@ -393,8 +474,8 @@ def fig_ablation(out: pathlib.Path) -> None:
 
 # =========================================================== fig: receiver ==
 def fig_receiver(out: pathlib.Path) -> None:
-    S = snr_rows(load(FINAL / "receiver_information_paper480" / "ablation_summary.csv"))
-    T = snr_rows(load(FINAL / "receiver_information_paper480" / "ablation_trials.csv"),
+    S = snr_rows(ds("receiver", "ablation_summary.csv"))
+    T = snr_rows(ds("receiver", "ablation_trials.csv"),
                  "snr_db")
     modes = [
         ("scalar", "scalar", C["scalar"], "s", ":"),
@@ -443,8 +524,8 @@ def fig_receiver(out: pathlib.Path) -> None:
 
 # ======================================================== fig: compression ==
 def fig_compression(out: pathlib.Path) -> None:
-    S = snr_rows(load(FINAL / "compression_matched_paper480" / "ablation_summary.csv"))
-    T = snr_rows(load(FINAL / "snr_internal_paper480" / "ablation_trials.csv"), "snr_db")
+    S = snr_rows(ds("compression", "ablation_summary.csv"))
+    T = snr_rows(ds("snr_internal", "ablation_trials.csv"), "snr_db")
     pairs = [
         ("proposed", "MKSC-compressed delay subspace", C["proposed"], "o", "-"),
         ("raw_delay_gi_ccop", "raw (uncompressed) delay subspace", C["raw"], "s", "--"),
@@ -509,8 +590,7 @@ def fig_compression(out: pathlib.Path) -> None:
 # ========================================================= fig: benchmark ===
 def fig_benchmark(out: pathlib.Path) -> None:
     B = snr_rows(
-        load(RES / "benchmark_full_k3_medium-480-final" / "benchmark_summary.csv")
-        + load(RES / "benchmark_full_k3_medium-480-final-snr15to30" / "benchmark_summary.csv"),
+        ds("benchmark", "benchmark_summary.csv"),
         "snr_db")
     series = [
         ("mksc_ccop", "Proposed MKSC-GI + CCOP-JVP", C["proposed"], "o", "-"),
@@ -581,14 +661,12 @@ def fig_benchmark_clock(out: pathlib.Path) -> None:
     ``clock_error_ns`` column of the same shared realizations.
     """
     Bs = snr_rows(
-        load(RES / "benchmark_full_k3_medium-480-final" / "benchmark_summary.csv")
-        + load(RES / "benchmark_full_k3_medium-480-final-snr15to30" / "benchmark_summary.csv"),
+        ds("benchmark", "benchmark_summary.csv"),
         "snr_db")
     Bt = snr_rows(
-        load(RES / "benchmark_full_k3_medium-480-final" / "benchmark_trials.csv")
-        + load(RES / "benchmark_full_k3_medium-480-final-snr15to30" / "benchmark_trials.csv"),
+        ds("benchmark", "benchmark_trials.csv"),
         "snr_db")
-    Cx = snr_rows(load(RES / "benchmark_clock_external_480" / "benchmark_summary.csv"),
+    Cx = snr_rows(ds("benchmark_clock", "benchmark_summary.csv"),
                   "snr_db")
 
     # (proposed, R2) internal: median/p95 from summary [ns]; externals: from Cx.
@@ -655,10 +733,10 @@ def fig_benchmark_clock(out: pathlib.Path) -> None:
 
 # ======================================================== fig: robustness ===
 def fig_robustness(out: pathlib.Path) -> None:
-    M = load(FINAL / "maxwell_mismatch_paper480" / "robustness_summary.csv")
-    N = load(FINAL / "colored_noise_boundary480" / "robustness_summary.csv")
-    F8 = load(FINAL / "ris_bs_calibration_boundary480" / "fig8_calibration_summary.csv")
-    F9 = load(FINAL / "model_order_mismatch480" / "fig9_k_mismatch_summary.csv")
+    M = ds("maxwell_mismatch", "robustness_summary.csv")
+    N = ds("colored_noise", "robustness_summary.csv")
+    F8 = ds("ris_calibration", "fig8_calibration_summary.csv")
+    F9 = ds("model_order", "fig9_k_mismatch_summary.csv")
 
     fig, axes = plt.subplots(2, 2, figsize=(DBL_W, 4.0))
     (a, b), (c, d) = axes
@@ -745,9 +823,9 @@ def fig_robustness(out: pathlib.Path) -> None:
 
 # =========================================== fig: geometry gen. / scaling ===
 def fig_generalization(out: pathlib.Path) -> None:
-    G = load(FINAL / "positions50x480" / "position_generalization_summary.csv")
-    Rv = load(FINAL / "evs_resolvability_paper480" / "evs_resolvability_summary.csv")
-    S = load(FINAL / "robustness_scaling480" / "robustness_summary.csv")
+    G = ds("positions", "position_generalization_summary.csv")
+    Rv = ds("resolvability", "evs_resolvability_summary.csv")
+    S = ds("scaling", "robustness_summary.csv")
 
     fig, (a, b, c) = plt.subplots(1, 3, figsize=(DBL_W, 2.2))
 
@@ -763,7 +841,7 @@ def fig_generalization(out: pathlib.Path) -> None:
     a.legend(loc="lower right", fontsize=6.0)
     grid(a)
 
-    Tp = [r for r in load(FINAL / "positions50x480" / "robustness_trials.csv")
+    Tp = [r for r in ds("positions", "robustness_trials.csv")
           if r["variant"] == "proposed"]
     by_pos: dict[str, list[dict]] = {}
     for r in Tp:
@@ -852,20 +930,21 @@ def fig_generalization(out: pathlib.Path) -> None:
 
 # ============================================================== fig: cost ===
 def fig_cost(out: pathlib.Path) -> None:
-    T1 = load(FINAL / "benchmark_runtime30_cpu" / "table1_runtime_memory.csv")
-    A = load(FINAL / "components_cost30_cpu" / "ablation_trials.csv")
-    B = (load(RES / "benchmark_full_k3_medium-480-final" / "benchmark_summary.csv"))
+    T1 = ds("benchmark_runtime", "table1_runtime_memory.csv")
+    A = ds("components_cost", "ablation_trials.csv")
+    B = ds("benchmark", "benchmark_summary.csv")
 
     fig, (a, b) = plt.subplots(1, 2, figsize=(DBL_W, 2.1))
 
     blocks = [("mksc_projection_runtime_s", "MKSC projection", "#9ecae1"),
-              ("stage1_core_s", "Hankel / ESPRIT / coupled LS", "#4292c6"),
+              ("stage1_core_s", "Hankel / delay / coupled LS / assignment", "#4292c6"),
               ("common_geometry_runtime_s", "common-geometry init", "#2E8B57"),
               ("anchor_refresh_runtime_s", "anchor refresh", "#E08A00"),
               ("stage3_runtime_s", "CCOP-JVP refinement", "#C8102E")]
     variants = [("old_stage1_ccop", "R3"), ("mksc_delay_ccop", "A1"),
                 ("mksc_gi_1_no_refresh_ccop", "A2"), ("mksc_gi_4_no_refresh_ccop", "A3"),
                 ("proposed", "Proposed")]
+    totals: list[float] = []
     for i, (v, lab) in enumerate(variants):
         rs = sel(A, variant=v)
         vals = {}
@@ -882,16 +961,22 @@ def fig_cost(out: pathlib.Path) -> None:
             a.bar(i, vals[col], bottom=bottom, color=colr, width=0.62,
                   label=blab if i == 0 else None)
             bottom += vals[col]
-        a.text(i, bottom + 0.15, f"{bottom:.1f}", ha="center", fontsize=6.2)
+        totals.append(bottom)
+        a.text(i, bottom + 0.015 * max(totals), f"{bottom:.2f}",
+               ha="center", fontsize=6.2)
     a.set_xticks(range(len(variants)))
     a.set_xticklabels([v[1] for v in variants], fontsize=6.5)
     a.set_ylabel("median wall-clock time [s]")
-    a.set_ylim(0, 14.2)
+    # Data-driven, because the budget dropped by ~5x between campaigns and a
+    # hand-tuned ceiling silently clips the bars instead of failing.
+    a.set_ylim(0, 1.14 * max(totals))
     a.set_title("(a) single-thread cost decomposition, 30 trials", pad=3)
     grid(a, which="major")
 
     rmse = {r["baseline"]: fnum(r["position_rmse_m"])
             for r in B if abs(fnum(r["snr_db"]) + 10.0) < 1e-9}
+    runtimes: list[float] = []
+    rmses: list[float] = []
     names = {"mksc_ccop": ("Proposed", C["proposed"], "o"),
              "scaled_4d": ("R2 4-D Jones-VP", C["r2"], "s"),
              "als_cpd": ("ALS-CPD", C["als"], "D"),
@@ -904,6 +989,8 @@ def fig_cost(out: pathlib.Path) -> None:
         lab, colr, mk = names[key]
         t = fnum(r["mean_runtime_s_at_minus10_db"])
         mem = fnum(r["peak_memory_mb"]) / 1024.0
+        runtimes.append(t)
+        rmses.append(rmse[key])
         b.scatter(t, rmse[key], s=18 + 34 * mem, color=colr, marker=mk,
                   alpha=0.85, edgecolor="k", linewidth=0.4, label=f"{lab} ({mem:.1f} GB)")
         b.annotate(lab, (t, rmse[key]), textcoords="offset points", xytext=(4, 5),
@@ -912,8 +999,9 @@ def fig_cost(out: pathlib.Path) -> None:
     b.set_xlabel("single-thread mean runtime at $-10$ dB [s]")
     b.set_ylabel("position RMSE at $-10$ dB [m]")
     b.set_title("(b) accuracy--cost trade-off (marker area $\\propto$ peak RSS)", pad=3)
-    b.set_xlim(0, 28)
-    b.set_ylim(0.03, 0.9)
+    b.set_xlim(0, 1.30 * max(runtimes))
+    lo, hi = min(rmses), max(rmses)
+    b.set_ylim(0.55 * lo, 1.8 * hi)
     grid(b)
 
     fig.tight_layout(pad=0.4, w_pad=1.3)
@@ -928,9 +1016,22 @@ def main() -> None:
     ap.add_argument("--snr-min", type=float, default=-10.0,
                     help="lowest SNR [dB] shown in the SNR sweeps "
                          "(-10: main text, -30: supplementary)")
+    ap.add_argument("--campaign", choices=tuple(CAMPAIGNS), default="frozen",
+                    help="which released campaign to plot: 'frozen' is the "
+                         "2026-07-19/21 release, 'v3' the 2026-07-28 re-run")
     args = ap.parse_args()
-    global SNR_MIN
+    global SNR_MIN, DATA
     SNR_MIN = float(args.snr_min)
+    DATA = CAMPAIGNS[args.campaign]
+    missing = [
+        str(d) for dirs in DATA.values() for d in dirs if not d.exists()
+    ]
+    if missing:
+        raise SystemExit(
+            "campaign "
+            f"{args.campaign!r} is incomplete; missing:\n  "
+            + "\n  ".join(sorted(set(missing)))
+        )
     out = pathlib.Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     set_style()

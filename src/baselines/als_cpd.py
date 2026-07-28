@@ -10,6 +10,7 @@ import numpy as np
 
 from .common import (
     BaselineResult,
+    baseline_refinement_tier,
     geometric_support_to_position_ls,
     position_grid_from_config,
     simple_atom_normalize,
@@ -675,6 +676,12 @@ def run_als_cpd_baseline(data: dict, config: dict) -> BaselineResult:
                 "CP-ALS channel factors with adapted joint common-position, "
                 "one-component-per-panel geometry mapping"
             ),
+            # Tier-invariant: the off-grid refinement above maximizes the
+            # CP-factor assignment score, not the exact raw-domain likelihood,
+            # so it is part of the published CPD route in either tier.
+            "refinement_tier": baseline_refinement_tier(config),
+            "refinement_tier_sensitive": False,
+            "exact_model_refinement_used": False,
             "grid_size": int(np.prod(config.get("baselines", {}).get("als_cpd", {}).get("position_grid_shape", (5, 5, 3))) * scene["K"]),
         }
     )

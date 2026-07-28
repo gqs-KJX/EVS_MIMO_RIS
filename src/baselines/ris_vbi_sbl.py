@@ -33,6 +33,7 @@ from ..geometry import local_geometry_from_position
 from ..utils import scipy_is_available
 from .common import (
     BaselineResult,
+    baseline_refinement_tier,
     build_jones_basis_evs_atoms,
     delay_grid_from_scene,
     delay_response,
@@ -204,6 +205,74 @@ def _raw_objective(
     return float(np.linalg.norm(residual) ** 2)
 
 
+def _fuse_position_clock_geometric(
+    scene: dict,
+    config: dict,
+    panels: list[dict[str, Any]],
+) -> tuple[np.ndarray, float]:
+    """Closed-form weighted-LS fusion of the converged per-panel VBI outputs.
+
+    This is the localization step of the reference transported to the RIS-only
+    geometry.  Each panel supplies a local direction ``u_k`` (read off the ARD
+    spatial support) and a delay ``tau_k = (r_k + d_RB_k) / c0 + Delta_t``.
+    Eliminating the unknown ranges ``r_k`` leaves a system that is *linear* in
+    the four unknowns ``(p_u, c0 * Delta_t)``,
+
+        p_u + (c0 Delta_t) R_k^T u_k = center_k + (c0 tau_k - d_RB_k) R_k^T u_k,
+
+    i.e. three equations per panel, solved here in weighted least squares with
+    the panel posterior confidences as weights.  Eqs. (80)-(85) of Li et al.
+    solve the same system after cancelling the clock against the *direct AP-UE*
+    link; this scene has no direct link, so the clock is retained as an explicit
+    fourth unknown instead of being differenced away.
+
+    No evaluation of the exact forward model enters here.  That is the whole
+    point of the ``as_published`` tier: the reference contains no continuous
+    likelihood refinement over ``(p_u, Delta_t)``, so neither does this path.
+    """
+    bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
+    bounds_dt = np.asarray(config.get("delta_t_bounds"), dtype=float)
+    c0 = float(scene["c0"])
+
+    rows: list[np.ndarray] = []
+    rhs: list[np.ndarray] = []
+    weights: list[float] = []
+    for entry in panels:
+        panel = int(entry["panel"])
+        rotation = np.asarray(scene["rotations"][panel], dtype=float)
+        center = np.asarray(scene["ris_centers"][panel], dtype=float)
+        direction = rotation.T @ np.asarray(entry["direction_local"], dtype=float)
+        norm = float(np.linalg.norm(direction))
+        if norm <= 0.0:
+            continue
+        direction = direction / norm
+        offset = c0 * float(entry["tau"]) - float(scene["d_RB"][panel])
+        block = np.zeros((3, 4), dtype=float)
+        block[:, :3] = np.eye(3)
+        block[:, 3] = direction
+        rows.append(block)
+        rhs.append(center + offset * direction)
+        weights.append(float(max(entry.get("confidence", 0.0), 0.0)))
+
+    if not rows:
+        median_pos = np.clip(
+            np.median(np.asarray([p["position"] for p in panels], dtype=float), axis=0),
+            bounds_p[:, 0], bounds_p[:, 1],
+        )
+        return median_pos.astype(float), float(np.mean(bounds_dt))
+
+    weight_vec = np.asarray(weights, dtype=float)
+    total = float(np.sum(weight_vec))
+    scales = np.sqrt(weight_vec / total) if total > 0.0 else np.ones(len(rows))
+    design = np.vstack([scale * block for scale, block in zip(scales, rows)])
+    target = np.concatenate([scale * value for scale, value in zip(scales, rhs)])
+    solution, *_ = np.linalg.lstsq(design, target, rcond=None)
+
+    position = np.clip(solution[:3], bounds_p[:, 0], bounds_p[:, 1])
+    delta_t = float(np.clip(solution[3] / c0, bounds_dt[0], bounds_dt[1]))
+    return position.astype(float), delta_t
+
+
 def _fuse_position_clock(
     scene: dict,
     config: dict,
@@ -214,9 +283,15 @@ def _fuse_position_clock(
 
     A single near-field panel is range-ambiguous and only the strongest panel is
     reliable after the per-panel peel, so the fused estimate is obtained by a
-    likelihood refinement (the paper's MAP core) seeded from the strongest
-    panel's direction combined with a clock scan; the objective itself fits all K
-    panels jointly.
+    likelihood refinement seeded from the strongest panel's direction combined
+    with a clock scan; the objective itself fits all K panels jointly.
+
+    This continuous exact-model polish has no counterpart in Li et al., which
+    localizes in closed form from the converged support (see
+    :func:`_fuse_position_clock_geometric`).  It is therefore gated on the
+    declared ``baselines.refinement_tier``: it runs under
+    ``"refinement_matched"``, where every method including the proposed one is
+    granted the same final polish, and is skipped under ``"as_published"``.
     """
     bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
     bounds_dt = np.asarray(config.get("delta_t_bounds"), dtype=float)
@@ -331,7 +406,11 @@ def run_ris_vbi_sbl_baseline(data: dict, config: dict) -> BaselineResult:
 
     bounds_p = np.asarray(config.get("ue_bounds"), dtype=float)
     bounds_dt = np.asarray(config.get("delta_t_bounds"), dtype=float)
-    p_hat, dt_hat = _fuse_position_clock(scene, config, y_vec, panels)
+    tier = baseline_refinement_tier(config)
+    if tier == "as_published":
+        p_hat, dt_hat = _fuse_position_clock_geometric(scene, config, panels)
+    else:
+        p_hat, dt_hat = _fuse_position_clock(scene, config, y_vec, panels)
     p_hat = np.clip(p_hat, bounds_p[:, 0], bounds_p[:, 1])
     dt_hat = float(np.clip(dt_hat, bounds_dt[0], bounds_dt[1]))
 
@@ -348,6 +427,13 @@ def run_ris_vbi_sbl_baseline(data: dict, config: dict) -> BaselineResult:
             "per_panel_mean_field_vbi_with_ard_spatial_prior_free_gaussian_delay_"
             "and_jones_gain;_geometric_common_clock_fusion"
         ),
+        "refinement_tier": tier,
+        "fusion_rule": (
+            "weighted_linear_ls_over_panel_directions_and_delays"
+            if tier == "as_published"
+            else "exact_model_seed_scan_plus_nelder_mead_over_position_and_clock"
+        ),
+        "exact_model_refinement_used": bool(tier != "as_published"),
         "clock_output_semantics": "native_joint_common_clock",
         "vbi_max_iter": max_iter,
         "vbi_tol": tol,

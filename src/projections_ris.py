@@ -36,24 +36,19 @@ def compressed_exact_response(
     return omega @ g_elem
 
 
-def exact_spherical_response_and_jacobian(
+def _element_response_and_jacobian(
     eta_local: np.ndarray,
-    omega: np.ndarray,
-    a_rb: np.ndarray,
     ris_grid: np.ndarray,
     wavelength: float,
     eps: float = 1e-12,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return exact compressed spherical response and eta Jacobian.
+    """Return the element-domain phase response ``u(eta)`` and its eta Jacobian.
 
-    The Jacobian columns are derivatives with respect to
-    ``[range, elevation, azimuth]`` under the phase-dominant spherical model.
-    No amplitude factor is used, matching ``near_field_spherical_response``.
+    This is the ``O(M_R)`` half of the exact spherical model: it does not touch
+    the training matrix, so callers that only need inner products against
+    precomputed adjoints can stop here.
     """
-    assert omega.ndim == 2, "omega must have shape T x M_R"
-    assert a_rb.ndim == 1, "a_rb must have shape M_R"
     assert ris_grid.ndim == 2 and ris_grid.shape[1] == 3, "ris_grid must be M_R x 3"
-    assert omega.shape[1] == a_rb.size == ris_grid.shape[0]
     range_m, elevation, azimuth = np.asarray(eta_local, dtype=float)
     kappa = 2.0 * np.pi / wavelength
 
@@ -83,11 +78,116 @@ def exact_spherical_response_and_jacobian(
     )
     ddelta = geom_grad @ dq
     du = -1j * kappa * u_vec[:, None] * ddelta
+    return u_vec, du
 
-    a_eff = omega * a_rb[None, :]
-    h_vec = a_eff @ u_vec
-    jac = a_eff @ du
+
+def omega_adjoint(omega: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """Return ``Omega^H v`` without materializing a conjugate copy of ``Omega``.
+
+    ``Omega.conj().T @ v`` allocates and fills a second ``T x M_R`` array on
+    every call, which for the paper configuration is 16 MB of pure overhead.
+    ``conj(conj(v) @ Omega)`` is the same product through one BLAS call on the
+    original buffer.
+    """
+    return np.conj(np.conj(np.asarray(vector, dtype=complex)) @ omega)
+
+
+def exact_spherical_response_and_jacobian(
+    eta_local: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact compressed spherical response and eta Jacobian.
+
+    The Jacobian columns are derivatives with respect to
+    ``[range, elevation, azimuth]`` under the phase-dominant spherical model.
+    No amplitude factor is used, matching ``near_field_spherical_response``.
+    """
+    assert omega.ndim == 2, "omega must have shape T x M_R"
+    assert a_rb.ndim == 1, "a_rb must have shape M_R"
+    assert omega.shape[1] == a_rb.size == ris_grid.shape[0]
+    u_vec, du = _element_response_and_jacobian(eta_local, ris_grid, wavelength, eps)
+
+    # Fold the known RIS-BS response into the element vectors rather than into
+    # Omega: ``(Omega * a_RB) @ u == Omega @ (a_RB * u)``, but the left form
+    # materialises a T x M_R temporary on every call.
+    h_vec = omega @ (a_rb * u_vec)
+    jac = omega @ (a_rb[:, None] * du)
     return h_vec, jac
+
+
+def exact_projection_objective_and_gradient(
+    eta_local: np.ndarray,
+    c_tilde: np.ndarray,
+    omega: np.ndarray,
+    a_rb: np.ndarray,
+    ris_grid: np.ndarray,
+    wavelength: float,
+    eps: float,
+    c_norm_sq: float,
+    omega_adjoint_c: np.ndarray | None = None,
+) -> tuple[float, np.ndarray]:
+    """Return the profiled exact-projection objective and its eta gradient.
+
+    The objective is the one the exact refinement minimises,
+
+        obj(eta) = ||c - alpha h(eta)||^2 / ||c||^2 ,
+        alpha    = h^H c / (h^H h + eps) ,
+
+    with the scale profiled out.  Writing ``u = h^H c``, ``v = h^H h`` and
+    ``d = v + eps``, expanding the profiled residual gives the closed form
+
+        ||c - alpha h||^2 = ||c||^2 - |u|^2 (v + 2 eps) / d^2 ,
+
+    so with ``g(v) = (v + 2 eps)/d^2`` and ``g'(v) = -(v + 3 eps)/d^3``
+
+        d obj/d eta_j = -[ g(v) d|u|^2/d eta_j
+                           + |u|^2 g'(v) dv/d eta_j ] / ||c||^2 .
+
+    Supplying this to L-BFGS-B replaces the four response evaluations a 2-point
+    finite difference needs on a 3-D parameter with a single response-and-
+    Jacobian evaluation, and removes the finite-difference step error as well.
+
+    Only four scalars of ``h`` are ever used, and with ``g = a_RB * u(eta)`` and
+    ``h = Omega g`` all four are inner products that can be pushed through the
+    adjoint:
+
+        u  = h^H c        = g^H (Omega^H c)
+        du = (dh)^H c     = (dg)^H (Omega^H c)
+        v  = h^H h        = ||Omega g||^2
+        dv = 2Re[(dh)^H h] = 2Re[(dg)^H (Omega^H Omega g)]
+
+    ``Omega^H c`` is fixed for the whole refinement of one column against one
+    panel, so passing it in as ``omega_adjoint_c`` leaves two ``T x M_R``
+    products per evaluation (``Omega g`` and its adjoint) instead of the four
+    the response-and-Jacobian form needs.  The value is algebraically identical.
+    """
+    u_vec, du_elem = _element_response_and_jacobian(
+        eta_local, ris_grid, wavelength
+    )
+    g_vec = a_rb * u_vec
+    dg = a_rb[:, None] * du_elem
+    if omega_adjoint_c is None:
+        omega_adjoint_c = omega_adjoint(omega, c_tilde)
+    h_vec = omega @ g_vec
+    gram_h = omega_adjoint(omega, h_vec)
+
+    u_value = np.vdot(g_vec, omega_adjoint_c)
+    v_value = float(np.vdot(h_vec, h_vec).real)
+    denominator = v_value + eps
+    g_value = (v_value + 2.0 * eps) / (denominator * denominator)
+    g_prime = -(v_value + 3.0 * eps) / (denominator ** 3)
+    u_abs_sq = float((u_value * np.conj(u_value)).real)
+
+    objective = float(np.vdot(c_tilde, c_tilde).real) - u_abs_sq * g_value
+    du = dg.conj().T @ omega_adjoint_c
+    dv = 2.0 * np.real(dg.conj().T @ gram_h)
+    du_abs_sq = 2.0 * np.real(np.conj(u_value) * du)
+    gradient = -(du_abs_sq * g_value + u_abs_sq * g_prime * dv)
+    return float(objective / c_norm_sq), np.asarray(gradient / c_norm_sq, dtype=float)
 
 
 def local_ris_search_config(scene: dict, config: dict, path: int) -> dict:
@@ -858,12 +958,17 @@ def _beamspace_coarse_candidates(
         return [], diagnostics
 
     kappa = 2.0 * np.pi / float(wavelength)
-    a_eff = np.asarray(omega, dtype=complex) * np.asarray(a_rb, dtype=complex)[None, :]
-    # <h(eta), c> = u(eta)^H (a_eff^H W c), so one adjoint pass removes the
-    # T-dimension from every subsequent beam-space evaluation.
-    g_vec = a_eff.conj().T @ _apply_weight(np.asarray(c_tilde, dtype=complex), weight)
+    # <h(eta), c> = u(eta)^H (a_eff^H W c) with a_eff = Omega diag(a_RB), so one
+    # adjoint pass removes the T-dimension from every subsequent beam-space
+    # evaluation.  a_eff^H = diag(conj(a_RB)) Omega^H, so the diagonal is
+    # applied after the adjoint instead of materializing a second T x M_R array
+    # (and its conjugate) for every panel and column.
+    g_vec = np.conj(np.asarray(a_rb, dtype=complex)) * omega_adjoint(
+        omega, _apply_weight(np.asarray(c_tilde, dtype=complex), weight)
+    )
     rho = np.asarray(ris_grid, dtype=float)
     rho_sq = rho[:, 0] ** 2 + rho[:, 1] ** 2
+    rho_norm_sq = np.einsum("mj,mj->m", rho, rho)
 
     # Direction cosines implied by the DFT bin frequencies.
     u_axis = wavelength * np.fft.fftshift(np.fft.fftfreq(nfft_x)) / dx
@@ -933,11 +1038,22 @@ def _beamspace_coarse_candidates(
 
         # Exact-phase range scan along the selected direction, still at O(M_R)
         # per trial range because the T-dimension was removed by ``g_vec``.
+        # The probe point is ``r * direction`` with ``||direction|| = 1``, so
+        # ``||r d - rho||^2 = r^2 - 2 r (d . rho) + ||rho||^2`` exactly for any
+        # element layout.  Using that identity keeps the same distances while
+        # avoiding the ``num_range_refine x M_R x 3`` difference tensor.
         direction = np.array(
             [u_val, v_val, np.sqrt(max(1.0 - u_val**2 - v_val**2, 0.0))], dtype=float
         )
-        offsets = range_scan[:, None] * direction[None, :]
-        distances = np.linalg.norm(offsets[:, None, :] - rho[None, :, :], axis=2)
+        projected = rho @ direction
+        distances = np.sqrt(
+            np.maximum(
+                range_scan[:, None] ** 2
+                - 2.0 * range_scan[:, None] * projected[None, :]
+                + rho_norm_sq[None, :],
+                0.0,
+            )
+        )
         phases = np.exp(-1j * kappa * (distances - range_scan[:, None]))
         range_scores = np.abs(phases.conj() @ g_vec)
         best_range = float(range_scan[int(np.argmax(range_scores))])
@@ -1647,6 +1763,26 @@ def _project_ris_factor_legacy(
         value, _ = scaled_residual(c_tilde, h_model, eps)
         return value / c_norm_sq
 
+    use_analytic_gradient = bool(
+        search_config.get("exact_refine_analytic_gradient", True)
+    )
+    # Fixed for this (column, panel) pair, so it is hoisted out of every
+    # L-BFGS-B evaluation across every start.
+    omega_adjoint_c = omega_adjoint(omega, c_tilde) if use_analytic_gradient else None
+
+    def exact_objective_with_gradient(eta_local: np.ndarray):
+        return exact_projection_objective_and_gradient(
+            eta_local,
+            c_tilde,
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            eps,
+            c_norm_sq,
+            omega_adjoint_c=omega_adjoint_c,
+        )
+
     num_lift_candidates = int(search_config.get("num_lift_candidates", 4))
     num_lift_steps = int(search_config.get("num_lift_steps", 3))
     lambda_phys = float(search_config.get("lambda_phys", 1.0e-2))
@@ -1715,8 +1851,10 @@ def _project_ris_factor_legacy(
 
         for eta_start in unique_starts:
             result = minimize(
-                exact_objective,
+                exact_objective_with_gradient if use_analytic_gradient
+                else exact_objective,
                 eta_start,
+                jac=bool(use_analytic_gradient),
                 method="L-BFGS-B",
                 bounds=list(zip(refine_lower, refine_upper)),
                 options={"maxiter": 100, "ftol": 1e-12},

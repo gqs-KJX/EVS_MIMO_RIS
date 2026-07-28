@@ -21,7 +21,7 @@ import numpy as np
 from .geometry import elev_az_from_unit_vector, polarization_vector, unit_vector_from_elev_az
 from .baselines.backend import BackendConfig, get_backend
 from .projections_delay import tau_from_pole
-from .utils import bounded_coordinate_search, scipy_is_available, solve_lstsq
+from .utils import bounded_coordinate_search, copy_estimate, scipy_is_available
 
 
 def _global_vp_config(config: dict) -> dict:
@@ -510,14 +510,28 @@ def _build_global_dictionary(
     scene: dict,
     config: dict,
     need_jacobian: bool = False,
+    evs_basis: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """Build exact-spherical raw dictionary Phi(xi) with optional Jacobian."""
+    """Build exact-spherical raw dictionary Phi(xi) with optional Jacobian.
+
+    ``evs_basis`` is an optional isometry ``Q`` whose range contains every
+    admissible EVS atom.  Passing it emits ``Q^H Phi`` and ``Q^H dPhi/dx``
+    instead, which have ``r`` rather than ``I`` rows in the EVS mode.  The
+    nonlinear parameters never touch the EVS mode, so *all* the Gram
+    quantities built from the dictionary and its Jacobian -- in particular the
+    projected-Jacobian EFIM -- are numerically unchanged; only the row count
+    shrinks.  Callers that need the raw-domain atoms themselves must leave it
+    unset.
+    """
     xi = np.asarray(xi, dtype=float).reshape(4)
     p_u = xi[:3]
     delta_t = float(xi[3])
     evs_bases, evs_mode = _evs_atom_bases(init_estimate, scene, config)
+    if evs_basis is not None:
+        basis_h = np.asarray(evs_basis, dtype=complex).conj().T
+        evs_bases = [basis_h @ np.asarray(basis, dtype=complex) for basis in evs_bases]
     k_paths = scene["K"]
-    i_dim = scene["I"]
+    i_dim = int(evs_bases[0].shape[0]) if evs_basis is not None else scene["I"]
     n_dim = scene["N"]
     t_dim = scene["T"]
     kappa = 2.0 * np.pi / scene["wavelength"]
@@ -649,6 +663,8 @@ def _build_global_dictionary(
         "basis_for_atom": basis_for_atom,
         "evs_mode": evs_mode,
         "evs_bases": evs_bases,
+        "evs_row_dimension": int(i_dim),
+        "evs_compressed": bool(evs_basis is not None),
     }
     if need_jacobian:
         aux["dPhi_dx"] = dphi_dx
@@ -1894,11 +1910,41 @@ def data_only_efim_diagnostic(
         cache_hit = True
         reuse_mode = "snr_closed_form_scale"
     else:
+        # The EFIM is built entirely from Gram products of Phi and dPhi/dx.
+        # Every column of both lies in range(Q) (x) C^N (x) C^T because the EVS
+        # mode carries no nonlinear parameter, so compressing the EVS mode with
+        # the isometry Q leaves each of those Grams -- and hence the projected
+        # Jacobian and the EFIM -- unchanged while removing a factor I/r from
+        # every materialized array.  This keeps the same explicit, backward
+        # stable projection rather than trading it for a Schur complement of
+        # squared quantities.
+        from .estimators import compress_raw_evs_observation, global_vp_evs_basis
+
+        evs_basis = (
+            global_vp_evs_basis(scene, config)
+            if bool(efim_config["global_vp"].get("efim_evs_compression", True))
+            else None
+        )
+        if evs_basis is None:
+            y_work = y_vec
+        else:
+            y_compressed, _ = compress_raw_evs_observation(
+                np.asarray(y_raw, dtype=complex).reshape(
+                    int(scene["I"]), int(scene["N"]), int(scene["T"])
+                ),
+                evs_basis,
+            )
+            y_work = y_compressed.reshape(-1)
         phi, aux = _build_global_dictionary(
-            xi, init_estimate, scene, efim_config, need_jacobian=True
+            xi,
+            init_estimate,
+            scene,
+            efim_config,
+            need_jacobian=True,
+            evs_basis=evs_basis,
         )
         coeff, linear_diag = _solve_linear_vp_regularized(
-            phi, y_vec, None, 0.0
+            phi, y_work, None, 0.0
         )
         d_model = np.column_stack(
             [dphi @ coeff for dphi in aux["dPhi_dx"]]
@@ -1910,10 +1956,17 @@ def data_only_efim_diagnostic(
         projected = d_model - nuisance_fit
         j_unscaled = np.real(projected.conj().T @ projected)
         if not sigma2_is_valid:
-            residual = y_vec - phi @ coeff
-            sigma2 = float(
-                np.vdot(residual, residual).real / max(y_vec.size, 1)
-            )
+            # The residual energy discarded by the compression is orthogonal to
+            # every model column, so it belongs in sigma2 and is recovered from
+            # the exact split ||y - Phi c||^2 = ||y_c - Phi_c c||^2 + ||y||^2
+            # - ||y_c||^2, and the normalization stays the raw sample count.
+            residual = y_work - phi @ coeff
+            residual_energy = float(np.vdot(residual, residual).real)
+            if evs_basis is not None:
+                residual_energy += float(
+                    np.vdot(y_vec, y_vec).real - np.vdot(y_work, y_work).real
+                )
+            sigma2 = float(residual_energy / max(y_vec.size, 1))
         if cache_enabled:
             _UNSCALED_EFIM_CACHE[cache_key] = {
                 "j_unscaled": j_unscaled.copy(),
@@ -2917,7 +2970,7 @@ def _global_exact_spherical_vp_refinement_lbfgsb_reduced(
 def _panel_ordered_estimate_for_legacy_solver(init_estimate: dict, scene: dict) -> dict:
     """Return an estimate copy in physical panel order for the legacy VP solver."""
     stage1_factors = _get_panel_ordered_stage1_factors(init_estimate, scene)
-    estimate = copy.deepcopy(init_estimate)
+    estimate = copy_estimate(init_estimate)
     estimate["A"] = stage1_factors["A_phys"].copy()
     estimate["poles"] = stage1_factors["poles_phys"].copy()
     estimate["ris_eta"] = stage1_factors["ris_eta_phys"].copy()
@@ -2941,16 +2994,29 @@ def _panel_ordered_estimate_for_legacy_solver(init_estimate: dict, scene: dict) 
 def _legacy_vp_initial_result(y_raw: np.ndarray, estimate: dict, scene: dict, config: dict) -> dict:
     """Evaluate the old VP-WNLS model at its initial point for rollback."""
     from .channel_model import synthesize_raw_tensor
-    from .estimators import _bounds_global, _dictionary_from_global_x, _initial_global_parameters
+    from .estimators import (
+        _bounds_global,
+        _initial_global_parameters,
+        compress_raw_evs_observation,
+        global_vp_evs_basis,
+        global_vp_residual,
+    )
 
     x0 = _initial_global_parameters(scene, estimate, config)
     lower, upper = _bounds_global(scene, config)
     x0 = np.clip(x0, lower, upper)
     y_vec = y_raw.reshape(-1)
-    dictionary, components = _dictionary_from_global_x(scene, x0)
-    beta = solve_lstsq(dictionary, y_vec, reg=1.0e-12)
-    residual = dictionary @ beta - y_vec
-    raw_objective = float(np.vdot(residual, residual).real / y_vec.size)
+    evs_basis = global_vp_evs_basis(scene, config)
+    if evs_basis is None:
+        y_work, orthogonal_energy = y_raw, 0.0
+    else:
+        y_work, orthogonal_energy = compress_raw_evs_observation(y_raw, evs_basis)
+    residual, beta, components = global_vp_residual(
+        scene, x0, y_work, evs_basis=evs_basis
+    )
+    raw_objective = float(
+        (float(np.vdot(residual, residual).real) + orthogonal_energy) / y_vec.size
+    )
     return {
         "x": x0,
         "p_u": x0[:3],
@@ -2993,7 +3059,7 @@ def _augment_legacy_vp_result(
         optimizer["success"] = False
         optimizer["message"] = "rollback_objective_increased"
 
-    estimate = copy.deepcopy(init_estimate)
+    estimate = copy_estimate(init_estimate)
     estimate.update(legacy_result)
     estimate.update(
         {
@@ -3310,7 +3376,7 @@ def _global_exact_spherical_vp_refinement_adaptive_jones(
     choose_jones = bool(
         jones_result is not None and jones_score < fixed_score and not leakage_guard
     )
-    selected = copy.deepcopy(jones_result if choose_jones else fixed_result)
+    selected = copy_estimate(jones_result if choose_jones else fixed_result)
     selected_branch = "adaptive_jones" if choose_jones else "fixed_pol_anchor"
     diagnostic_source = jones_result if jones_result is not None else fixed_result
 

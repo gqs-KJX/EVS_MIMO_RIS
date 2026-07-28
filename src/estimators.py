@@ -29,7 +29,15 @@ from .projections_ris import (
     project_ris_factor,
     scaled_residual,
 )
-from .tensor_utils import dehankelize_frequency, reconstruct_z, z_design_column
+from .tensor_utils import (
+    _dense_khatri_rao_forced,
+    blocked_squared_error,
+    dehankelize_frequency,
+    khatri_rao_synthesize,
+    reconstruct_z,
+    solve_khatri_rao_lstsq,
+    z_design_column,
+)
 from .utils import bounded_coordinate_search, check_finite, solve_lstsq, scipy_is_available
 
 
@@ -78,8 +86,13 @@ def _raw_design_matrix_from_factors(
 
 def _estimate_weights_raw(y: np.ndarray, a_mat: np.ndarray, d_mat: np.ndarray, c_mat: np.ndarray) -> np.ndarray:
     """Estimate complex path gains by raw-domain variable projection."""
-    design = _raw_design_matrix_from_factors(a_mat, d_mat, c_mat)
-    return solve_lstsq(design, y.reshape(-1), reg=1e-12)
+    if _dense_khatri_rao_forced():
+        design = _raw_design_matrix_from_factors(a_mat, d_mat, c_mat)
+        return solve_lstsq(design, y.reshape(-1), reg=1e-12)
+    shape = (a_mat.shape[0], d_mat.shape[0], c_mat.shape[0])
+    return solve_khatri_rao_lstsq(
+        (a_mat, d_mat, c_mat), np.asarray(y).reshape(shape), reg=1e-12
+    )
 
 
 def _estimate_weights_z(
@@ -90,6 +103,10 @@ def _estimate_weights_z(
     c_mat: np.ndarray,
 ) -> np.ndarray:
     """Estimate complex CP weights in the Hankelized tensor domain."""
+    if not _dense_khatri_rao_forced():
+        return solve_khatri_rao_lstsq(
+            (a_mat, b_mat, q_mat, c_mat), z_tensor, reg=1e-12
+        )
     k_paths = a_mat.shape[1]
     design = np.column_stack(
         [
@@ -124,7 +141,7 @@ def _fit_z_model(
     """Estimate Z-domain weights and return reconstruction plus squared residual."""
     beta = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
     z_hat = reconstruct_z(beta, a_mat, b_mat, q_mat, c_mat)
-    residual_sse = float(np.linalg.norm(z_hat - z_tensor) ** 2)
+    residual_sse = blocked_squared_error(z_hat, z_tensor)
     return beta, z_hat, residual_sse
 
 
@@ -215,7 +232,9 @@ def reconstruct_raw_from_structured_estimate(estimate: dict, scene: dict) -> np.
     c_mat = estimate["C"]
     beta = estimate["beta_z"]
     d_mat = delay_matrix_from_poles(estimate["poles"], scene["N"])
-    return _raw_design_matrix_from_factors(a_mat, d_mat, c_mat) @ beta.reshape(-1)
+    if _dense_khatri_rao_forced():
+        return _raw_design_matrix_from_factors(a_mat, d_mat, c_mat) @ beta.reshape(-1)
+    return khatri_rao_synthesize((a_mat, d_mat, c_mat), beta.reshape(-1)).reshape(-1)
 
 
 def reconstruct_raw_tensor_from_structured_estimate(estimate: dict, scene: dict) -> np.ndarray:
@@ -434,23 +453,9 @@ def _coarse_ris_factor_projection(
     """Coarse exact-spherical RIS codebook match without local WESVP refinement."""
     start = time.perf_counter()
     c_norm_sq = np.linalg.norm(c_tilde) ** 2 + eps
-    grid_candidates, grid_responses, build_elapsed = _coarse_ris_codebook(
-        omega,
-        a_rb,
-        ris_grid,
-        wavelength,
-        search_config,
-        response_cache,
-    )
-
-    candidates = []
-    for eta_local, h_model in zip(grid_candidates, grid_responses):
-        value, alpha = scaled_residual(c_tilde, h_model, eps)
-        candidates.append((float(value), eta_local, alpha, h_model))
-    # Mirror the batched path: augment the fixed-count angular dictionary with
-    # Nyquist-rate direction-cosine candidates scored by the same residual.
+    lower, upper = _ris_search_bounds(search_config)
+    beamspace_etas: list[np.ndarray] = []
     if bool(search_config.get("use_beamspace_acquisition", True)):
-        lower, upper = _ris_search_bounds(search_config)
         beamspace_etas, _ = _beamspace_coarse_candidates(
             c_tilde,
             omega,
@@ -463,12 +468,32 @@ def _coarse_ris_factor_projection(
             None,
             eps,
         )
-        for eta_local in beamspace_etas:
-            h_model = compressed_exact_response(
-                eta_local, omega, a_rb, ris_grid, wavelength
-            )
-            value, alpha = scaled_residual(c_tilde, h_model, eps)
-            candidates.append((float(value), np.asarray(eta_local, dtype=float), alpha, h_model))
+    # Mirror the batched path: the fixed-count angular dictionary is scored
+    # jointly with the Nyquist-rate direction-cosine candidates, and may be
+    # switched off entirely once the latter carry the acquisition.
+    use_legacy = _legacy_coarse_codebook_enabled(search_config) or not beamspace_etas
+    if use_legacy:
+        grid_candidates, grid_responses, build_elapsed = _coarse_ris_codebook(
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            response_cache,
+        )
+    else:
+        grid_candidates, grid_responses, build_elapsed = [], [], 0.0
+
+    candidates = []
+    for eta_local, h_model in zip(grid_candidates, grid_responses):
+        value, alpha = scaled_residual(c_tilde, h_model, eps)
+        candidates.append((float(value), eta_local, alpha, h_model))
+    for eta_local in beamspace_etas:
+        h_model = compressed_exact_response(
+            eta_local, omega, a_rb, ris_grid, wavelength
+        )
+        value, alpha = scaled_residual(c_tilde, h_model, eps)
+        candidates.append((float(value), np.asarray(eta_local, dtype=float), alpha, h_model))
     candidates.sort(key=lambda item: item[0])
     assert candidates, "empty RIS coarse codebook"
     value, eta_local, alpha, h_model = candidates[0]
@@ -493,6 +518,87 @@ def _coarse_ris_factor_projection(
     }
 
 
+FACTOR_RECOVERY_DOMAINS = ("raw_evs", "compressed_evs")
+
+
+def _factor_recovery_observation(
+    z_tensor: np.ndarray,
+    scene: dict,
+    config: dict,
+    precompressed: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, str]:
+    """Return the tensor the coupled factor recovery runs on, and its lift.
+
+    ``stage1_factor_domain="raw_evs"`` (the published behaviour) runs the coupled
+    LS and the rank-one split at the full EVS dimension ``I``.
+    ``"compressed_evs"`` runs the identical algebra inside the known union
+    subspace ``range(B)`` of dimension ``r=2K`` and lifts the EVS factor back
+    through ``B``.
+
+    The two are related by an exact identity rather than an approximation.
+    Every admissible EVS factor lies in ``range(B)`` because ``Theta_k`` depends
+    only on the known RIS->BS direction, so ``B`` discards no signal.  The
+    coupled LS is linear in the EVS mode, and ``B`` has orthonormal columns, so
+    the rank-one SVD split is equivariant under the lift:
+
+        B @ F_r(B^H Z) == F(B B^H Z)
+
+    to machine precision.  The compressed route is therefore the raw route
+    applied to the observation with its ``I-r`` noise-only EVS dimensions
+    removed -- it changes the estimate only by suppressing noise that cannot
+    carry signal, and it does so at ``O(r)`` instead of ``O(I)`` in that mode.
+
+    ``precompressed`` lets a caller that already formed ``B^H Z`` for the delay
+    path hand it over instead of paying for the contraction twice; it is used
+    only when its EVS dimension matches the union rank.
+    """
+    domain = str(config.get("stage1_factor_domain", "raw_evs")).strip().lower()
+    if domain not in FACTOR_RECOVERY_DOMAINS:
+        raise ValueError(
+            f"unknown stage1_factor_domain {domain!r}; "
+            f"expected one of {FACTOR_RECOVERY_DOMAINS}"
+        )
+    if domain == "raw_evs":
+        return z_tensor, None, domain
+
+    # Local import: ccop_stage1_initializer imports this module, so a top-level
+    # import would be circular.
+    from .ccop_stage1_initializer import known_evs_union_basis
+
+    basis, _ = known_evs_union_basis(
+        scene,
+        relative_tolerance=float(
+            config.get("ccop_stage1_evs_subspace_rtol", 1.0e-12)
+        ),
+    )
+    if precompressed is not None and int(precompressed.shape[0]) == int(basis.shape[1]):
+        return np.asarray(precompressed, dtype=complex), basis, domain
+    compressed = np.einsum("ir,iplt->rplt", basis.conj(), z_tensor, optimize=True)
+    return compressed, basis, domain
+
+
+def _legacy_coarse_codebook_enabled(search_config: dict) -> bool:
+    """Whether the fixed-count angular codebook enters the candidate set.
+
+    ``coarse_codebook_mode="union"`` (the default) scores the legacy dictionary
+    and the Nyquist beam-space candidates together; the selection is then a
+    minimum over the union, which is the published acquisition.
+    ``"beamspace_only"`` drops the legacy dictionary altogether.  Since the
+    beam-space candidates already sample direction cosines at the array's own
+    Rayleigh limit, this removes an ``O(G M_R)`` spherical-response build whose
+    step is coarser than one mainlobe; it is an ablation of an acquisition
+    stage, not a numerical approximation of one.  The legacy dictionary is
+    retained regardless when beam-space acquisition itself is disabled, so the
+    candidate set can never become empty.
+    """
+    mode = str(search_config.get("coarse_codebook_mode", "union")).strip().lower()
+    if mode not in ("union", "beamspace_only"):
+        raise ValueError(f"unknown coarse_codebook_mode {mode!r}")
+    if mode == "union":
+        return True
+    return not bool(search_config.get("use_beamspace_acquisition", True))
+
+
 def _coarse_ris_factor_projections_batched(
     c_proxy: np.ndarray,
     omega: np.ndarray,
@@ -505,14 +611,44 @@ def _coarse_ris_factor_projections_batched(
 ) -> list[dict]:
     """Evaluate one panel codebook against all CPD columns in a batch."""
     assert c_proxy.ndim == 2, "c_proxy must have shape T x K"
-    grid_candidates, response_matrix, build_elapsed = _coarse_ris_codebook_batched(
-        omega,
-        a_rb,
-        ris_grid,
-        wavelength,
-        search_config,
-        response_cache,
-    )
+    use_beamspace = bool(search_config.get("use_beamspace_acquisition", True))
+    use_legacy = _legacy_coarse_codebook_enabled(search_config)
+    lower, upper = _ris_search_bounds(search_config)
+    codebook_fallback_reason = ""
+    if not use_legacy:
+        # All three beam-space decline paths depend on the panel lattice and the
+        # search bounds, not on the data, so one probe settles the whole panel.
+        probe_etas, probe_diagnostics = _beamspace_coarse_candidates(
+            np.asarray(c_proxy[:, 0], dtype=complex),
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            lower,
+            upper,
+            None,
+            eps,
+        )
+        if not probe_etas:
+            use_legacy = True
+            codebook_fallback_reason = str(
+                probe_diagnostics.get("beamspace_reason", "beamspace_declined")
+            )
+
+    if use_legacy:
+        grid_candidates, response_matrix, build_elapsed = _coarse_ris_codebook_batched(
+            omega,
+            a_rb,
+            ris_grid,
+            wavelength,
+            search_config,
+            response_cache,
+        )
+    else:
+        grid_candidates = []
+        response_matrix = np.zeros((0, int(c_proxy.shape[0])), dtype=complex)
+        build_elapsed = 0.0
     correlation_start = time.perf_counter()
     denominators = np.einsum(
         "gt,gt->g",
@@ -526,30 +662,33 @@ def _coarse_ris_factor_projections_batched(
     projections: list[dict] = []
     for col in range(c_proxy.shape[1]):
         c_tilde = np.asarray(c_proxy[:, col], dtype=complex)
-        residuals = c_tilde[None, :] - alphas[:, col, None] * response_matrix
-        values = np.sum(np.abs(residuals) ** 2, axis=1)
-        order = np.argsort(values, kind="mergesort")
-
-        cutoff_index = min(num_refine_starts, order.size) - 1
-        cutoff = float(values[order[cutoff_index]])
-        scale = max(float(np.linalg.norm(c_tilde) ** 2), abs(cutoff), 1.0)
-        roundoff_guard = (
-            256.0
-            * np.finfo(float).eps
-            * max(int(c_tilde.size), 1)
-            * scale
-        )
-        guarded = order[values[order] <= cutoff + roundoff_guard]
         # ``grid_candidates`` is a fixed-count angular dictionary, so its step is
         # coarser than one panel mainlobe for an electrically large RIS.  Add
         # Nyquist-rate direction-cosine candidates and score every candidate with
         # the same exact spherical residual, so the selection below is a minimum
         # over a superset and can only improve.
-        candidate_etas: list[np.ndarray] = [
-            np.asarray(grid_candidates[int(index)], dtype=float) for index in guarded
-        ]
-        if bool(search_config.get("use_beamspace_acquisition", True)):
-            lower, upper = _ris_search_bounds(search_config)
+        candidate_etas: list[np.ndarray] = []
+        candidate_sources: list[str] = []
+        if grid_candidates:
+            residuals = c_tilde[None, :] - alphas[:, col, None] * response_matrix
+            values = np.sum(np.abs(residuals) ** 2, axis=1)
+            order = np.argsort(values, kind="mergesort")
+
+            cutoff_index = min(num_refine_starts, order.size) - 1
+            cutoff = float(values[order[cutoff_index]])
+            scale = max(float(np.linalg.norm(c_tilde) ** 2), abs(cutoff), 1.0)
+            roundoff_guard = (
+                256.0
+                * np.finfo(float).eps
+                * max(int(c_tilde.size), 1)
+                * scale
+            )
+            guarded = order[values[order] <= cutoff + roundoff_guard]
+            candidate_etas.extend(
+                np.asarray(grid_candidates[int(index)], dtype=float) for index in guarded
+            )
+            candidate_sources.extend("coarse_codebook" for _ in guarded)
+        if use_beamspace:
             beamspace_etas, _ = _beamspace_coarse_candidates(
                 c_tilde,
                 omega,
@@ -563,6 +702,7 @@ def _coarse_ris_factor_projections_batched(
                 eps,
             )
             candidate_etas.extend(beamspace_etas)
+            candidate_sources.extend("beamspace" for _ in beamspace_etas)
         exact_ranked = []
         for candidate_index, eta_candidate in enumerate(candidate_etas):
             exact_response = compressed_exact_response(
@@ -595,6 +735,20 @@ def _coarse_ris_factor_projections_batched(
                     np.asarray(candidate_etas[item[1]], dtype=float)
                     for item in exact_ranked[:num_refine_starts]
                 ],
+                # Acquisition provenance: which candidate block supplied the
+                # winner, and how many candidates each block contributed.  Used
+                # to decide whether the legacy dictionary is still load-bearing.
+                "coarse_candidate_source": candidate_sources[best_index],
+                "coarse_refine_start_sources": [
+                    candidate_sources[item[1]] for item in exact_ranked[:num_refine_starts]
+                ],
+                "coarse_num_candidates_codebook": int(
+                    candidate_sources.count("coarse_codebook")
+                ),
+                "coarse_num_candidates_beamspace": int(
+                    candidate_sources.count("beamspace")
+                ),
+                "coarse_codebook_fallback_reason": codebook_fallback_reason,
                 "stage1_time_ris_codebook_build": (
                     float(build_elapsed) if col == 0 else 0.0
                 ),
@@ -995,6 +1149,7 @@ def initialize_from_hankel(
         "stage1_time_delay_estimation": 0.0,
         "stage1_time_vandermonde_reconstruction": 0.0,
         "stage1_time_coupled_ls": 0.0,
+        "stage1_time_factor_projection": 0.0,
         "stage1_time_rank1_svd_split": 0.0,
         "stage1_time_assignment_total": 0.0,
         "stage1_time_assignment_evs": 0.0,
@@ -1068,13 +1223,30 @@ def initialize_from_hankel(
 
     factor_init = str(config.get("stage1_factor_init", "hankel_coupled_ls"))
     if factor_init == "hankel_coupled_ls":
-        a_proxy, c_proxy, factor_diagnostics = _coupled_hankel_factor_initialization(
+        factor_start = time.perf_counter()
+        factor_observation, factor_basis, factor_domain = _factor_recovery_observation(
             z_tensor,
+            scene,
+            config,
+            precompressed=(None if delay_z_tensor is None else delay_observation),
+        )
+        factor_projection_time = time.perf_counter() - factor_start
+        a_proxy, c_proxy, factor_diagnostics = _coupled_hankel_factor_initialization(
+            factor_observation,
             poles_raw,
             config.get("stage1_factor_reg", 1e-10),
             config=config,
             return_diagnostics=True,
         )
+        if factor_basis is not None:
+            # Lift the EVS factor out of the union subspace so that every
+            # downstream consumer keeps seeing full-dimension EVS coordinates.
+            a_proxy = factor_basis @ a_proxy
+        factor_diagnostics["stage1_factor_domain"] = factor_domain
+        factor_diagnostics["stage1_factor_evs_dimension"] = int(
+            factor_observation.shape[0]
+        )
+        stage1_timing["stage1_time_factor_projection"] = float(factor_projection_time)
         stage1_timing["stage1_time_coupled_ls"] = float(
             factor_diagnostics.get("stage1_time_coupled_ls", 0.0)
         )
@@ -1140,7 +1312,7 @@ def initialize_from_hankel(
     beta_z = _estimate_weights_z(z_tensor, a_mat, b_mat, q_mat, c_mat)
     z_hat = reconstruct_z(beta_z, a_mat, b_mat, q_mat, c_mat)
     initial_residual = float(
-        np.linalg.norm(z_hat - z_tensor) ** 2
+        blocked_squared_error(z_hat, z_tensor)
         / (np.linalg.norm(z_tensor) ** 2 + config["eps"])
     )
 
@@ -2311,29 +2483,169 @@ def _bounds_global(scene: dict, config: dict) -> tuple[np.ndarray, np.ndarray]:
     return lower, upper
 
 
-def _dictionary_from_global_x(scene: dict, x: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Build raw-domain VP dictionary for p_u, Delta_t, gamma, eta."""
+def _global_factors_from_x(scene: dict, x: np.ndarray) -> tuple[tuple[np.ndarray, ...], dict]:
+    """Raw-domain VP factors (a_EVS, d, c) for p_u, Delta_t, gamma, eta."""
     k_paths = scene["K"]
     p_u = x[:3]
     delta_t = float(x[3])
     gamma = x[4 : 4 + k_paths]
     eta_pol = x[4 + k_paths : 4 + 2 * k_paths]
     components = channel_components(scene, p_u, delta_t, gamma, eta_pol)
-    a_mat = components["a_EVS"].T
-    d_mat = components["d"].T
-    c_mat = components["c"].T
-    dictionary = _raw_design_matrix_from_factors(a_mat, d_mat, c_mat)
+    factors = (
+        components["a_EVS"].T,
+        components["d"].T,
+        components["c"].T,
+    )
+    return factors, components
+
+
+def _dictionary_from_global_x(scene: dict, x: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Build raw-domain VP dictionary for p_u, Delta_t, gamma, eta."""
+    factors, components = _global_factors_from_x(scene, x)
+    dictionary = _raw_design_matrix_from_factors(*factors)
     return dictionary, components
 
 
+def global_vp_evs_basis(scene: dict, config: dict) -> np.ndarray | None:
+    """Return the orthonormal EVS compression used by the raw-domain global VP.
+
+    Every admissible EVS factor of path ``k`` is
+    ``a_EVS,k = kron(v_B[k], Theta[k] p(gamma_k, eta_k))``, and ``v_B`` and
+    ``Theta`` depend only on the known RIS->BS geometry.  The EVS factor
+    therefore lies in ``range(B_k)`` with ``B_k = kron(v_B[k], Theta[k])`` for
+    *every* value of the nonlinear parameters, so the whole VP dictionary lives
+    in the fixed ``r <= 2K`` dimensional union subspace ``range(Q)`` regardless
+    of ``(p_u, Delta_t, gamma, eta)``.
+
+    Returns ``None`` when the compression is disabled or cannot shrink the EVS
+    mode, in which case the caller runs the uncompressed raw residual.
+    """
+    if not bool(config.get("global_vp_raw_evs_compression", True)):
+        return None
+    from .ccop_stage1_initializer import known_evs_union_basis
+
+    basis, _ = known_evs_union_basis(
+        scene,
+        relative_tolerance=float(
+            config.get("ccop_stage1_evs_subspace_rtol", 1.0e-12)
+        ),
+    )
+    if int(basis.shape[1]) >= int(scene["I"]):
+        return None
+    return np.asarray(basis, dtype=complex)
+
+
+def compress_raw_evs_observation(
+    y_tensor: np.ndarray, basis: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Return ``(Q^H Y, ||Y - Q Q^H Y||^2)`` for a raw ``I x N x T`` observation.
+
+    Because ``Q`` is an isometry onto a subspace that contains the whole VP
+    dictionary, the raw variable-projection residual splits exactly:
+
+        ||A(x) beta - Y||^2 == ||Q^H A(x) beta - Q^H Y||^2 + ||Y - Q Q^H Y||^2
+
+    for every ``x`` and every ``beta``, and the minimizing ``beta`` is the same
+    on both sides because ``Q^H`` preserves inner products among vectors that
+    already lie in ``range(Q)``.  The second term is a constant of the data, so
+    optimizing the compressed residual optimizes the raw objective itself --
+    this is an exact change of coordinates, not a truncation.
+
+    The orthogonal energy is accumulated from an explicit blocked residual
+    rather than from ``||Y||^2 - ||Q^H Y||^2``.  Both are algebraically equal
+    here and the Pythagorean form is well conditioned for this split (the
+    discarded mass dominates), but the explicit form stays honest if the
+    subspace ever becomes nearly complete, and it costs one pass.
+    """
+    y_tensor = np.asarray(y_tensor, dtype=complex)
+    assert y_tensor.ndim == 3, "raw observation must have shape I x N x T"
+    basis = np.asarray(basis, dtype=complex)
+    i_dim = int(y_tensor.shape[0])
+    r_dim = int(basis.shape[1])
+    basis_h = basis.conj().T
+    y_flat = y_tensor.reshape(i_dim, -1)
+    num_columns = int(y_flat.shape[1])
+    compressed_flat = np.empty((r_dim, num_columns), dtype=complex)
+
+    orthogonal_sq = 0.0
+    block = 8192
+    for start in range(0, num_columns, block):
+        stop = min(start + block, num_columns)
+        y_block = y_flat[:, start:stop]
+        c_block = basis_h @ y_block
+        compressed_flat[:, start:stop] = c_block
+        orthogonal_sq += float(np.linalg.norm(y_block - basis @ c_block) ** 2)
+
+    compressed = compressed_flat.reshape((r_dim,) + y_tensor.shape[1:])
+    return compressed, float(orthogonal_sq)
+
+
+def global_vp_residual(
+    scene: dict,
+    x: np.ndarray,
+    y_tensor: np.ndarray,
+    *,
+    evs_basis: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Variable-projection residual and gains at global parameters ``x``.
+
+    The design matrix has one rank-one Kronecker column per path, so the ridge
+    normal equations and the model synthesis are evaluated from the factors
+    directly; the ``(I*N*T) x K`` dictionary is never formed.  For the paper
+    configuration this is the dominant Stage-II cost.
+
+    ``evs_basis`` supplies the isometry ``Q`` of :func:`global_vp_evs_basis`.
+    When it is given, ``y_tensor`` must already be ``Q^H Y`` and the returned
+    residual is the compressed one; the caller adds the constant orthogonal
+    energy back to recover the raw objective.
+    """
+    if _dense_khatri_rao_forced():
+        dictionary, components = _dictionary_from_global_x(scene, x)
+        if evs_basis is not None:
+            factors, _ = _global_factors_from_x(scene, x)
+            dictionary = _raw_design_matrix_from_factors(
+                evs_basis.conj().T @ factors[0], factors[1], factors[2]
+            )
+        y_vec = np.asarray(y_tensor).reshape(-1)
+        beta = solve_lstsq(dictionary, y_vec, reg=1e-12)
+        return dictionary @ beta - y_vec, beta, components
+    factors, components = _global_factors_from_x(scene, x)
+    if evs_basis is not None:
+        factors = (evs_basis.conj().T @ factors[0], factors[1], factors[2])
+    shape = tuple(int(factor.shape[0]) for factor in factors)
+    y_tensor = np.asarray(y_tensor).reshape(shape)
+    beta = solve_khatri_rao_lstsq(factors, y_tensor, reg=1e-12)
+    model = khatri_rao_synthesize(factors, beta)
+    return (model - y_tensor).reshape(-1), beta, components
+
+
 def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: dict) -> dict:
-    """Stage 3: raw-domain global VP-WNLS refinement."""
+    """Stage 3: raw-domain global VP-WNLS refinement.
+
+    The solve runs inside the known EVS union subspace when
+    ``global_vp_raw_evs_compression`` is on.  That is an exact change of
+    coordinates (see :func:`compress_raw_evs_observation`): the objective, the
+    feasible set, the profiled gains and hence the optimizer trajectory are
+    unchanged, but the residual and its Jacobian shrink from ``I`` to ``r <= 2K``
+    rows in the EVS mode.  The discarded mass enters the least-squares residual
+    as one constant entry with an identically zero Jacobian row, so the
+    trust-region subproblem and the ``ftol`` test see exactly the values they
+    saw before.
+    """
     x0 = _initial_global_parameters(scene, estimate, config)
     lower, upper = _bounds_global(scene, config)
     x0 = np.clip(x0, lower, upper)
     y_vec = y_noisy.reshape(-1)
     residual_eval_count = 0
     residual_eval_time_s = 0.0
+
+    evs_basis = global_vp_evs_basis(scene, config)
+    if evs_basis is None:
+        y_work = y_noisy
+        orthogonal_energy = 0.0
+    else:
+        y_work, orthogonal_energy = compress_raw_evs_observation(y_noisy, evs_basis)
+    orthogonal_residual = np.sqrt(max(orthogonal_energy, 0.0))
 
     def unpack_scaled(x_scaled: np.ndarray) -> np.ndarray:
         return lower + np.clip(x_scaled, 0.0, 1.0) * (upper - lower)
@@ -2342,23 +2654,30 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         nonlocal residual_eval_count, residual_eval_time_s
         eval_start = time.perf_counter()
         x = unpack_scaled(x_scaled)
-        dictionary, components = _dictionary_from_global_x(scene, x)
-        beta = solve_lstsq(dictionary, y_vec, reg=1e-12)
-        residual = dictionary @ beta - y_vec
+        residual, beta, components = global_vp_residual(
+            scene, x, y_work, evs_basis=evs_basis
+        )
         residual_eval_count += 1
         residual_eval_time_s += time.perf_counter() - eval_start
         return residual, beta, components
 
+    def raw_objective_from_residual(residual: np.ndarray) -> float:
+        return float(
+            (float(np.vdot(residual, residual).real) + orthogonal_energy) / y_vec.size
+        )
+
     x0_scaled = (x0 - lower) / (upper - lower)
     residual_initial, _, _ = residual_complex_from_scaled(x0_scaled)
-    raw_objective_initial = float(np.vdot(residual_initial, residual_initial).real / y_vec.size)
+    raw_objective_initial = raw_objective_from_residual(residual_initial)
 
     if scipy_is_available():
         from scipy.optimize import least_squares
 
         def residual_real(x_scaled: np.ndarray) -> np.ndarray:
             residual, _, _ = residual_complex_from_scaled(x_scaled)
-            return np.concatenate([residual.real, residual.imag])
+            return np.concatenate(
+                [residual.real, residual.imag, [orthogonal_residual]]
+            )
 
         result = least_squares(
             residual_real,
@@ -2382,7 +2701,7 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
 
         def objective(x_scaled: np.ndarray) -> float:
             residual, _, _ = residual_complex_from_scaled(x_scaled)
-            return float(np.vdot(residual, residual).real / y_vec.size)
+            return raw_objective_from_residual(residual)
 
         x_scaled_best, _, info = bounded_coordinate_search(
             objective,
@@ -2404,9 +2723,9 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
 
     x_best = unpack_scaled(x_scaled_best)
     residual, beta_hat, components_hat = residual_complex_from_scaled(x_scaled_best)
-    raw_objective_final = float(np.vdot(residual, residual).real / y_vec.size)
+    raw_objective_final = raw_objective_from_residual(residual)
     y_hat_noiseless_model = synthesize_raw_tensor(components_hat, beta_hat)
-    residual_rmse_noisy = float(np.linalg.norm(residual) / np.sqrt(y_vec.size))
+    residual_rmse_noisy = float(np.sqrt(max(raw_objective_final, 0.0)))
 
     return {
         "x": x_best,
@@ -2422,6 +2741,11 @@ def refine_global_raw(y_noisy: np.ndarray, scene: dict, config: dict, estimate: 
         "raw_objective_final": raw_objective_final,
         "residual_eval_count": int(residual_eval_count),
         "residual_eval_time_s": float(residual_eval_time_s),
+        "global_vp_raw_evs_compression": bool(evs_basis is not None),
+        "global_vp_raw_evs_compressed_dim": int(
+            0 if evs_basis is None else evs_basis.shape[1]
+        ),
+        "global_vp_raw_evs_original_dim": int(scene["I"]),
         "optimizer": optimizer_info,
     }
 

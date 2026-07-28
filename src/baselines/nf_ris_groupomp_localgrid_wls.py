@@ -22,6 +22,7 @@ import numpy as np
 from .als_cpd import complex_cp_als
 from .common import (
     BaselineResult,
+    baseline_refinement_tier,
     build_jones_basis_evs_atoms,
     delay_grid_from_scene,
     delay_response,
@@ -830,6 +831,11 @@ def run_nf_ris_groupomp_localgrid_wls_baseline(
             "evs_delay_training_cpd_with_panel_aware_spatial_search;_"
             "random_Omega_prevents_the_paper_Kronecker_RIS_axis_factorization"
         ),
+        # Tier-invariant: the exact-model polish here *is* the SAGE stage of the
+        # cited CPD-OMP-SAGE-WLS pipeline, so it belongs to the published route.
+        "refinement_tier": baseline_refinement_tier(config),
+        "refinement_tier_sensitive": False,
+        "exact_model_refinement_used": sage_enabled,
         "cpd_omp_adapted_used": len(cpd_trace) > 0,
         "cpd_tensor_shape": (int(scene["I"]), int(scene["N"]), int(scene["T"])),
         "cpd_rank1_sequential": True,

@@ -56,6 +56,34 @@ _CLOCK_DELAY_SOURCES = {
     "ris_vbi_sbl": "per_panel_vbi_sbl_delay_with_baseline_fused_position",
 }
 
+REFINEMENT_TIERS = ("refinement_matched", "as_published")
+
+
+def baseline_refinement_tier(config: dict) -> str:
+    """Return the declared baseline refinement tier.
+
+    ``"refinement_matched"`` (default) gives every method the same continuous
+    exact-model likelihood polish over ``(p_u, Delta_t)`` from its own seed, so
+    a residual accuracy gap measures acquisition and basin reliability rather
+    than the presence or absence of a final refinement.  ``"as_published"``
+    stops each baseline where its own reference stops.
+
+    The tier is only load-bearing for a baseline whose reference contains no
+    such continuous refinement.  ``als_cpd`` refines in the CP-factor domain and
+    ``nf_ris_groupomp_localgrid_wls`` runs the SAGE step its reference
+    prescribes, so both are unaffected; ``ris_vbi_sbl`` is not, because Li et
+    al. recover the location in closed form from the converged angle support and
+    a delay difference (see that module's ``_fuse_position_clock``).
+    """
+    tier = str(
+        config.get("baselines", {}).get("refinement_tier", "refinement_matched")
+    ).strip().lower()
+    if tier not in REFINEMENT_TIERS:
+        raise ValueError(
+            f"unknown baselines.refinement_tier {tier!r}; expected one of {REFINEMENT_TIERS}"
+        )
+    return tier
+
 
 def vectorize_raw_observation(Y: np.ndarray) -> np.ndarray:
     """Vectorize raw-domain observations in the repository's VP ordering."""

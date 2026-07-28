@@ -112,7 +112,7 @@ python -m src.experiments.run_final_mksc_ccop_ablation \
 echo "===== 6/15：maxwell_mismatch_paper480（Maxwell和基础设施失配，0 dB）====="
 python -m src.experiments.run_final_mksc_ccop_robustness \
   --suites subspace_mismatch \
-  --snr-db 0 \
+  --snr-db -10 \
   --mismatch-variants raw_delay_gi_ccop,proposed \
   --phase-grid 0,1,2,5,10 \
   --gain-grid 0,0.01,0.02,0.05,0.1 \
@@ -139,7 +139,7 @@ python -m src.experiments.run_final_mksc_ccop_robustness \
 echo "===== 8/15：positions50x480（50位置泛化和逐trial PEB，0 dB）====="
 python -m src.experiments.run_final_mksc_ccop_robustness \
   --suites positions \
-  --snr-db 0 \
+  --snr-db -10 \
   --position-grid-shape 5,5,2 \
   --position-grid-margin-m 0.1 \
   --position-variants scaled_4d,proposed \
@@ -153,7 +153,7 @@ python -m src.experiments.run_final_mksc_ccop_robustness \
 echo "===== 9/15：robustness_scaling480（N/T/M_A/M_R/K缩放，0 dB）====="
 python -m src.experiments.run_final_mksc_ccop_robustness \
   --suites scaling \
-  --snr-db 0 \
+  --snr-db -10 \
   --scaling-variants scaled_4d,proposed \
   --n-grid 31,47,63,95 \
   --training-grid 32,64,128,256 \

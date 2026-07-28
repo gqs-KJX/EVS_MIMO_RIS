@@ -28,6 +28,7 @@ def apply_stage1_init_preset(config: dict, mode: str | None = None) -> dict:
 
     common = {
         "stage1_factor_init": "hankel_coupled_ls",
+        "stage1_factor_domain": "compressed_evs",
         "stage1_factor_reg_mode": "relative",
         "stage1_factor_reg_rel": 1.0e-6,
         "stage1_factor_reg_floor": 1.0e-12,
@@ -200,6 +201,15 @@ def default_config() -> dict:
         "reliability_ris_good": 0.3,
         "reliability_ris_bad": 0.7,
         "final_refinement_method": "global_exact_spherical_vp",
+        # Run the raw-domain global VP inside the known EVS union subspace.
+        # v_B and Theta depend only on the known RIS->BS geometry, so every
+        # admissible EVS factor lies in a fixed r = 2K subspace of the I = 6 M_A
+        # EVS mode whatever the nonlinear parameters are.  Projecting there is
+        # an isometry on the dictionary, so the objective, the profiled gains
+        # and the optimizer trajectory are unchanged while the residual and its
+        # Jacobian lose a factor I/r in rows.  Set False to run the
+        # uncompressed raw residual (the pre-2026-07-28 numerics).
+        "global_vp_raw_evs_compression": True,
         "K": 3,
         "M_A": 16,
         "ris_shape": (64, 64),
@@ -260,6 +270,18 @@ def default_config() -> dict:
         "stage1_tls": True,
         "stage1_snapshot_sketch_dim": None,
         "stage1_factor_init": "hankel_coupled_ls",
+        # Run the coupled factor recovery and the rank-one split inside the
+        # known EVS union subspace (r = 2K vs I = 6 M_A).  The lift and the
+        # split commute exactly, so this is the raw recovery applied to an
+        # observation with its I - r noise-only EVS dimensions removed: a
+        # denoiser, not an approximation.  Settled 2026-07-28 on 256 paired
+        # trials per SNR against "raw_evs": outlier-neutral (McNemar p >= 0.73
+        # at -20/-15/-10 dB), a significant per-trial error reduction at -20 dB
+        # (sign test 94/152, p = 0.004), a 25% conditional-RMSE reduction at
+        # -15 dB, no measurable difference at -10 dB, and 11x cheaper on the
+        # coupled-LS block.  The earlier 48-trial run that made this look worse
+        # at -10 dB was a small-sample artifact.
+        "stage1_factor_domain": "compressed_evs",
         "stage1_factor_reg": 1.0e-10,
         "stage1_factor_reg_mode": "relative",
         "stage1_factor_reg_rel": 1.0e-6,
@@ -304,6 +326,30 @@ def default_config() -> dict:
             # only lower the achieved per-panel residual.  Set False to
             # reproduce the pre-fix acquisition behaviour.
             "use_beamspace_acquisition": True,
+            # "union" scores the fixed-count dictionary above together with the
+            # beam-space candidates (the behaviour published before the Nyquist
+            # beam-space acquisition fix).  "beamspace_only" drops the
+            # dictionary, removing its O(G * M_R) spherical-response build; the
+            # beam-space candidates already sample direction cosines at the
+            # array Rayleigh limit, so this is an acquisition ablation rather
+            # than an approximation.  Ignored when beam-space acquisition is
+            # disabled, so the candidate set can never become empty.
+            #
+            # This default stays "union" because the evidence for dropping the
+            # dictionary is configuration-specific, not universal.  In the
+            # reference configuration (64x64 RIS, six exact refine starts) the
+            # dictionary is redundant: over 128 paired trials it won 9 of 1152
+            # argmins (0.78%), changed zero outcomes, moved the position
+            # estimate by a median 8.7e-10 m, and cost 2.32 s of a 4.23 s
+            # Stage-I.  The benchmark path therefore sets "beamspace_only"
+            # explicitly (see run_benchmark_comparison.make_config).
+            #
+            # It is NOT safe to generalise: on a 4x4 RIS the beam-space
+            # direction-cosine grid is coarser in angle than this dictionary,
+            # and the exact refinement then converges 0.148 rad away in azimuth
+            # from the full-grid reference -- and raising
+            # beamspace_num_candidates to 8 or 16 does not recover it.
+            "coarse_codebook_mode": "union",
             "beamspace_oversample": 4,
             "beamspace_num_candidates": 4,
             "beamspace_num_range": 9,
@@ -430,6 +476,12 @@ def default_config() -> dict:
             "efim_lambda_min_threshold": 1.0e-8,
             "efim_cond_threshold": 1.0e12,
             "use_data_only_efim_gate": True,
+            # Build the data-only EFIM dictionary and its Jacobian inside the
+            # known EVS union subspace.  The nonlinear parameters do not enter
+            # the EVS mode, so every Gram behind the projected Jacobian is
+            # invariant under the projection; only the materialized row count
+            # drops from I to r = 2K.  Set False for the uncompressed reference.
+            "efim_evs_compression": True,
             "use_delay_prior": False,
             "delay_prior_weight": 1.0,
             "delay_prior_sigma_s": 2.0e-11,
@@ -465,6 +517,16 @@ def default_config() -> dict:
             "enable_unscaled_efim_cache": False,
         },
         "baselines": {
+            # Declared comparison policy, recorded in every baseline's
+            # diagnostics.  "refinement_matched" grants every method the same
+            # continuous exact-model polish over (p_u, Delta_t) from its own
+            # seed, so a residual gap measures acquisition/basin reliability.
+            # "as_published" stops each baseline where its own reference stops.
+            # Only ris_vbi_sbl is tier-sensitive: als_cpd refines in the
+            # CP-factor domain and nf_ris_groupomp_localgrid_wls runs the SAGE
+            # step its reference prescribes, whereas Li et al. localize in
+            # closed form with no continuous refinement.
+            "refinement_tier": "refinement_matched",
             "backend_config": {
                 "backend": "cpu",
                 "gpu_device": 0,

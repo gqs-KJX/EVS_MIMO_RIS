@@ -59,9 +59,15 @@ def test_tiny_benchmark_writes_progress_events(tmp_path, monkeypatch):
     progress_path = tmp_path / "progress.jsonl"
 
     def fake_task(task):
+        # One row per requested baseline.  ``--baselines peb`` resolves to
+        # ``[peb, constrained_jones_peb]`` because the constrained bound is
+        # auto-appended alongside the free one, and the harness validates that
+        # every (trial, SNR, K) cell carries exactly the resolved list, so a
+        # fake that emits only ``peb`` trips that check rather than the logger
+        # behaviour this test is about.
         return [
             {
-                "baseline": "peb",
+                "baseline": baseline,
                 "trial_id": task["trial_id"],
                 "seed": task["seed"],
                 "snr_db": task["snr_db"],
@@ -69,6 +75,7 @@ def test_tiny_benchmark_writes_progress_events(tmp_path, monkeypatch):
                 "y_noisy_hash": "shared",
                 "failed": False,
             }
+            for baseline in task["baselines"]
         ]
 
     monkeypatch.setattr(benchmark, "_run_trial_task", fake_task)

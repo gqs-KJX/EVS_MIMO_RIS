@@ -25,7 +25,7 @@ if __package__ in (None, ""):
     project_root = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
     from src.baselines.als_cpd import run_als_cpd_baseline
-    from src.baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
+    from src.baselines.common import REFINEMENT_TIERS, BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from src.baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from src.baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from src.channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -61,7 +61,7 @@ if __package__ in (None, ""):
     )
 else:
     from ..baselines.als_cpd import run_als_cpd_baseline
-    from ..baselines.common import BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
+    from ..baselines.common import REFINEMENT_TIERS, BaselineResult, data_hash, make_baseline_row, proposed_trace_diagnostics, y_noisy_hash
     from ..baselines.nf_ris_groupomp_localgrid_wls import run_nf_ris_groupomp_localgrid_wls_baseline
     from ..baselines.ris_vbi_sbl import run_ris_vbi_sbl_baseline
     from ..channel_model import add_awgn, channel_components, generate_scene, synthesize_raw_tensor
@@ -462,6 +462,16 @@ def make_config(
     config["proposed_stage2_policy"] = "ngc_certified_ris_only"
     config["rescue_accept_min_rel_improvement"] = 0.0
     config["rescue_accept_min_abs_improvement"] = 1.0e-8
+    # Drop the legacy fixed-count coarse RIS dictionary from acquisition.  After
+    # the Nyquist beam-space fix it is redundant in this configuration: over 128
+    # paired trials (32 per SNR at -20/-15/-10/0 dB) it won 9 of 1152 argmins
+    # (0.78%), changed zero outcomes, moved the position estimate by a median
+    # 8.7e-10 m, and cost 2.32 s of a 4.23 s Stage-I.  It also does not rescue
+    # low SNR: at -20 dB both arms sit at an identical 46.88% outlier rate.
+    # Scoped here rather than in default_config() because the redundancy is a
+    # property of this array size and refine-start budget, not of the estimator.
+    config["ris_search"] = dict(config["ris_search"])
+    config["ris_search"]["coarse_codebook_mode"] = "beamspace_only"
     if strict_ris_geometry and np.asarray(config.get("ris_centers", [])).shape[0] < int(paper_k):
         raise ValueError(
             f"--strict-ris-geometry requested K={paper_k}, but config has only "
@@ -734,6 +744,9 @@ def _config_for_trial_snr(task: dict[str, Any], snr_db: float) -> dict:
     config["baselines"]["trim_memory"] = bool(
         task.get("trim_memory", _WORKER_TRIM_MEMORY)
     )
+    tier = task.get("baseline_refinement_tier")
+    if tier:
+        config["baselines"]["refinement_tier"] = str(tier)
     config["benchmark_clock_catastrophic_threshold_ns"] = float(
         task.get("clock_catastrophic_threshold_ns", 1.0)
     )
@@ -1667,6 +1680,7 @@ def _cache_signature(args: argparse.Namespace, snr_grid: list[float], baselines:
         "git_commit": _git_commit(),
         "git_dirty": _git_dirty(),
         "strict_ris_geometry": bool(args.strict_ris_geometry),
+        "baseline_refinement_tier": str(args.baseline_refinement_tier),
         "baseline_backend": str(args.baseline_backend),
         "allow_shared_gpu_workers": bool(args.allow_shared_gpu_workers),
         "hybrid_single_gpu": bool(args.hybrid_single_gpu),
@@ -1770,6 +1784,7 @@ def _tasks(args: argparse.Namespace, snr_grid: list[float], baselines: list[str]
                     args.clock_catastrophic_threshold_ns
                 ),
                 "strict_ris_geometry": bool(args.strict_ris_geometry),
+                "baseline_refinement_tier": str(args.baseline_refinement_tier),
                 "backend_config": {
                     "backend": str(args.baseline_backend),
                     "gpu_device": args.gpu_device,
@@ -2150,6 +2165,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="disabled",
     )
     parser.add_argument("--jones-anchor-prior-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--baseline-refinement-tier",
+        choices=REFINEMENT_TIERS,
+        default="refinement_matched",
+        help=(
+            "declared comparison policy for the external baselines. "
+            "'refinement_matched' (default) grants every route the same final "
+            "continuous exact-model polish of (p_u, Delta_t) from its own "
+            "seed; 'as_published' stops each baseline where its own reference "
+            "stops. Only ris_vbi_sbl is tier-sensitive."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.global_vp_backend in {"cupy", "auto"} and args.process_workers is None:
         args.process_workers = 1

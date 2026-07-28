@@ -128,27 +128,46 @@ def compress_hankel_evs_observation(
         scene,
         relative_tolerance=relative_tolerance,
     )
-    compressed = np.einsum(
-        "ir,iplt->rplt",
-        basis.conj(),
-        z_tensor,
-        optimize=True,
-    )
-    projected = np.einsum(
-        "ir,rplt->iplt",
-        basis,
-        compressed,
-        optimize=True,
-    )
+    # Contract the EVS mode as GEMMs rather than a 4-D einsum: the EVS axis
+    # leads a C-contiguous tensor, so the reshape is a view and BLAS gets an
+    # (r x I) by (I x m) product per block.
+    #
+    # The pass is blocked because the orthogonal energy has to come from an
+    # explicit residual.  Reading it off the isometry identity
+    # ||Z||^2 = ||B^H Z||^2 + ||Z - P Z||^2 would be cheaper still, but it
+    # cancels catastrophically exactly where the diagnostic matters most: when
+    # the subspace is matched the true fraction underflows to ~1e-31, while a
+    # difference of two near-equal numbers can only resolve ~1e-16.  Blocking
+    # keeps the honest difference while replacing the two full-size temporaries
+    # (the reconstruction ``P Z`` and ``Z - P Z``) with one small buffer.
+    i_dim = int(z_tensor.shape[0])
+    r_dim = int(basis.shape[1])
+    basis_h = basis.conj().T
+    z_flat = z_tensor.reshape(i_dim, -1)
+    num_columns = int(z_flat.shape[1])
+    compressed_flat = np.empty((r_dim, num_columns), dtype=complex)
+
+    orthogonal_sq = 0.0
+    block = 8192
+    for start in range(0, num_columns, block):
+        stop = min(start + block, num_columns)
+        z_block = z_flat[:, start:stop]
+        c_block = basis_h @ z_block
+        compressed_flat[:, start:stop] = c_block
+        orthogonal_sq += float(
+            np.linalg.norm(z_block - basis @ c_block) ** 2
+        )
+    compressed = compressed_flat.reshape((r_dim,) + z_tensor.shape[1:])
+
     norm_sq = float(np.linalg.norm(z_tensor) ** 2)
+    denominator = max(norm_sq, np.finfo(float).tiny)
     diagnostics.update(
         {
             "stage1_evs_retained_energy_fraction": float(
-                np.linalg.norm(compressed) ** 2 / max(norm_sq, np.finfo(float).tiny)
+                np.linalg.norm(compressed) ** 2 / denominator
             ),
             "stage1_evs_orthogonal_energy_fraction": float(
-                np.linalg.norm(z_tensor - projected) ** 2
-                / max(norm_sq, np.finfo(float).tiny)
+                orthogonal_sq / denominator
             ),
             "stage1_evs_original_dimension": int(z_tensor.shape[0]),
             "stage1_evs_compressed_dimension": int(compressed.shape[0]),

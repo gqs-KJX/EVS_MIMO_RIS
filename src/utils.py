@@ -2,8 +2,38 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import numpy as np
+
+# Estimate entries that are bulk model reconstructions rather than optimizer
+# state.  They are the largest objects in an estimate by two orders of
+# magnitude: ``Z_hat`` alone is ``I * P * L * T`` complex entries (403 MB in the
+# paper configuration, against under 1 MB for every parameter array combined).
+BULK_RECONSTRUCTION_KEYS = ("Z_hat",)
+
+
+def copy_estimate(estimate: dict) -> dict:
+    """Deep-copy a Stage-I/II estimate, sharing the bulk reconstructions.
+
+    Branches copy an estimate to protect the *parameters* from in-place edits by
+    a competing branch.  The reconstruction tensors in
+    :data:`BULK_RECONSTRUCTION_KEYS` are only ever replaced wholesale or read for
+    a norm --- never written element-wise --- so duplicating them is pure memory
+    traffic.  Sharing them by reference removes it and leaves the deep copy of
+    everything else, including every parameter array, unchanged.
+    """
+    if not isinstance(estimate, dict):
+        return copy.deepcopy(estimate)
+    shared = {
+        key: estimate[key] for key in BULK_RECONSTRUCTION_KEYS if key in estimate
+    }
+    stripped = {key: value for key, value in estimate.items() if key not in shared}
+    duplicate = copy.deepcopy(stripped)
+    # Rebuild in the original key order so serialization is byte-identical.
+    return {
+        key: (shared[key] if key in shared else duplicate[key]) for key in estimate
+    }
 
 
 def check_finite(name: str, array: np.ndarray) -> None:
