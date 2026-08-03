@@ -438,10 +438,11 @@ def main() -> None:
                 return candidate
         return root / names[0]
 
-    benchmark_block(pick("benchmark_matched_480", "benchmark_matched"),
-                    [-10.0, 0.0, 30.0])
-    clock_block(pick("benchmark_matched_480", "benchmark_matched"),
-                [-10.0, 0.0, 10.0, 30.0])
+    matched = pick("benchmark_refinement_matched_960",
+                   "benchmark_refinement_matched_480",
+                   "benchmark_matched_480", "benchmark_matched")
+    benchmark_block(matched, [-20.0, -15.0, -10.0, -5.0, 0.0, 30.0])
+    clock_block(matched, [-10.0, 0.0, 10.0, 30.0])
     benchmark_block(pick("benchmark_as_published_480", "benchmark_as_published"),
                     [-15.0, -10.0, 0.0, 10.0])
     runtime_block(pick("benchmark_runtime30_cpu"))
