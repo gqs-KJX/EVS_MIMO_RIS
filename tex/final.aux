@@ -3,117 +3,135 @@
 \citation{nehorai1994vector,khan2020sixcomponent}
 \citation{ma2023distributed,fadakar2024multiris,liu2025multiris}
 \citation{fascista2022rissync,gong2024async,yan2025ris}
-\citation{ma2023distributed}
-\citation{fadakar2024multiris}
-\citation{liu2025multiris}
 \citation{han2022dual,munawar2024dual}
-\citation{lin2021tensor,liu2025multiris}
-\citation{cui2022channel,bayraktar2022momp,tipping2001sbl,li2024vbi}
-\citation{yang2024nfris,zheng2025wideband}
+\citation{nehorai1994vector,khan2020sixcomponent,gong2026aimdf}
+\citation{yang2024nfris}
 \providecommand \oddpage@label [2]{}
 \@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
 \newlabel{sec:introduction}{{I}{1}{}{}{}}
+\citation{lin2021tensor,liu2025multiris,kolda2009tensor,sidiropoulos2017tensor}
+\citation{cui2022channel,bayraktar2022momp,tipping2001sbl,li2024vbi,pati1993omp,fleury1999sage}
+\citation{yang2024nfris,zheng2025wideband}
 \citation{golub1973varpro,liu2026extended}
 \citation{peng2025sdp}
-\citation{nehorai1994vector,gong2026aimdf}
 \citation{gong2026aimdf}
-\citation{kolda2009tensor,sidiropoulos2017tensor,pati1993omp,fleury1999sage}
 \newlabel{eq:premise}{{1}{2}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {II}System and Channel Model}{2}{}\protected@file@percent }
-\newlabel{sec:system_model}{{II}{2}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Parameterization and Assumptions}{2}{}\protected@file@percent }
-\newlabel{subsec:assumptions}{{\mbox  {II-A}}{2}{}{}{}}
-\newlabel{eq:chi}{{2}{3}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}From Infrastructure Geometry to Manifolds}{3}{}\protected@file@percent }
-\newlabel{subsec:defchain}{{\mbox  {II-B}}{3}{}{}{}}
-\newlabel{eq:chain}{{3}{3}{}{}{}}
-\newlabel{eq:rbgeom}{{4}{3}{}{}{}}
-\newlabel{eq:arb_vb}{{5}{3}{}{}{}}
-\newlabel{eq:qbasis}{{6}{3}{}{}{}}
-\newlabel{eq:Theta}{{7}{3}{}{}{}}
-\newlabel{eq:urgeom}{{8}{3}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Observation Model and Identifiability}{3}{}\protected@file@percent }
-\newlabel{subsec:obsmodel}{{\mbox  {II-C}}{3}{}{}{}}
-\newlabel{eq:tau}{{9}{3}{}{}{}}
-\newlabel{eq:obs}{{10}{3}{}{}{}}
-\newlabel{eq:jones}{{11}{3}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Reference system and path parameterization. (a)~Three oriented $64\times 64$ RIS panels relay the blocked-LoS UE signal to a $16$-element EVS ULA; UE--RIS links are exact spherical paths and the calibrated RIS--BS links use center-frequency plane waves. The two printed range intervals are the quantitative content of (A2): the RIS--BS links clear the panel Fraunhofer distance while the UE--RIS links do not. (b)~Local coordinates and parameters of the $k$th cascaded path, defined in Section~\ref {subsec:defchain}.}}{4}{}\protected@file@percent }
+\citation{fascista2022rissync,zhao2021timing}
+\citation{lin2021tensor}
+\citation{yang2024nfris,cui2022channel}
+\@writefile{toc}{\contentsline {section}{\numberline {II}System and Channel Model}{3}{}\protected@file@percent }
+\newlabel{sec:system_model}{{II}{3}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Calibrated Infrastructure: the $\bm  {\chi }$-Independent Factor}{3}{}\protected@file@percent }
+\newlabel{subsec:calibrated}{{\mbox  {II-A}}{3}{}{}{}}
+\citation{nehorai1994vector,khan2020sixcomponent}
+\citation{zhao2021timing}
+\citation{fascista2022rissync,gong2024async,yan2025ris}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Reference geometry and cascaded-path parameterization. (a)~Three oriented $64\times 64$ RIS panels relay the blocked-LoS UE signal to a $16$-element EVS ULA; the printed range intervals show that only the RIS--BS links clear the panel Fraunhofer distance, so only they use center-frequency plane-wave responses. (b)~Local coordinates of the $k$th cascaded path, defined in Section~\ref {subsec:defchain}.}}{4}{}\protected@file@percent }
 \newlabel{fig:geometry}{{1}{4}{}{}{}}
-\newlabel{eq:hk}{{12}{4}{}{}{}}
-\newlabel{eq:aUR}{{13}{4}{}{}{}}
-\newlabel{eq:delta}{{14}{4}{}{}{}}
-\newlabel{eq:dk}{{15}{4}{}{}{}}
-\newlabel{eq:Bk}{{16}{4}{}{}{}}
-\newlabel{eq:Ak}{{17}{4}{}{}{}}
-\newlabel{eq:Afull}{{18}{4}{}{}{}}
-\newlabel{eq:tangents_short}{{19}{4}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {III}Proposed Estimator: MKSC-GI Initialized CCOP-JVP}{4}{}\protected@file@percent }
-\newlabel{sec:algorithm}{{III}{4}{}{}{}}
+\newlabel{eq:rbgeom}{{2}{4}{}{}{}}
+\newlabel{eq:arb_vb}{{3}{4}{}{}{}}
+\newlabel{eq:qbasis}{{4}{4}{}{}{}}
+\newlabel{eq:Theta}{{5}{4}{}{}{}}
+\newlabel{eq:Theta_mode}{{6}{4}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Position, Clock, and the Near-Field Panel Response}{4}{}\protected@file@percent }
+\newlabel{subsec:defchain}{{\mbox  {II-B}}{4}{}{}{}}
+\newlabel{eq:chi}{{7}{4}{}{}{}}
+\newlabel{eq:urgeom}{{8}{4}{}{}{}}
+\citation{wymeersch2020nearfield}
+\newlabel{eq:hk}{{9}{5}{}{}{}}
+\newlabel{eq:delta}{{10}{5}{}{}{}}
+\newlabel{eq:dk}{{11}{5}{}{}{}}
+\newlabel{eq:scalar}{{12}{5}{}{}{}}
+\newlabel{eq:Ak}{{13}{5}{}{}{}}
+\newlabel{eq:ck}{{14}{5}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Observation Model and Estimation Problem}{5}{}\protected@file@percent }
+\newlabel{subsec:obsmodel}{{\mbox  {II-C}}{5}{}{}{}}
+\newlabel{eq:obs}{{15}{5}{}{}{}}
+\newlabel{eq:jones}{{16}{5}{}{}{}}
+\newlabel{eq:ml_problem}{{17}{5}{}{}{}}
 \citation{roy1989esprit,gong2026aimdf}
+\citation{roy1989esprit,gong2026aimdf}
+\citation{kolda2009tensor,sidiropoulos2017tensor}
+\citation{lin2021tensor}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Proposed Estimator: MKSC-GI Initialized CCOP-JVP}{6}{}\protected@file@percent }
+\newlabel{sec:algorithm}{{III}{6}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Maxwell--Kronecker Factor Recovery}{6}{}\protected@file@percent }
+\newlabel{eq:poles_short}{{18}{6}{}{}{}}
+\newlabel{eq:hankel_short}{{19}{6}{}{}{}}
+\newlabel{eq:Zd_short}{{20}{6}{}{}{}}
+\newlabel{eq:coupledls_short}{{21}{6}{}{}{}}
+\newlabel{eq:assoc_score}{{22}{6}{}{}{}}
+\citation{cui2022channel,zheng2025wideband}
 \citation{byrd1995lbfgsb}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Maxwell--Kronecker Factor Recovery}{5}{}\protected@file@percent }
-\newlabel{eq:hankel_short}{{20}{5}{}{}{}}
-\newlabel{eq:poles_short}{{21}{5}{}{}{}}
-\newlabel{eq:Zd_short}{{22}{5}{}{}{}}
-\newlabel{eq:coupledls_short}{{23}{5}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Beam-Space Acquisition and Common-Geometry Initialization}{5}{}\protected@file@percent }
-\newlabel{eq:Jris_short}{{24}{5}{}{}{}}
-\newlabel{eq:beamscore_short}{{25}{5}{}{}{}}
-\newlabel{eq:Jgeom_short}{{26}{5}{}{}{}}
-\newlabel{eq:refresh_short}{{27}{5}{}{}{}}
+\newlabel{eq:assoc_perm}{{23}{7}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Beam-Space Acquisition and Common-Geometry Initialization}{7}{}\protected@file@percent }
+\newlabel{subsec:beamspace}{{\mbox  {III-B}}{7}{}{}{}}
+\newlabel{eq:Jris_short}{{24}{7}{}{}{}}
+\newlabel{eq:adjoint_short}{{25}{7}{}{}{}}
+\newlabel{eq:beamscore_short}{{26}{7}{}{}{}}
+\newlabel{eq:Jgeom_short}{{27}{7}{}{}{}}
+\citation{golub1973varpro,liu2026extended}
 \citation{powell1964direct}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Common-Clock Orbit-Profiled Jones Variable Projection}{6}{}\protected@file@percent }
-\newlabel{eq:orbit_short}{{28}{6}{}{}{}}
-\newlabel{eq:Rdir_short}{{29}{6}{}{}{}}
-\newlabel{eq:F_short}{{30}{6}{}{}{}}
-\newlabel{eq:nested_short}{{31}{6}{}{}{}}
-\newlabel{eq:trig_short}{{32}{6}{}{}{}}
-\newlabel{eq:bound_short}{{33}{6}{}{}{}}
-\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces MKSC-GI Initialized CCOP-JVP}}{6}{}\protected@file@percent }
-\newlabel{alg:mksc_ccop_short}{{1}{6}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {IV}Theoretical Analysis}{6}{}\protected@file@percent }
-\newlabel{sec:analysis}{{IV}{6}{}{}{}}
-\newlabel{eq:efim_short}{{34}{6}{}{}{}}
-\newlabel{eq:bounds_short}{{35}{6}{}{}{}}
-\newlabel{rem:bound_status}{{1}{6}{}{}{}}
-\newlabel{thm:split}{{1}{7}{}{}{}}
-\newlabel{eq:split_short}{{36}{7}{}{}{}}
-\newlabel{eq:panelres_short}{{37}{7}{}{}{}}
-\newlabel{rem:nested}{{2}{7}{}{}{}}
-\newlabel{thm:compress}{{2}{7}{}{}{}}
-\newlabel{eq:isometry_short}{{38}{7}{}{}{}}
-\newlabel{rem:c2_scope}{{3}{7}{}{}{}}
-\newlabel{thm:clock}{{3}{7}{}{}{}}
-\newlabel{eq:cert_short}{{39}{7}{}{}{}}
-\newlabel{rem:peb_reading}{{4}{8}{}{}{}}
-\newlabel{eq:complexity_short}{{40}{8}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {V}Numerical Results}{8}{}\protected@file@percent }
-\newlabel{sec:simulation}{{V}{8}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Protocol and Reference Bounds}{8}{}\protected@file@percent }
-\newlabel{subsec:res_setup}{{\mbox  {V-A}}{8}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}C1: EVS Information and Resolvability}{9}{}\protected@file@percent }
-\newlabel{subsec:res_c1}{{\mbox  {V-B}}{9}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}C2: Compression and Acquisition}{9}{}\protected@file@percent }
-\newlabel{subsec:res_c2}{{\mbox  {V-C}}{9}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces C1 evidence under a common absolute noise level, $480$ paired trials per point or cell. (a)~Matched estimator accuracy (solid) against the free-Jones PEB (dashed) for the three receiver modes. (b)~Paired inlier-conditional efficiency ratio; the shaded band is the $\pm 2\%$ interval quoted in the abstract, and the scalar curve leaves the plotted range at the two values printed in the panel. (c)--(e)~Resolution probability versus delay separation and Jones overlap at $-10$~dB, with the dashed line marking the minimum cascaded-delay separation of the reference scene. Full EVS retains cross-panel polarimetric separability; reduced modes become overlap sensitive.}}{10}{}\protected@file@percent }
-\newlabel{fig:c1_combined}{{2}{10}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}C3: Clock-Unit Control}{10}{}\protected@file@percent }
-\newlabel{subsec:res_c3}{{\mbox  {V-D}}{10}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces C2 single-factor compression test: (a)~delay-error median (solid, filled markers) and p95 (dashed, hollow markers), (b)~catastrophic rate with exact $95\%$ Clopper--Pearson intervals, and (c)~subspace diagnostics. The two arms share every stage except the domain in which the delay subspace is estimated. At $-10$~dB their basin-acquisition rates are $99.38\%$ and $97.50\%$; the white-noise floor is $r/I=1/16$.}}{11}{}\protected@file@percent }
-\newlabel{fig:compression}{{3}{11}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces C3 control at $-10$~dB, $100$ paired strong-initializer trials. RMSEs are conditional on the inliers of each row, so $P_{\rm  cat}$ is reported beside them; ``Eval.'' is the median outer evaluation count. Six decimal places are shown only to expose the unit dependence of the explicit 4-D route and are not a precision claim.}}{11}{}\protected@file@percent }
-\newlabel{tab:c3_control}{{I}{11}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-E}}External Benchmark}{11}{}\protected@file@percent }
-\newlabel{subsec:res_benchmark}{{\mbox  {V-E}}{11}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-F}}Robustness, Generalization, and Cost}{12}{}\protected@file@percent }
-\newlabel{subsec:res_robustness}{{\mbox  {V-F}}{12}{}{}{}}
-\newlabel{subsec:res_cost}{{\mbox  {V-F}}{12}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Refinement-matched external benchmark, $960$ shared-realization trials per SNR. Short legend labels denote the proposed MKSC-GI+CCOP-JVP, range-scaled 4-D Jones-VP, ALS-CPD with joint mapping, VBI/SBL with joint refinement, and near-field OMP--SAGE--WLS routes. Each column asks one question of position (top) and of the clock or its reconstruction (bottom): precision inside the basin, a tail-sensitive statistic, and the failure rate. (b)~p99 is the nearest-rank tenth-largest error of the cell, so it enters the wrong-basin population once that mass exceeds about $1\%$; the shaded region is the $0.1$-m inlier threshold. (d)~The CEB reference is the median bound of Section~\ref {subsec:res_setup} scaled by $\sigma $, since the benchmark suite logs no per-trial CEB. The dotted line in~(c) and~(f) is one trial in $960$, i.e. $0.104\%$, and hollow markers on that line are exact zeros. Unconditional RMSE and p95 are tabulated in the supplement. Continuous refiners converge similarly inside the correct basin; acquisition reliability separates their tails.}}{13}{}\protected@file@percent }
-\newlabel{fig:benchmark_combined}{{4}{13}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Serialized single-thread cost at $-10$~dB: one process, one BLAS thread, peak resident set size sampled every $10$~ms, $30$ trials per row.}}{13}{}\protected@file@percent }
-\newlabel{tab:cost}{{II}{13}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{13}{}\protected@file@percent }
-\newlabel{sec:conclusion}{{VI}{13}{}{}{}}
+\newlabel{eq:refresh_short}{{28}{8}{}{}{}}
+\newlabel{eq:anchor_direction}{{29}{8}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Common-Clock Orbit-Profiled Jones Variable Projection}{8}{}\protected@file@percent }
+\newlabel{subsec:ccop}{{\mbox  {III-C}}{8}{}{}{}}
+\newlabel{eq:orbit_short}{{30}{8}{}{}{}}
+\newlabel{eq:Rdir_short}{{31}{8}{}{}{}}
+\newlabel{eq:penalized_short}{{32}{8}{}{}{}}
+\newlabel{eq:F_short}{{33}{8}{}{}{}}
+\newlabel{eq:nested_short}{{34}{8}{}{}{}}
+\newlabel{eq:trig_short}{{35}{8}{}{}{}}
+\newlabel{eq:bound_short}{{36}{8}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Theoretical Analysis}{8}{}\protected@file@percent }
+\newlabel{sec:analysis}{{IV}{8}{}{}{}}
+\newlabel{eq:efim_short}{{37}{8}{}{}{}}
+\newlabel{eq:bounds_short}{{38}{8}{}{}{}}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces MKSC-GI Initialized CCOP-JVP}}{9}{}\protected@file@percent }
+\newlabel{alg:mksc_ccop_short}{{1}{9}{}{}{}}
+\newlabel{eq:tangents_short}{{39}{9}{}{}{}}
+\newlabel{eq:rankcond}{{40}{9}{}{}{}}
+\newlabel{rem:bound_status}{{1}{9}{}{}{}}
+\newlabel{thm:split}{{1}{9}{}{}{}}
+\newlabel{eq:split_short}{{41}{9}{}{}{}}
+\newlabel{eq:panelres_short}{{42}{9}{}{}{}}
+\newlabel{eq:panelsum_short}{{43}{9}{}{}{}}
+\newlabel{rem:nested}{{2}{9}{}{}{}}
+\newlabel{thm:compress}{{2}{10}{}{}{}}
+\newlabel{eq:isometry_short}{{44}{10}{}{}{}}
+\newlabel{rem:c2_scope}{{3}{10}{}{}{}}
+\newlabel{thm:clock}{{3}{10}{}{}{}}
+\newlabel{eq:nestval_short}{{45}{10}{}{}{}}
+\newlabel{eq:cert_short}{{46}{10}{}{}{}}
+\newlabel{rem:peb_reading}{{4}{10}{}{}{}}
+\newlabel{eq:complexity_short}{{47}{10}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Numerical Results}{11}{}\protected@file@percent }
+\newlabel{sec:simulation}{{V}{11}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-A}}Protocol and Reference Bounds}{11}{}\protected@file@percent }
+\newlabel{subsec:res_setup}{{\mbox  {V-A}}{11}{}{}{}}
+\newlabel{eq:simulation_snr}{{48}{11}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}C1: EVS Information and Resolvability}{11}{}\protected@file@percent }
+\newlabel{subsec:res_c1}{{\mbox  {V-B}}{11}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces C1 evidence under a common absolute noise level, $480$ paired trials per point or cell. (a)~Matched accuracy (solid) against the free-Jones PEB (dashed) for the three receiver modes. (b)~Paired inlier-conditional efficiency ratio; the band is $\pm 2\%$ and the scalar curve leaves the plotted range at the two printed values. (c)--(e)~Resolution probability versus delay separation and Jones overlap at $-10$~dB; the dashed line is the reference scene's minimum cascaded-delay separation. Full EVS retains cross-panel polarimetric separability; reduced modes become overlap sensitive.}}{12}{}\protected@file@percent }
+\newlabel{fig:c1_combined}{{2}{12}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}C2: Compression and Acquisition}{12}{}\protected@file@percent }
+\newlabel{subsec:res_c2}{{\mbox  {V-C}}{12}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}C3: Clock-Unit Control}{13}{}\protected@file@percent }
+\newlabel{subsec:res_c3}{{\mbox  {V-D}}{13}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces C3 control at $-10$~dB, $100$ paired strong-initializer trials. RMSEs are conditional on the inliers of each row, so $P_{\rm  cat}$ is reported beside them; ``Pos.'' denotes position RMSE, ``Eval.'' the median outer evaluation count, ``Unit inv.'' unit invariance, and ``Cert.'' a certified inner clock solve. Six decimal places are shown only to expose the unit dependence of the explicit 4-D route and are not a precision claim.}}{13}{}\protected@file@percent }
+\newlabel{tab:c3_control}{{I}{13}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-E}}External Benchmark}{13}{}\protected@file@percent }
+\newlabel{subsec:res_benchmark}{{\mbox  {V-E}}{13}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-F}}Robustness and Spatial Generalization}{14}{}\protected@file@percent }
+\newlabel{subsec:res_robustness}{{\mbox  {V-F}}{14}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces External benchmark with method-consistent continuous refinement, $960$ shared-realization trials per SNR, comparing the proposed MKSC-GI+CCOP-JVP, range-scaled 4-D Jones-VP, ALS-CPD with joint mapping, VBI/SBL with joint refinement, and near-field OMP--SAGE--WLS methods. Each column asks one question of position (top) and of the clock or its reconstruction (bottom): precision inside the basin, a tail-sensitive statistic, and the failure rate. (b)~p99 is nearest-rank; the shaded region is the $0.1$-m inlier threshold. (d)~The CEB reference is the median bound of Section~\ref {subsec:res_setup} scaled by $\sigma $. The dotted line in~(c) and~(f) is one trial in $960$, hollow markers on it being exact zeros.}}{15}{}\protected@file@percent }
+\newlabel{fig:benchmark_combined}{{3}{15}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-G}}Computational Cost and Failure Diagnostics}{15}{}\protected@file@percent }
+\newlabel{subsec:res_cost}{{\mbox  {V-G}}{15}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Serialized single-thread cost at $-10$~dB: one process, one linear-algebra-library thread, peak resident set size sampled every $10$~ms, $30$ trials per row. Times are means over those trials.}}{15}{}\protected@file@percent }
+\newlabel{tab:cost}{{II}{15}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{15}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{VI}{15}{}{}{}}
 \bibstyle{IEEEtran}
 \bibdata{references}
 \bibcite{wymeersch2020risloc}{1}
@@ -128,26 +146,26 @@
 \bibcite{fascista2022rissync}{10}
 \bibcite{gong2024async}{11}
 \bibcite{yan2025ris}{12}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Principal boundaries; each panel title carries its SNR, since the model-order sweep of~(c) was run at $0$~dB and the rest at $-10$~dB. (a)--(b)~RIS--BS angular calibration first creates a deterministic accuracy floor and only later destroys basin capture. (c)~Model-order mismatch, with $P_{\rm  cat}$ on the left axis and the error quantiles on the right. (d)~Per-position failure rate against the minimum true cascaded-delay separation; color encodes the free-Jones EFIM condition number, the dash-dot line marks the reference scene, and all $24\,000$ EFIM evaluations are full rank. Receiver-side perturbations, colored noise, ECDFs, and resource sweeps are reported in the supplementary material.}}{14}{}\protected@file@percent }
-\newlabel{fig:boundaries}{{5}{14}{}{}{}}
-\@writefile{toc}{\contentsline {section}{References}{14}{}\protected@file@percent }
 \bibcite{han2022dual}{13}
 \bibcite{munawar2024dual}{14}
-\bibcite{lin2021tensor}{15}
-\bibcite{cui2022channel}{16}
-\bibcite{bayraktar2022momp}{17}
-\bibcite{tipping2001sbl}{18}
-\bibcite{li2024vbi}{19}
-\bibcite{zheng2025wideband}{20}
-\bibcite{golub1973varpro}{21}
-\bibcite{liu2026extended}{22}
-\bibcite{peng2025sdp}{23}
-\bibcite{gong2026aimdf}{24}
-\bibcite{kolda2009tensor}{25}
-\bibcite{sidiropoulos2017tensor}{26}
-\bibcite{pati1993omp}{27}
-\bibcite{fleury1999sage}{28}
-\bibcite{roy1989esprit}{29}
-\bibcite{byrd1995lbfgsb}{30}
-\bibcite{powell1964direct}{31}
-\gdef \@abspage@last{15}
+\bibcite{gong2026aimdf}{15}
+\bibcite{lin2021tensor}{16}
+\bibcite{kolda2009tensor}{17}
+\bibcite{sidiropoulos2017tensor}{18}
+\bibcite{cui2022channel}{19}
+\bibcite{bayraktar2022momp}{20}
+\bibcite{tipping2001sbl}{21}
+\bibcite{li2024vbi}{22}
+\bibcite{pati1993omp}{23}
+\bibcite{fleury1999sage}{24}
+\bibcite{zheng2025wideband}{25}
+\bibcite{golub1973varpro}{26}
+\bibcite{liu2026extended}{27}
+\bibcite{peng2025sdp}{28}
+\bibcite{zhao2021timing}{29}
+\@writefile{toc}{\contentsline {section}{References}{16}{}\protected@file@percent }
+\bibcite{wymeersch2020nearfield}{30}
+\bibcite{roy1989esprit}{31}
+\bibcite{byrd1995lbfgsb}{32}
+\bibcite{powell1964direct}{33}
+\gdef \@abspage@last{17}
