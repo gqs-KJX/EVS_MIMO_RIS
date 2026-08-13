@@ -1,1 +1,0 @@
-/home/u202520081000135/.conda/envs/evs313/bin/python -m src.experiments.run_final_mksc_ccop_robustness --suites positions --snr-db -10 --position-grid-shape 5,5,2 --position-grid-margin-m 0.1 --position-variants scaled_4d,proposed --position-peb --n-trials 30 --seed 20260727 --diagnostic-mode performance --jobs 24 --blas-threads 1 --out-dir results/final_mksc_ccop/positions50x30

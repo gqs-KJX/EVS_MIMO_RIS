@@ -1,3 +1,0 @@
-variant,snr_db,n,mean_error_over_peb,median_error_over_peb,p90_error_over_peb,max_error_over_peb,outlier_count_5peb,outlier_rate_5peb,direct_vp_count,ris_only_stage2_then_vp_count,direct_vp_rollback_count,jnpp_decision_count,gof_fail_count
-adaptive_jones_vp_proposed_ngc,-10.0,1,1.044351668677325,1.044351668677325,1.044351668677325,1.044351668677325,0,0.0,1,0,0,0,0
-adaptive_jones_vp_proposed_old_gated,-10.0,1,1.044351668677325,1.044351668677325,1.044351668677325,1.044351668677325,0,0.0,1,0,0,0,0

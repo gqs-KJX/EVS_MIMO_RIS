@@ -2,26 +2,24 @@
 
 The frozen paper estimator is **MKSC-GI-balanced -> CCOP-JVP**.  CP-NGC,
 conditional assignment rescue, and the older Stage-II/JNPP routes are not part
-of the final selector; their reproducibility code is archived under
-[`oldcode/`](oldcode/README.md).
+of the final selector.  Historical implementations have been removed from the
+active tree and remain recoverable from Git history.
 
 ## Experiments
 
-The authoritative paper commands are version controlled in
-[`scripts/paper_commands.sh`](scripts/paper_commands.sh). Each formal target
-has a fixed seed, grid, trial count, bootstrap count, and output directory.
-The script refuses a dirty worktree, a commit other than the annotated paper
-freeze tag, or an existing result directory. Before any server run, use:
+The authoritative v3 paper campaign is version controlled in
+[`scripts/run_paper_v3_queue.sh`](scripts/run_paper_v3_queue.sh). Each suite
+has a fixed seed, grid, trial count, bootstrap count, and output directory
+under `results/paper_v3/`. The smaller pipeline verification queue is
+[`scripts/run_paper_v3_verify.sh`](scripts/run_paper_v3_verify.sh).
+
+Regenerate the publication figures from saved v3 CSVs without running an
+experiment:
 
 ```bash
-bash scripts/paper_commands.sh preflight
-bash scripts/paper_commands.sh list
-PAPER_DRY_RUN=1 bash scripts/paper_commands.sh components_paper400
+python scripts/make_paper_figures_twc.py \
+  --campaign v3 --snr-min -10 --out-dir tex/figs
 ```
-
-Run `smoke_ablation` and `smoke_robustness` before their corresponding formal
-targets. The script deliberately has no `all` target, so a typo cannot launch
-every Monte Carlo suite.
 
 Run one deterministic realization of the frozen route from the project root:
 
@@ -34,19 +32,12 @@ python -m src.experiments.run_final_mksc_ccop_ablation \
   --diagnostic-mode fast \
   --jobs 1 \
   --blas-threads 1 \
-  --out-dir results/final_mksc_ccop/readme_smoke1
+  --out-dir results/readme_smoke1
 ```
 
 This route generates the noisy observation once, runs four-start MKSC-GI with
 one Jones-anchor refresh, and then runs independent three-dimensional
 CCOP-JVP. It does not call CP-NGC or rescue.
-
-The pre-MKSC ablation runner remains available only for historical
-reproducibility:
-
-```bash
-python -m oldcode.legacy_stage2.run_proposed_ablation --help
-```
 
 ## Paper ablation figures
 

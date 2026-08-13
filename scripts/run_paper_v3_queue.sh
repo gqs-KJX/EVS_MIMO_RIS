@@ -19,9 +19,8 @@
 # BLAS threading is pinned in the environment because threadpoolctl is absent
 # here, so the in-process limiter is a no-op and only the env vars bite.
 #
-# Seeds and SNR grids are the frozen ones from scripts/run_all_paper480.sh so
-# trial scenes pair with the released campaign.  Out-dirs are all new; no
-# --force-rerun anywhere.
+# Seeds and SNR grids are fixed inline below so trial scenes pair across every
+# v3 suite.  Out-dirs are all new; no --force-rerun anywhere.
 # =============================================================================
 set -uo pipefail
 

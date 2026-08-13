@@ -1,7 +1,0 @@
-baseline,algorithm,mean_runtime_s_at_minus10_db,mean_runtime_s_at_0_db,peak_memory_mb,memory_measurement,n_runtime_at_minus10_db,n_runtime_at_0_db
-als_cpd,ALS-CPD,6.299717604376686,8.019059054825144,nan,max_pre_post_rss_snapshot,24,24
-ff_omp,FF-OMP,70.12259483263672,69.41553656077788,nan,max_pre_post_rss_snapshot,24,24
-ris_momp,RIS-MOMP,39.85366741001295,29.710124038935948,nan,max_pre_post_rss_snapshot,24,24
-nf_mmpsr,NF-MMPSR,9.728590855297321,9.209632548503578,nan,max_pre_post_rss_snapshot,24,24
-nf_ris_groupomp_localgrid_wls,NF-RIS Group-OMP + Local WLS,2.454927869102297,2.0653038227853053,nan,max_pre_post_rss_snapshot,24,24
-proposed,Proposed NGC–LG-RDC,88.45601856219582,60.34542029816657,nan,max_pre_post_rss_snapshot,24,24

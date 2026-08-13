@@ -37,6 +37,20 @@ tmp/
 *.md
 *.markdown
 *.tex
+*.aux
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# Frozen manuscript sources and their direct figure dependencies
+!tex/final.tex
+!tex/supplementary.tex
+!tex/fig3/EVS_RIS_system_model-crop.pdf
+!tex/fig3/fig_receiver.pdf
+!tex/fig3/fig_resolvability.pdf
+!tex/fig3/fig_benchmark.pdf
+!tex/figs_supp/*.pdf
 
 # OS/editor
 .DS_Store

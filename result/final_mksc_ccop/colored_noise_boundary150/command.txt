@@ -1,1 +1,0 @@
-/home/u202520081000135/.conda/envs/evs313/bin/python -m src.experiments.run_final_mksc_ccop_robustness --suites colored_noise --snr-db -10 --colored-noise-variants raw_delay_gi_ccop,proposed --colored-noise-grid 0,0.2,0.5,0.8 --n-trials 150 --seed 20260726 --diagnostic-mode performance --jobs 24 --blas-threads 1 --out-dir results/final_mksc_ccop/colored_noise_boundary150

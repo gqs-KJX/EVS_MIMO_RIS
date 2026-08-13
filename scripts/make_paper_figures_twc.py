@@ -56,7 +56,6 @@ from matplotlib.patches import Arc, FancyArrowPatch, Patch, Rectangle
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RES = ROOT / "results"
-FINAL = RES / "final_mksc_ccop"
 
 # Lowest SNR shown in the SNR sweeps; set from the command line.
 SNR_MIN = -10.0
@@ -64,33 +63,9 @@ SNR_MIN = -10.0
 # ------------------------------------------------------------- campaigns ----
 # Each figure names its inputs by logical dataset key, never by directory, so
 # that a re-run of the campaign is a one-line change here rather than an edit
-# scattered over nine plotting functions.  ``frozen`` is the 2026-07-19/21
-# release; ``v3`` is the 2026-07-28 re-run on the optimized source tree, whose
-# external benchmark is a single 13-point artifact instead of the three-way
-# split (main grid / high-SNR completion / external clock) the frozen campaign
-# needed.  Any key mapped to a list is concatenated in order.
+# scattered over the plotting functions.  ``v3`` is the paper source of
+# record.  Any key mapped to a list is concatenated in order.
 CAMPAIGNS = {
-    "frozen": {
-        "snr_internal": [FINAL / "snr_internal_paper480"],
-        "components": [FINAL / "components_paper480"],
-        "components_m20": [FINAL / "components_paper480"],
-        "receiver": [FINAL / "receiver_information_paper480"],
-        "compression": [FINAL / "compression_matched_paper480"],
-        "benchmark": [
-            RES / "benchmark_full_k3_medium-480-final",
-            RES / "benchmark_full_k3_medium-480-final-snr15to30",
-        ],
-        "benchmark_clock": [RES / "benchmark_clock_external_480"],
-        "maxwell_mismatch": [FINAL / "maxwell_mismatch_paper480"],
-        "colored_noise": [FINAL / "colored_noise_boundary480"],
-        "ris_calibration": [FINAL / "ris_bs_calibration_boundary480"],
-        "model_order": [FINAL / "model_order_mismatch480"],
-        "positions": [FINAL / "positions50x480"],
-        "resolvability": [FINAL / "evs_resolvability_paper480"],
-        "scaling": [FINAL / "robustness_scaling480"],
-        "benchmark_runtime": [FINAL / "benchmark_runtime30_cpu"],
-        "components_cost": [FINAL / "components_cost30_cpu"],
-    },
     "v3": {
         "snr_internal": [RES / "paper_v3" / "snr_internal_480"],
         "components": [RES / "paper_v3" / "components_480"],
