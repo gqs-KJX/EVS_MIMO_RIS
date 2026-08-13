@@ -808,6 +808,19 @@ def refine_ccop_jvp(
     selected_name, selected = min(
         candidates, key=lambda item: float(item[1]["total_objective"])
     )
+    # Expose the effective dimensionless path weights used by this solve.  The
+    # zero Gram is sufficient here because lambda_k is selected before the
+    # optional Gram scaling; this is a diagnostic only and does not alter the
+    # objective or the selected candidate.
+    _, _, lambda_jones, _, _ = _jones_regularizer_from_gram(
+        init_estimate,
+        scene,
+        config,
+        np.zeros(
+            (int(profiler.cache["num_atoms"]), int(profiler.cache["num_atoms"])),
+            dtype=complex,
+        ),
+    )
     result = copy.deepcopy(selected)
     result.update(
         {
@@ -823,6 +836,10 @@ def refine_ccop_jvp(
             "initial_total_objective": float(initial_profile["total_objective"]),
             "total_objective_final": float(selected["total_objective"]),
             "raw_objective_final": float(selected["raw_objective"]),
+            "jones_regularizer_objective_final": float(
+                selected.get("jones_regularizer_objective", 0.0)
+            ),
+            "lambda_jones_per_path": np.asarray(lambda_jones, dtype=float).copy(),
             "incumbent_old_objective": incumbent_old_objective,
             "incumbent_profiled_objective": float(
                 incumbent_profile["total_objective"]

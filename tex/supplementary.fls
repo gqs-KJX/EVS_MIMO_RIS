@@ -196,6 +196,13 @@ INPUT ./figs_supp/fig_ris_calibration.pdf
 INPUT ./figs_supp/fig_ris_calibration.pdf
 INPUT ./figs_supp/fig_ris_calibration.pdf
 INPUT ./figs_supp/fig_ris_calibration.pdf
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss10.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/courier/pcrr7t.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/courier/pcrr7t.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
 INPUT ./figs_supp/fig_generalization.pdf
 INPUT ./figs_supp/fig_generalization.pdf
 INPUT ./figs_supp/fig_generalization.pdf
@@ -204,6 +211,8 @@ INPUT ./figs_supp/fig_cost.pdf
 INPUT ./figs_supp/fig_cost.pdf
 INPUT ./figs_supp/fig_cost.pdf
 INPUT ./figs_supp/fig_cost.pdf
+INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmb7t.vf
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmb8r.tfm
 INPUT ./figs_supp/fig_internal_snr.pdf
 INPUT ./figs_supp/fig_internal_snr.pdf
 INPUT ./figs_supp/fig_internal_snr.pdf
@@ -226,9 +235,6 @@ INPUT ./figs_supp/fig_benchmark_clock.pdf
 INPUT ./figs_supp/fig_benchmark_clock.pdf
 INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmri7t.vf
 INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmri8r.tfm
-INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss10.tfm
-INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
-INPUT /usr/share/texlive/texmf-dist/fonts/tfm/public/cm/cmss8.tfm
 INPUT ./supplementary.bbl
 INPUT ./supplementary.bbl
 INPUT supplementary.bbl

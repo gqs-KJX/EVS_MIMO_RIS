@@ -8,100 +8,110 @@
 \newlabel{tab:s_crb}{{II}{1}{}{}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {III}Spatial-Narrowband Sufficient Condition}{1}{}\protected@file@percent }
 \newlabel{sec:squint_supp}{{III}{1}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Nested component ladder at $-10$~dB (solid, operating region) and $-20$~dB (dashed, below it). (a)~Catastrophic rate with exact $95\%$ intervals; annotations between rungs are absolute percentage-point changes at $-20$~dB. (b)~Phase~I basin acquisition rate. (c)~Empirical position-error CDF for the four informative rungs; the $-20$~dB R3 plateau is the wrong-basin mass removed by the common-geometry initializer.}}{2}{}\protected@file@percent }
-\newlabel{fig:s_ablation}{{1}{2}{}{}{}}
 \newlabel{eq:squint_cond}{{1}{2}{}{}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {IV}Component Ablation at Both Operating Points}{2}{}\protected@file@percent }
 \newlabel{sec:ablation_supp}{{IV}{2}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {V}Paired Internal Comparison}{2}{}\protected@file@percent }
-\newlabel{sec:paired_supp}{{V}{2}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {VI}Receiver-Side Calibration, Colored Noise, and Model Order}{2}{}\protected@file@percent }
-\newlabel{sec:mismatch_supp}{{VI}{2}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Resolvability Test Statistics}{2}{}\protected@file@percent }
+\newlabel{sec:resolv_supp}{{V}{2}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Compression Diagnostics in the Operating Region}{2}{}\protected@file@percent }
+\newlabel{sec:compdiag_supp}{{VI}{2}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Paired Internal Comparison}{2}{}\protected@file@percent }
+\newlabel{sec:paired_supp}{{VII}{2}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VIII}Receiver-Side Calibration, Colored Noise, and Model Order}{2}{}\protected@file@percent }
+\newlabel{sec:mismatch_supp}{{VIII}{2}{}{}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Component ablation, $480$ paired trials per cell. Each rung adds one component; all rungs share seeds, scenes, noise realizations and Phase~II route. $P_{\rm  cat}$ intervals are exact Clopper--Pearson. The $-10$~dB block is the operating-region result; the $-20$~dB block is below the reported region and is the one summarized in the main paper.}}{3}{}\protected@file@percent }
 \newlabel{tab:s_ablation}{{III}{3}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Paired evidence against R2 under the shared-realization protocol, full campaign range. (a)~Paired position-RMSE difference with $10^4$-replicate bootstrap intervals. (b)~Outlier exchange counts entering McNemar's exact test, shown only at SNRs with a nonzero exchange.}}{3}{}\protected@file@percent }
-\newlabel{fig:s_paired}{{2}{3}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Mismatch sweeps at $-10$~dB, $480$ paired trials per point, generation-side perturbation only. Each row gives the zero-mismatch reference and the largest tested value of one perturbation; the last two rows are the RIS--BS angular boundary of the main paper, on the same scale. c-RMSE is the inlier-conditional position RMSE.}}{3}{}\protected@file@percent }
-\newlabel{tab:s_calib}{{IV}{3}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Robustness boundaries, $480$ paired trials per point, with generation-side mismatch only; (a)--(c) are measured at $-10$~dB and the model-order sweep of~(d) at $0$~dB. (a)~RIS--BS incidence-angle error: solid filled and dashed hollow curves are catastrophic and basin-acquisition rates. (b)~Receiver-side perturbations against sweep-normalized mismatch; the physical maxima are stated in the legend. (c)~Unwhitened colored-noise boundary. (d)~Discrete model-order mismatch; the median and p95 on the right-hand axis diverge by four orders of magnitude under overestimation.}}{4}{}\protected@file@percent }
-\newlabel{fig:s_robustness}{{3}{4}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {VII}Implementation Specification}{4}{}\protected@file@percent }
-\newlabel{sec:impl_supp}{{VII}{4}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-A}}Hankel Construction and Delay Poles}{4}{}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces RIS element-phase calibration boundary at $0$~dB. The Phase~I output alone is not a millimeter-accurate final estimate at any calibration level (median $6.6$~mm even at zero mismatch); the certified Phase~II refinement is what converts that initializer into a millimeter-accurate estimator and supplies the phase-error tolerance.}}{4}{}\protected@file@percent }
-\newlabel{fig:s_ris_calibration}{{4}{4}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Nested component ladder at $-10$~dB (solid, operating region) and $-20$~dB (dashed, below it). (a)~Catastrophic rate with exact $95\%$ intervals; annotations between rungs are absolute percentage-point changes at $-20$~dB. (b)~Phase~I basin acquisition rate. (c)~Empirical position-error CDF for the four informative rungs; the $-20$~dB R3 plateau is the wrong-basin mass removed by the common-geometry initializer.}}{3}{}\protected@file@percent }
+\newlabel{fig:s_ablation}{{1}{3}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Resolvability test summary at $-10$~dB, $480$ paired trials per cell. ``Spread'' is the largest difference in resolution probability across the four Jones overlaps at fixed delay separation, and the trend-test column reports the Holm-adjusted Cochran--Armitage $p$ value over overlap.}}{3}{}\protected@file@percent }
+\newlabel{tab:s_resolv}{{IV}{3}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Paired evidence against R2 under the shared-realization protocol, full campaign range. (a)~Paired position-RMSE difference with $10^4$-replicate bootstrap intervals. (b)~Outlier exchange counts entering McNemar's exact test, shown only at SNRs with a nonzero exchange.}}{4}{}\protected@file@percent }
+\newlabel{fig:s_paired}{{2}{4}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces Mismatch sweeps at $-10$~dB, $480$ paired trials per point, generation-side perturbation only. Each row gives the zero-mismatch reference and the largest tested value of one perturbation; the last two rows are the RIS--BS angular boundary of the main paper, on the same scale. c-RMSE is the inlier-conditional position RMSE.}}{4}{}\protected@file@percent }
+\newlabel{tab:s_calib}{{V}{4}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IX}Implementation Specification}{4}{}\protected@file@percent }
+\newlabel{sec:impl_supp}{{IX}{4}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IX-A}}Hankel Construction and Delay Poles}{4}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Robustness boundaries, $480$ paired trials per point, with generation-side mismatch only; (a)--(c) are measured at $-10$~dB and the model-order sweep of~(d) at $0$~dB. (a)~RIS--BS incidence-angle error: solid filled and dashed hollow curves are catastrophic and basin-acquisition rates. (b)~Receiver-side perturbations against sweep-normalized mismatch; the physical maxima are stated in the legend. (c)~Unwhitened colored-noise boundary. (d)~Discrete model-order mismatch; the median and p95 on the right-hand axis diverge by four orders of magnitude under overestimation.}}{5}{}\protected@file@percent }
+\newlabel{fig:s_robustness}{{3}{5}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces RIS element-phase calibration boundary at $0$~dB. The Phase~I output alone is not a millimeter-accurate final estimate at any calibration level (median $6.6$~mm even at zero mismatch); the certified Phase~II refinement is what converts that initializer into a millimeter-accurate estimator and supplies the phase-error tolerance.}}{5}{}\protected@file@percent }
+\newlabel{fig:s_ris_calibration}{{4}{5}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IX-B}}Beam-Space Acquisition}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IX-C}}Association}{5}{}\protected@file@percent }
 \citation{byrd1995lbfgsb}
 \citation{powell1964direct}
 \citation{li2024vbi}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-B}}Beam-Space Acquisition}{5}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-C}}Association}{5}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {VII-D}}Phase~II Solvers and Tolerances}{5}{}\protected@file@percent }
-\newlabel{eq:eps_clk_supp}{{2}{5}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {VIII}Certificate and Failure Diagnostics in Detail}{5}{}\protected@file@percent }
-\newlabel{sec:cert_supp}{{VIII}{5}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {IX}The As-Published Baseline Tier}{5}{}\protected@file@percent }
-\newlabel{sec:aspub}{{IX}{5}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IX-D}}Phase~II Solvers and Tolerances}{6}{}\protected@file@percent }
+\newlabel{eq:eps_clk_supp}{{2}{6}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {X}Complexity Accounting}{6}{}\protected@file@percent }
+\newlabel{sec:complexity_supp}{{X}{6}{}{}{}}
+\newlabel{eq:complexity_supp}{{3}{6}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XI}Certificate and Failure Diagnostics in Detail}{6}{}\protected@file@percent }
+\newlabel{sec:cert_supp}{{XI}{6}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XII}The As-Published Baseline Tier}{6}{}\protected@file@percent }
+\newlabel{sec:aspub}{{XII}{6}{}{}{}}
 \citation{li2024vbi}
 \citation{lin2021tensor}
-\@writefile{toc}{\contentsline {section}{\numberline {X}Anatomy of the ALS-CPD Read-Out Failure}{6}{}\protected@file@percent }
-\newlabel{sec:als}{{X}{6}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XI}Operating-Region Benchmark Table}{6}{}\protected@file@percent }
-\newlabel{sec:benchmark_full_supp}{{XI}{6}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XII}Stage-I Hyperparameter Sensitivity}{6}{}\protected@file@percent }
-\newlabel{sec:hypersens_supp}{{XII}{6}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces External benchmark, $960$ shared-realization trials per cell. Runtime and peak RSS use the serialized single-thread protocol. NMSE is the unconditional mean over all trials, so a single wrong-basin trial dominates it: the range-scaled 4-D entry at $0$~dB is $5.6\times 10^{-6}$ over its $959$ inliers and $1.0\times 10^{-3}$ once its one catastrophic trial is included.}}{7}{}\protected@file@percent }
-\newlabel{tab:s_benchmark_main}{{V}{7}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {VI}{\ignorespaces Paired Stage-I sensitivity at $-10$~dB, $480$ trials per value. Boldface marks the frozen setting. ``Identical'' counts trials whose position estimate is unchanged from the frozen setting to working precision.}}{7}{}\protected@file@percent }
-\newlabel{tab:hypersens}{{VI}{7}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XIII}Position Generalization, Resource Scaling, and Cost}{7}{}\protected@file@percent }
-\newlabel{sec:scaling_supp}{{XIII}{7}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XIV}Threshold Region: Mechanism}{7}{}\protected@file@percent }
-\newlabel{sec:thresh}{{XIV}{7}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XV}Internal Structure Validation Below the Region}{7}{}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Position generalization and resource scaling at $-10$~dB. (a)~Per-position catastrophic-rate CDF. (b)~Free-Jones EFIM diagnostics. (c)~Resource sweeps on the dimensionless axes $N/N_0$, $T/T_0$, $M_A/M_{A,0}$, and $M_R/M_{R,0}$; solid filled and dashed hollow curves denote the proposed and range-scaled 4-D routes.}}{8}{}\protected@file@percent }
-\newlabel{fig:s_generalization}{{5}{8}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Serialized single-thread cost. (a)~Component-median decomposition. (b)~p95 position-error--cost plane at $-10$~dB; marker area is proportional to peak resident memory and each point is labeled by its measured peak RSS.}}{8}{}\protected@file@percent }
-\newlabel{fig:s_cost}{{6}{8}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XVI}Matched Compression Evidence Below the Region}{8}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {XVII}Receiver Modes Below the Region}{8}{}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Internal structure validation over the full campaign range, $480$ paired trials per SNR point. The panels show position accuracy, catastrophic and basin-acquisition rates, clock accuracy, and Phase~I delay diagnostics; the two leftmost points lie below the reported operating region.}}{9}{}\protected@file@percent }
-\newlabel{fig:s_internal}{{7}{9}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Single-factor evaluation of the Maxwell--Kronecker projection over the full campaign range. Panels as in the main paper's single-factor compression test. In~(c) the retained energy fraction approaches the white-noise floor $r/I=1/16$ at $-20$~dB while the \emph  {uncompressed} subspace-leakage ratio $\sigma _{K+1}/\sigma _K$ reaches $0.99$ and the compressed one $0.81$; smaller is better, so this is the diagnostic form of delay-pole collapse, and the separation between the two curves is the margin the projection buys.}}{9}{}\protected@file@percent }
-\newlabel{fig:s_compression}{{8}{9}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XVIII}External Benchmark and Synchronization Below the Region}{9}{}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces Receiver-mode study over the full campaign range under nested component masks at a common absolute noise level. Panels extend Fig.~\ref {main-fig:c1_combined}(a)--(b) of the main paper. The efficiency ratios of the masked modes below $-10$~dB are conditioned on a small inlier subset and are reported for completeness only.}}{10}{}\protected@file@percent }
-\newlabel{fig:s_receiver}{{9}{10}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XIX}Local Identifiability with Unknown Jones Nuisance}{10}{}\protected@file@percent }
-\newlabel{sec:ident_proof_supp}{{XIX}{10}{}{}{}}
-\newlabel{eq:s_ident}{{3}{10}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {VII}{\ignorespaces External benchmark below the operating region, $960$ shared-realization trials per cell, method-consistent tier. $P_{\rm  cat}$ in percent, position quantiles in millimeters. The proposed route holds the lowest median and p95 at both points; the initializer-free grid search of the OMP route holds the lowest catastrophic rate at $-20$~dB and ties the proposed route at $-15$~dB, which is the crossover discussed in the text.}}{10}{}\protected@file@percent }
-\newlabel{tab:s_benchmark}{{VII}{10}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XX}Complete Proof of Theorem~\ref {main-thm:split}}{10}{}\protected@file@percent }
-\newlabel{sec:split_proof_supp}{{XX}{10}{}{}{}}
-\newlabel{eq:s_kron_split}{{4}{10}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {10}{\ignorespaces External benchmark over the full campaign range, $960$ shared-realization trials per SNR point. Panels extend Fig.~\ref {main-fig:benchmark_combined} of the main paper. In~(c), at the two points below the operating region the exhaustive near-field OMP search is more robust than the locally refined proposed route, at the cost of the grid-resolution floor visible in~(b) at every SNR.}}{11}{}\protected@file@percent }
-\newlabel{fig:s_benchmark}{{10}{11}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XXI}Complete Proof of Theorem~\ref {main-thm:compress}}{11}{}\protected@file@percent }
-\newlabel{sec:compress_proof_supp}{{XXI}{11}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {11}{\ignorespaces External synchronization comparison over the full campaign range. Panels extend Fig.~\ref {main-fig:benchmark_combined}(e)--(f) of the main paper. The two leftmost points of each curve lie below the reported operating region.}}{12}{}\protected@file@percent }
-\newlabel{fig:s_benchmark_clock}{{11}{12}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XXII}Coupled-Recovery Lift and Exact Scale Elimination}{12}{}\protected@file@percent }
-\newlabel{sec:technical_proofs_supp}{{XXII}{12}{}{}{}}
-\newlabel{eq:s_lift}{{10}{12}{}{}{}}
-\newlabel{eq:s_scale}{{11}{12}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {XXIII}Complete Proof of Theorem~\ref {main-thm:clock}}{12}{}\protected@file@percent }
-\newlabel{sec:clock_proof_supp}{{XXIII}{12}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XIII}Anatomy of the ALS-CPD Read-Out Failure}{7}{}\protected@file@percent }
+\newlabel{sec:als}{{XIII}{7}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XIV}Operating-Region Benchmark Table}{7}{}\protected@file@percent }
+\newlabel{sec:benchmark_full_supp}{{XIV}{7}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XV}Stage-I Hyperparameter Sensitivity}{7}{}\protected@file@percent }
+\newlabel{sec:hypersens_supp}{{XV}{7}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VI}{\ignorespaces External benchmark, $960$ shared-realization trials per cell. Runtime and peak RSS use the serialized single-thread protocol. NMSE is the unconditional mean over all trials, so a single wrong-basin trial dominates it: the range-scaled 4-D entry at $0$~dB is $5.6\times 10^{-6}$ over its $959$ inliers and $1.0\times 10^{-3}$ once its one catastrophic trial is included. The p99 column indicates tail mass but does not resolve it: for a route carrying about $1\%$ catastrophic mass that order statistic lands on the boundary between the two modes, giving bootstrap $95\%$ intervals at $-10$~dB of $[197,1365]$ and $[368,1347]$~mm for range-scaled 4-D VP and VBI/SBL against $[1.15,1.80]$~mm for the proposed route. The main paper's complementary CDFs carry the tail comparison.}}{8}{}\protected@file@percent }
+\newlabel{tab:s_benchmark_main}{{VI}{8}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VII}{\ignorespaces Paired Stage-I sensitivity at $-10$~dB, $480$ trials per value. Boldface marks the frozen setting. ``Identical'' counts trials whose position estimate is unchanged from the frozen setting to working precision.}}{8}{}\protected@file@percent }
+\newlabel{tab:hypersens}{{VII}{8}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XVI}Position Generalization, Resource Scaling, and Cost}{8}{}\protected@file@percent }
+\newlabel{sec:scaling_supp}{{XVI}{8}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XVII}Threshold Region: Mechanism}{8}{}\protected@file@percent }
+\newlabel{sec:thresh}{{XVII}{8}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Position generalization and resource scaling at $-10$~dB. (a)~Per-position catastrophic-rate CDF. (b)~Free-Jones EFIM diagnostics. (c)~Resource sweeps on the dimensionless axes $N/N_0$, $T/T_0$, $M_A/M_{A,0}$, and $M_R/M_{R,0}$; solid filled and dashed hollow curves denote the proposed and range-scaled 4-D routes.}}{9}{}\protected@file@percent }
+\newlabel{fig:s_generalization}{{5}{9}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Serialized single-thread cost. (a)~Component-median decomposition. (b)~p95 position-error--cost plane at $-10$~dB; marker area is proportional to peak resident memory and each point is labeled by its measured peak RSS.}}{9}{}\protected@file@percent }
+\newlabel{fig:s_cost}{{6}{9}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XVIII}Internal Structure Validation Below the Region}{9}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Internal structure validation over the full campaign range, $480$ paired trials per SNR point. The panels show position accuracy, catastrophic and basin-acquisition rates, clock accuracy, and Phase~I delay diagnostics; the two leftmost points lie below the reported operating region.}}{10}{}\protected@file@percent }
+\newlabel{fig:s_internal}{{7}{10}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XIX}Matched Compression Evidence Below the Region}{10}{}\protected@file@percent }
+\newlabel{sec:compression_below}{{XIX}{10}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XX}Receiver Modes Below the Region}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {XXI}External Benchmark and Synchronization Below the Region}{10}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Single-factor evaluation of the Maxwell--Kronecker projection over the full campaign range. Panels as in the main paper's single-factor compression test. In~(c) the retained energy fraction approaches the white-noise floor $r/I=1/16$ at $-20$~dB while the \emph  {uncompressed} subspace-leakage ratio $\sigma _{K+1}/\sigma _K$ reaches $0.99$ and the compressed one $0.81$; smaller is better, so this is the diagnostic form of delay-pole collapse, and the separation between the two curves is the margin the projection buys.}}{11}{}\protected@file@percent }
+\newlabel{fig:s_compression}{{8}{11}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces Receiver-mode study over the full campaign range under nested component masks at a common absolute noise level. Panels extend Fig.~\ref {main-fig:c1_combined}(a)--(b) of the main paper. The efficiency ratios of the masked modes below $-10$~dB are conditioned on a small inlier subset and are reported for completeness only.}}{11}{}\protected@file@percent }
+\newlabel{fig:s_receiver}{{9}{11}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XXII}Local Identifiability with Unknown Jones Nuisance}{11}{}\protected@file@percent }
+\newlabel{sec:ident_proof_supp}{{XXII}{11}{}{}{}}
+\newlabel{eq:s_ident}{{4}{11}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VIII}{\ignorespaces External benchmark below the operating region, $960$ shared-realization trials per cell, method-consistent tier. $P_{\rm  cat}$ in percent, position quantiles in millimeters. The proposed route holds the lowest median and p95 at both points; the initializer-free grid search of the OMP route holds the lowest catastrophic rate at $-20$~dB and ties the proposed route at $-15$~dB, which is the crossover discussed in the text.}}{11}{}\protected@file@percent }
+\newlabel{tab:s_benchmark}{{VIII}{11}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {10}{\ignorespaces External benchmark over the full campaign range, $960$ shared-realization trials per SNR point. Panels extend Fig.~\ref {main-fig:benchmark_combined} of the main paper. In~(c), at the two points below the operating region the exhaustive near-field OMP search fails less often than the locally refined proposed route, at the cost of the grid-resolution floor visible in~(a) at every SNR.}}{12}{}\protected@file@percent }
+\newlabel{fig:s_benchmark}{{10}{12}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XXIII}Complete Proof of Theorem~\ref {main-thm:split}}{12}{}\protected@file@percent }
+\newlabel{sec:split_proof_supp}{{XXIII}{12}{}{}{}}
+\newlabel{eq:s_kron_split}{{5}{12}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {11}{\ignorespaces External synchronization comparison over the full campaign range. Panels extend Fig.~\ref {main-fig:benchmark_combined}(e)--(f) of the main paper. The two leftmost points of each curve lie below the reported operating region.}}{13}{}\protected@file@percent }
+\newlabel{fig:s_benchmark_clock}{{11}{13}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XXIV}Complete Proof of Theorem~\ref {main-thm:compress}}{13}{}\protected@file@percent }
+\newlabel{sec:compress_proof_supp}{{XXIV}{13}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XXV}Coupled-Recovery Lift and Exact Scale Elimination}{13}{}\protected@file@percent }
+\newlabel{sec:technical_proofs_supp}{{XXV}{13}{}{}{}}
+\newlabel{eq:s_lift}{{11}{13}{}{}{}}
+\newlabel{eq:s_scale}{{12}{13}{}{}{}}
 \bibstyle{IEEEtran}
 \bibdata{references}
 \bibcite{byrd1995lbfgsb}{1}
 \bibcite{powell1964direct}{2}
 \bibcite{li2024vbi}{3}
 \bibcite{lin2021tensor}{4}
-\@writefile{toc}{\contentsline {section}{\numberline {XXIV}Directional Regularization: Conditional Compatibility}{13}{}\protected@file@percent }
-\newlabel{sec:regularization_proof_supp}{{XXIV}{13}{}{}{}}
-\newlabel{prop:compat}{{3}{13}{}{}{}}
-\newlabel{eq:s_taper}{{14}{13}{}{}{}}
-\newlabel{eq:s_lambda_fixed}{{16}{13}{}{}{}}
-\newlabel{eq:s_rdir_fixed}{{17}{13}{}{}{}}
-\@writefile{toc}{\contentsline {section}{References}{13}{}\protected@file@percent }
-\gdef \@abspage@last{13}
+\@writefile{toc}{\contentsline {section}{\numberline {XXVI}Complete Proof of Theorem~\ref {main-thm:clock}}{14}{}\protected@file@percent }
+\newlabel{sec:clock_proof_supp}{{XXVI}{14}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {XXVII}Directional Regularization: Conditional Compatibility}{14}{}\protected@file@percent }
+\newlabel{sec:regularization_proof_supp}{{XXVII}{14}{}{}{}}
+\newlabel{prop:compat}{{3}{14}{}{}{}}
+\newlabel{eq:s_taper}{{15}{14}{}{}{}}
+\newlabel{eq:s_lambda_fixed}{{17}{14}{}{}{}}
+\newlabel{eq:s_rdir_fixed}{{18}{14}{}{}{}}
+\@writefile{toc}{\contentsline {section}{References}{14}{}\protected@file@percent }
+\gdef \@abspage@last{14}

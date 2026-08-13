@@ -7,8 +7,7 @@
 \providecommand{\BIBentrySTDinterwordspacing}{\spaceskip=0pt\relax}
 \providecommand{\BIBentryALTinterwordstretchfactor}{4}
 \providecommand{\BIBentryALTinterwordspacing}{\spaceskip=\fontdimen2\font plus
-\BIBentryALTinterwordstretchfactor\fontdimen3\font minus
-  \fontdimen4\font\relax}
+\BIBentryALTinterwordstretchfactor\fontdimen3\font minus \fontdimen4\font\relax}
 \providecommand{\BIBforeignlanguage}[2]{{%
 \expandafter\ifx\csname l@#1\endcsname\relax
 \typeout{** WARNING: IEEEtran.bst: No hyphenation pattern has been}%
@@ -22,189 +21,106 @@
 \BIBdecl
 
 \bibitem{wymeersch2020risloc}
-H.~Wymeersch, J.~He, B.~Denis, A.~Clemente, and M.~Juntti, ``Radio localization
-  and mapping with reconfigurable intelligent surfaces: Challenges,
-  opportunities, and research directions,'' \emph{IEEE Vehicular Technology
-  Magazine}, vol.~15, no.~4, pp. 52--61, Dec. 2020.
+H.~Wymeersch, J.~He, B.~Denis, A.~Clemente, and M.~Juntti, ``Radio localization and mapping with reconfigurable intelligent surfaces: Challenges, opportunities, and research directions,'' \emph{IEEE Vehicular Technology Magazine}, vol.~15, no.~4, pp. 52--61, Dec. 2020.
 
 \bibitem{elzanaty2021bounds}
-A.~Elzanaty, A.~Guerra, F.~Guidi, and M.-S. Alouini, ``Reconfigurable
-  intelligent surfaces for localization: Position and orientation error
-  bounds,'' \emph{IEEE Transactions on Signal Processing}, vol.~69, pp.
-  5386--5402, 2021.
+A.~Elzanaty, A.~Guerra, F.~Guidi, and M.-S. Alouini, ``Reconfigurable intelligent surfaces for localization: Position and orientation error bounds,'' \emph{IEEE Transactions on Signal Processing}, vol.~69, pp. 5386--5402, 2021.
 
 \bibitem{cui2023nearfield}
-M.~Cui, Z.~Wu, Y.~Lu, X.~Wei, and L.~Dai, ``Near-field {MIMO} communications
-  for {6G}: Fundamentals, challenges, potentials, and future directions,''
-  \emph{IEEE Communications Magazine}, vol.~61, no.~1, pp. 40--46, Jan. 2023.
+M.~Cui, Z.~Wu, Y.~Lu, X.~Wei, and L.~Dai, ``Near-field {MIMO} communications for {6G}: Fundamentals, challenges, potentials, and future directions,'' \emph{IEEE Communications Magazine}, vol.~61, no.~1, pp. 40--46, Jan. 2023.
 
 \bibitem{yang2024nfris}
-S.~Yang, C.~Xie, W.~Lyu, B.~Ning, Z.~Zhang, and C.~Yuen, ``Near-field channel
-  estimation for extremely large-scale reconfigurable intelligent surface
-  ({XL-RIS})-aided wideband {mmWave} systems,'' \emph{IEEE Journal on Selected
-  Areas in Communications}, vol.~42, no.~6, pp. 1567--1582, Jun. 2024.
+S.~Yang, C.~Xie, W.~Lyu, B.~Ning, Z.~Zhang, and C.~Yuen, ``Near-field channel estimation for extremely large-scale reconfigurable intelligent surface ({XL-RIS})-aided wideband {mmWave} systems,'' \emph{IEEE Journal on Selected Areas in Communications}, vol.~42, no.~6, pp. 1567--1582, Jun. 2024.
 
 \bibitem{nehorai1994vector}
-A.~Nehorai and E.~Paldi, ``Vector-sensor array processing for electromagnetic
-  source localization,'' \emph{IEEE Transactions on Signal Processing},
-  vol.~42, no.~2, pp. 376--398, Feb. 1994.
+A.~Nehorai and E.~Paldi, ``Vector-sensor array processing for electromagnetic source localization,'' \emph{IEEE Transactions on Signal Processing}, vol.~42, no.~2, pp. 376--398, Feb. 1994.
 
 \bibitem{khan2020sixcomponent}
-S.~Khan and K.~T. Wong, ``A six-component vector sensor comprising electrically
-  long dipoles and large loops---to simultaneously estimate incident sources'
-  directions-of-arrival and polarizations,'' \emph{IEEE Transactions on
-  Antennas and Propagation}, vol.~68, no.~8, pp. 6355--6363, Aug. 2020.
+S.~Khan and K.~T. Wong, ``A six-component vector sensor comprising electrically long dipoles and large loops---to simultaneously estimate incident sources' directions-of-arrival and polarizations,'' \emph{IEEE Transactions on Antennas and Propagation}, vol.~68, no.~8, pp. 6355--6363, Aug. 2020.
 
 \bibitem{ma2023distributed}
-T.~Ma, Y.~Xiao, X.~Lei, W.~Xiong, and M.~Xiao, ``Distributed reconfigurable
-  intelligent surfaces assisted indoor positioning,'' \emph{IEEE Transactions
-  on Wireless Communications}, vol.~22, no.~1, pp. 47--58, Jan. 2023.
+T.~Ma, Y.~Xiao, X.~Lei, W.~Xiong, and M.~Xiao, ``Distributed reconfigurable intelligent surfaces assisted indoor positioning,'' \emph{IEEE Transactions on Wireless Communications}, vol.~22, no.~1, pp. 47--58, Jan. 2023.
 
 \bibitem{fadakar2024multiris}
-A.~Fadakar, M.~Sabbaghian, and H.~Wymeersch, ``Multi-{RIS}-assisted {3D}
-  localization and synchronization via deep learning,'' \emph{IEEE Open Journal
-  of the Communications Society}, vol.~5, pp. 3299--3314, 2024.
+A.~Fadakar, M.~Sabbaghian, and H.~Wymeersch, ``Multi-{RIS}-assisted {3D} localization and synchronization via deep learning,'' \emph{IEEE Open Journal of the Communications Society}, vol.~5, pp. 3299--3314, 2024.
 
 \bibitem{liu2025multiris}
-H.~Liu, Y.~Lin, Y.~Hu, X.~Li, H.~Xu, and S.~Jin, ``Channel estimation, blockage
-  processing, and localization for multi-{RIS} assisted {OFDM} systems,''
-  \emph{IEEE Transactions on Communications}, vol.~73, no.~12, pp.
-  15\,175--15\,189, Dec. 2025.
+H.~Liu, Y.~Lin, Y.~Hu, X.~Li, H.~Xu, and S.~Jin, ``Channel estimation, blockage processing, and localization for multi-{RIS} assisted {OFDM} systems,'' \emph{IEEE Transactions on Communications}, vol.~73, no.~12, pp. 15\,175--15\,189, Dec. 2025.
 
 \bibitem{fascista2022rissync}
-A.~Fascista, M.~F. Keskin, A.~Coluccia, H.~Wymeersch, and G.~Seco-Granados,
-  ``{RIS}-aided joint localization and synchronization with a single-antenna
-  receiver: Beamforming design and low-complexity estimation,'' \emph{IEEE
-  Journal of Selected Topics in Signal Processing}, vol.~16, no.~5, pp.
-  1141--1156, Aug. 2022.
+A.~Fascista, M.~F. Keskin, A.~Coluccia, H.~Wymeersch, and G.~Seco-Granados, ``{RIS}-aided joint localization and synchronization with a single-antenna receiver: Beamforming design and low-complexity estimation,'' \emph{IEEE Journal of Selected Topics in Signal Processing}, vol.~16, no.~5, pp. 1141--1156, Aug. 2022.
 
 \bibitem{gong2024async}
-Z.~Gong, L.~Wu, Z.~Zhang, J.~Dang, Y.~Wu, and J.~Wang, ``Asynchronous
-  {RIS}-assisted localization: A comprehensive analysis of fundamental
-  limits,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23,
-  no.~9, pp. 10\,974--10\,989, Sep. 2024.
+Z.~Gong, L.~Wu, Z.~Zhang, J.~Dang, Y.~Wu, and J.~Wang, ``Asynchronous {RIS}-assisted localization: A comprehensive analysis of fundamental limits,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23, no.~9, pp. 10\,974--10\,989, Sep. 2024.
 
 \bibitem{yan2025ris}
-H.~Yan, H.~Chen, W.~Liu, S.~Yang, G.~Wang, and C.~Yuen, ``{RIS}-enabled joint
-  near-field {3D} localization and synchronization in {SISO} multipath
-  environments,'' \emph{IEEE Transactions on Green Communications and
-  Networking}, vol.~9, no.~1, pp. 367--379, Mar. 2025.
+H.~Yan, H.~Chen, W.~Liu, S.~Yang, G.~Wang, and C.~Yuen, ``{RIS}-enabled joint near-field {3D} localization and synchronization in {SISO} multipath environments,'' \emph{IEEE Transactions on Green Communications and Networking}, vol.~9, no.~1, pp. 367--379, Mar. 2025.
 
 \bibitem{han2022dual}
-Y.~Han, X.~Li, W.~Tang, S.~Jin, Q.~Cheng, and T.~J. Cui, ``Dual-polarized
-  {RIS}-assisted mobile communications,'' \emph{IEEE Transactions on Wireless
-  Communications}, vol.~21, no.~1, pp. 591--606, Jan. 2022.
+Y.~Han, X.~Li, W.~Tang, S.~Jin, Q.~Cheng, and T.~J. Cui, ``Dual-polarized {RIS}-assisted mobile communications,'' \emph{IEEE Transactions on Wireless Communications}, vol.~21, no.~1, pp. 591--606, Jan. 2022.
 
 \bibitem{munawar2024dual}
-M.~Munawar and K.~Lee, ``Dual-polarized {IRS}-assisted {MIMO} network,''
-  \emph{IEEE Transactions on Wireless Communications}, vol.~23, no.~4, pp.
-  2519--2532, Apr. 2024.
+M.~Munawar and K.~Lee, ``Dual-polarized {IRS}-assisted {MIMO} network,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23, no.~4, pp. 2519--2532, Apr. 2024.
 
 \bibitem{gong2026aimdf}
-Q.~Gong, J.~Du, L.~Jiang, Y.~Guan, and X.~Li, ``Low-complexity multidimensional
-  parameter estimation for multipath channel in wideband {EVS-OFDM} systems via
-  asymmetric tensor folding,'' \emph{IEEE Communications Letters}, 2026, early
-  Access.
+Q.~Gong, J.~Du, L.~Jiang, Y.~Guan, and X.~Li, ``Low-complexity multidimensional parameter estimation for multipath channel in wideband {EVS-OFDM} systems via asymmetric tensor folding,'' \emph{IEEE Communications Letters}, 2026, early Access.
 
 \bibitem{lin2021tensor}
-Y.~Lin, S.~Jin, M.~Matthaiou, and X.~You, ``Tensor-based algebraic channel
-  estimation for hybrid {IRS}-assisted {MIMO-OFDM},'' \emph{IEEE Transactions
-  on Wireless Communications}, vol.~20, no.~6, pp. 3770--3784, Jun. 2021.
+Y.~Lin, S.~Jin, M.~Matthaiou, and X.~You, ``Tensor-based algebraic channel estimation for hybrid {IRS}-assisted {MIMO-OFDM},'' \emph{IEEE Transactions on Wireless Communications}, vol.~20, no.~6, pp. 3770--3784, Jun. 2021.
 
 \bibitem{kolda2009tensor}
-T.~G. Kolda and B.~W. Bader, ``Tensor decompositions and applications,''
-  \emph{SIAM Review}, vol.~51, no.~3, pp. 455--500, 2009.
+T.~G. Kolda and B.~W. Bader, ``Tensor decompositions and applications,'' \emph{SIAM Review}, vol.~51, no.~3, pp. 455--500, 2009.
 
 \bibitem{sidiropoulos2017tensor}
-N.~D. Sidiropoulos, L.~{De Lathauwer}, X.~Fu, K.~Huang, E.~E. Papalexakis, and
-  C.~Faloutsos, ``Tensor decomposition for signal processing and machine
-  learning,'' \emph{IEEE Transactions on Signal Processing}, vol.~65, no.~13,
-  pp. 3551--3582, Jul. 2017.
+N.~D. Sidiropoulos, L.~{De Lathauwer}, X.~Fu, K.~Huang, E.~E. Papalexakis, and C.~Faloutsos, ``Tensor decomposition for signal processing and machine learning,'' \emph{IEEE Transactions on Signal Processing}, vol.~65, no.~13, pp. 3551--3582, Jul. 2017.
 
 \bibitem{cui2022channel}
-M.~Cui and L.~Dai, ``Channel estimation for extremely large-scale {MIMO}:
-  Far-field or near-field?'' \emph{IEEE Transactions on Communications},
-  vol.~70, no.~4, pp. 2663--2677, Apr. 2022.
+M.~Cui and L.~Dai, ``Channel estimation for extremely large-scale {MIMO}: Far-field or near-field?'' \emph{IEEE Transactions on Communications}, vol.~70, no.~4, pp. 2663--2677, Apr. 2022.
 
 \bibitem{bayraktar2022momp}
-M.~Bayraktar, J.~Palacios, N.~Gonz{\'a}lez-Prelcic, and C.~J. Zhang,
-  ``Multidimensional orthogonal matching pursuit-based {RIS}-aided joint
-  localization and channel estimation at {mmWave},'' in \emph{Proc. IEEE 23rd
-  International Workshop on Signal Processing Advances in Wireless
-  Communication (SPAWC)}, Jul. 2022, pp. 1--5.
+M.~Bayraktar, J.~Palacios, N.~Gonz{\'a}lez-Prelcic, and C.~J. Zhang, ``Multidimensional orthogonal matching pursuit-based {RIS}-aided joint localization and channel estimation at {mmWave},'' in \emph{Proc. IEEE 23rd International Workshop on Signal Processing Advances in Wireless Communication (SPAWC)}, Jul. 2022, pp. 1--5.
 
 \bibitem{tipping2001sbl}
 \BIBentryALTinterwordspacing
-M.~E. Tipping, ``Sparse bayesian learning and the relevance vector machine,''
-  \emph{Journal of Machine Learning Research}, vol.~1, pp. 211--244, Jun. 2001.
-  [Online]. Available: \url{https://www.jmlr.org/papers/v1/tipping01a.html}
+M.~E. Tipping, ``Sparse bayesian learning and the relevance vector machine,'' \emph{Journal of Machine Learning Research}, vol.~1, pp. 211--244, Jun. 2001. [Online]. Available: \url{https://www.jmlr.org/papers/v1/tipping01a.html}
 \BIBentrySTDinterwordspacing
 
 \bibitem{li2024vbi}
-Y.~Li, Y.~Luo, X.~Wu, Z.~Shi, S.~Ma, and G.~Yang, ``Variational bayesian
-  learning based localization and channel reconstruction in {RIS}-aided
-  systems,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23,
-  no.~9, pp. 11\,309--11\,324, Sep. 2024.
+Y.~Li, Y.~Luo, X.~Wu, Z.~Shi, S.~Ma, and G.~Yang, ``Variational bayesian learning based localization and channel reconstruction in {RIS}-aided systems,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23, no.~9, pp. 11\,309--11\,324, Sep. 2024.
 
 \bibitem{pati1993omp}
-Y.~C. Pati, R.~Rezaiifar, and P.~S. Krishnaprasad, ``Orthogonal matching
-  pursuit: Recursive function approximation with applications to wavelet
-  decomposition,'' in \emph{Proc. 27th Asilomar Conference on Signals, Systems
-  and Computers}, vol.~1, 1993, pp. 40--44.
+Y.~C. Pati, R.~Rezaiifar, and P.~S. Krishnaprasad, ``Orthogonal matching pursuit: Recursive function approximation with applications to wavelet decomposition,'' in \emph{Proc. 27th Asilomar Conference on Signals, Systems and Computers}, vol.~1, 1993, pp. 40--44.
 
 \bibitem{fleury1999sage}
-B.~H. Fleury, M.~Tschudin, R.~Heddergott, D.~Dahlhaus, and K.~I. Pedersen,
-  ``Channel parameter estimation in mobile radio environments using the {SAGE}
-  algorithm,'' \emph{IEEE Journal on Selected Areas in Communications},
-  vol.~17, no.~3, pp. 434--450, Mar. 1999.
+B.~H. Fleury, M.~Tschudin, R.~Heddergott, D.~Dahlhaus, and K.~I. Pedersen, ``Channel parameter estimation in mobile radio environments using the {SAGE} algorithm,'' \emph{IEEE Journal on Selected Areas in Communications}, vol.~17, no.~3, pp. 434--450, Mar. 1999.
 
 \bibitem{zheng2025wideband}
-T.~Zheng, M.~Cui, Z.~Wu, and L.~Dai, ``Near-field wideband beam training based
-  on distance-dependent beam split,'' \emph{IEEE Transactions on Wireless
-  Communications}, vol.~24, no.~2, pp. 1278--1292, Feb. 2025.
+T.~Zheng, M.~Cui, Z.~Wu, and L.~Dai, ``Near-field wideband beam training based on distance-dependent beam split,'' \emph{IEEE Transactions on Wireless Communications}, vol.~24, no.~2, pp. 1278--1292, Feb. 2025.
 
 \bibitem{golub1973varpro}
-G.~H. Golub and V.~Pereyra, ``The differentiation of pseudo-inverses and
-  nonlinear least squares problems whose variables separate,'' \emph{SIAM
-  Journal on Numerical Analysis}, vol.~10, no.~2, pp. 413--432, Apr. 1973.
+G.~H. Golub and V.~Pereyra, ``The differentiation of pseudo-inverses and nonlinear least squares problems whose variables separate,'' \emph{SIAM Journal on Numerical Analysis}, vol.~10, no.~2, pp. 413--432, Apr. 1973.
 
 \bibitem{liu2026extended}
 \BIBentryALTinterwordspacing
-R.~Liu, M.~Li, and A.~L. Swindlehurst, ``Extended target sensing in {MIMO-OFDM
-  ISAC} systems: Modeling, optimization and estimation,'' 2026. [Online].
-  Available: \url{https://arxiv.org/abs/2603.13580}
+R.~Liu, M.~Li, and A.~L. Swindlehurst, ``Extended target sensing in {MIMO-OFDM ISAC} systems: Modeling, optimization and estimation,'' 2026. [Online]. Available: \url{https://arxiv.org/abs/2603.13580}
 \BIBentrySTDinterwordspacing
 
 \bibitem{peng2025sdp}
-Y.~Peng, N.~Guo, S.~Zhao, C.~Jiang, and Z.~Feng, ``New semidefinite programming
-  joint localization and synchronization using sequential one-way {TOA}s and
-  doppler shifts,'' \emph{IEEE Sensors Journal}, vol.~25, no.~11, pp.
-  19\,957--19\,969, Jun. 2025.
+Y.~Peng, N.~Guo, S.~Zhao, C.~Jiang, and Z.~Feng, ``New semidefinite programming joint localization and synchronization using sequential one-way {TOA}s and doppler shifts,'' \emph{IEEE Sensors Journal}, vol.~25, no.~11, pp. 19\,957--19\,969, Jun. 2025.
 
 \bibitem{zhao2021timing}
-Y.~Zhao, W.~Xu, H.~Sun, D.~W.~K. Ng, and X.~You, ``Cooperative reflection
-  design with timing offsets in distributed multi-{RIS} communications,''
-  \emph{IEEE Wireless Communications Letters}, vol.~10, no.~11, pp. 2379--2383,
-  Nov. 2021.
+Y.~Zhao, W.~Xu, H.~Sun, D.~W.~K. Ng, and X.~You, ``Cooperative reflection design with timing offsets in distributed multi-{RIS} communications,'' \emph{IEEE Wireless Communications Letters}, vol.~10, no.~11, pp. 2379--2383, Nov. 2021.
 
 \bibitem{wymeersch2020nearfield}
-H.~Wymeersch, ``A {Fisher} information analysis of joint localization and
-  synchronization in near field,'' in \emph{Proc. IEEE International Conference
-  on Communications Workshops (ICC Workshops)}, 2020, pp. 1--6.
+H.~Wymeersch, ``A {Fisher} information analysis of joint localization and synchronization in near field,'' in \emph{Proc. IEEE International Conference on Communications Workshops (ICC Workshops)}, 2020, pp. 1--6.
 
 \bibitem{roy1989esprit}
-R.~Roy and T.~Kailath, ``{ESPRIT}---estimation of signal parameters via
-  rotational invariance techniques,'' \emph{IEEE Transactions on Acoustics,
-  Speech, and Signal Processing}, vol.~37, no.~7, pp. 984--995, Jul. 1989.
+R.~Roy and T.~Kailath, ``{ESPRIT}---estimation of signal parameters via rotational invariance techniques,'' \emph{IEEE Transactions on Acoustics, Speech, and Signal Processing}, vol.~37, no.~7, pp. 984--995, Jul. 1989.
 
 \bibitem{byrd1995lbfgsb}
-R.~H. Byrd, P.~Lu, J.~Nocedal, and C.~Zhu, ``A limited memory algorithm for
-  bound constrained optimization,'' \emph{SIAM Journal on Scientific
-  Computing}, vol.~16, no.~5, pp. 1190--1208, Sep. 1995.
+R.~H. Byrd, P.~Lu, J.~Nocedal, and C.~Zhu, ``A limited memory algorithm for bound constrained optimization,'' \emph{SIAM Journal on Scientific Computing}, vol.~16, no.~5, pp. 1190--1208, Sep. 1995.
 
 \bibitem{powell1964direct}
-M.~J.~D. Powell, ``An efficient method for finding the minimum of a function of
-  several variables without calculating derivatives,'' \emph{The Computer
-  Journal}, vol.~7, no.~2, pp. 155--162, 1964.
+M.~J.~D. Powell, ``An efficient method for finding the minimum of a function of several variables without calculating derivatives,'' \emph{The Computer Journal}, vol.~7, no.~2, pp. 155--162, 1964.
 
 \end{thebibliography}

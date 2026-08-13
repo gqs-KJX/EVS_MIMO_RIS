@@ -2,10 +2,19 @@
 """Build the publication figures of the MKSC-GI + CCOP-JVP manuscript.
 
 Reads only the frozen result CSVs under ``results/`` and writes vector PDFs to
-``tex/figs/``.  No experiment is re-run and no metric is recomputed: every
-plotted quantity is a column of a released summary/trial CSV, except for the
-paired PEB efficiency ratio, which is formed from per-trial columns of the same
-files.
+``tex/figs/``.  No experiment is re-run.  Every plotted quantity is a column of
+a released summary/trial CSV, with three deliberate exceptions, all formed from
+per-trial columns of those same files and all reducible to them:
+
+* the paired PEB efficiency ratio and its paired-bootstrap interval, which
+  needs the per-trial pairing the summary has already collapsed;
+* the empirical CCDFs of the benchmark position and clock error, which are the
+  per-trial columns sorted;
+* nothing else -- in particular every plotted rate interval is the released
+  Clopper-Pearson column, not a recomputation.
+
+Bootstrap intervals are seeded (``BOOT_SEED``), so a regenerated figure is
+identical on any machine.
 
 The manuscript reports the operating region ``SNR >= -10 dB``; the released
 CSVs also contain the threshold region down to ``-30 dB``, which is plotted
@@ -288,6 +297,56 @@ def band(rows, xcol, lo, hi, variant_col=None, variant=None):
 def rms(a) -> float:
     a = [x for x in a if math.isfinite(x)]
     return math.sqrt(sum(x * x for x in a) / len(a)) if a else float("nan")
+
+
+# Bootstrap replicate count and seed for every interval this module draws.
+# Fixed here so a figure regenerated on another machine is bit-identical.
+BOOT = 4000
+BOOT_SEED = 20260812
+
+
+def rms_ratio_ci(e, p, *, conf=0.95):
+    """Paired bootstrap interval for ``rms(e) / rms(p)``.
+
+    The efficiency ratio is an RMS over a few hundred paired trials of a broad
+    per-trial distribution -- ``e / PEB`` has a standard deviation near 0.48
+    about a mean of 0.87 -- so the point estimate carries a sampling error of
+    several percent.  Resampling trials (both members of a pair move together)
+    is the only interval that respects that pairing.
+    """
+    e = np.asarray(e, float)
+    p = np.asarray(p, float)
+    ok = np.isfinite(e) & np.isfinite(p)
+    e, p = e[ok], p[ok]
+    n = e.size
+    if n < 30:
+        return float("nan"), float("nan"), float("nan")
+    rng = np.random.default_rng(BOOT_SEED)
+    j = rng.integers(0, n, (BOOT, n))
+    bs = np.sqrt(np.mean(e[j] ** 2, axis=1)) / np.sqrt(np.mean(p[j] ** 2, axis=1))
+    a = 100.0 * (1.0 - conf) / 2.0
+    lo, hi = np.percentile(bs, [a, 100.0 - a])
+    return (float(np.sqrt(np.mean(e ** 2)) / np.sqrt(np.mean(p ** 2))),
+            float(lo), float(hi))
+
+
+def ccdf(values, floor=None):
+    """Empirical complementary CDF: ``x`` sorted, ``y = P(error > x)``.
+
+    Returns a step-ready pair.  Unlike a single quantile, this is immune to the
+    failure mode that makes a p99 unusable when the error distribution is
+    bimodal and the catastrophic mass sits near 1%: there the 99th percentile
+    jumps between the two modes from realization to realization, while the
+    curve itself moves smoothly.
+    """
+    v = np.sort(np.asarray([x for x in values if math.isfinite(x)], float))
+    if v.size == 0:
+        return np.array([]), np.array([])
+    if floor is not None:
+        v = np.maximum(v, floor)
+    n = v.size
+    y = 1.0 - np.arange(n, dtype=float) / n
+    return v, y
 
 
 def nearest_rank(values, q: float) -> float:
@@ -771,10 +830,19 @@ def fig_receiver(out: pathlib.Path) -> None:
                arrowprops=dict(arrowstyle="->", lw=0.5, color=C["scalar"]))
     grid(a)
 
-    TOP = 1.14          # efficiency-axis ceiling; the scalar curve exceeds it
-    exits: list[tuple[float, float]] = []
+    # The efficiency ratio is drawn with its paired-bootstrap 95% interval.
+    # Two facts force this.  First, the interval is roughly +-6% at n = 480,
+    # three times the +-2% the point estimates span, so a band drawn alone
+    # would assert a resolution the campaign does not have.  Second, the
+    # per-trial normalized error is the same realization at every SNR -- the
+    # estimator is in its linear regime, so e(sigma) = sigma * e_hat -- which
+    # makes the sweep one measurement repeated, not eleven independent checks.
+    # With the interval shown, the reading is the honest one: all three modes
+    # are consistent with efficiency where the paper operates, and only the
+    # scalar mode separates from unity, and only at high SNR.
+    ratio_curves = {}
     for m, lab, col, mk, ls in modes:
-        xs, rr = [], []
+        xs, rr, lo_, hi_ = [], [], [], []
         for s in sorted({fnum(r["x_value"]) for r in S}):
             E = {r["trial_id"]: r for r in T
                  if r["variant"] == f"proposed_{m}" and fnum(r["snr_db"]) == s}
@@ -783,21 +851,40 @@ def fig_receiver(out: pathlib.Path) -> None:
             ids = [t for t in E if t in P and E[t]["outlier"].lower() == "false"]
             if len(ids) < 30:
                 continue
+            r0, l0, h0 = rms_ratio_ci(
+                [fnum(E[t]["position_error_m"]) for t in ids],
+                [fnum(P[t]["peb_position_m"]) for t in ids])
+            if not math.isfinite(r0):
+                continue
             xs.append(s)
-            rr.append(rms([fnum(E[t]["position_error_m"]) for t in ids])
-                      / rms([fnum(P[t]["peb_position_m"]) for t in ids]))
-        b.plot(xs, rr, color=col, marker=mk, ls="-", label=lab)
-        if m == "scalar":
-            exits = [(s, r) for s, r in zip(xs, rr) if r > TOP]
-    # The claim the abstract makes is "within 2% of the free-Jones reference",
-    # which is a band, not a line, so draw it.  Letting the scalar excursion
-    # set the range would compress that band to a hairline: the axis is clipped
-    # and the scalar curve is reported where it leaves.
-    b.axhspan(0.98, 1.02, color="0.45", alpha=0.14, lw=0)
-    b.axhline(1.0, color="k", lw=0.8, ls="--")
-    b.set_ylim(0.955, TOP)
+            rr.append(r0)
+            lo_.append(l0)
+            hi_.append(h0)
+        xs, rr = np.array(xs), np.array(rr)
+        lo_, hi_ = np.array(lo_), np.array(hi_)
+        ratio_curves[m] = (xs, rr, lo_, hi_)
+        # Dodged capped bars rather than three translucent bands: the bands
+        # overlap almost completely -- which is the finding -- but stacked
+        # fills turn the panel into mud.
+        dx = {"scalar": -0.9, "dual_pol": 0.0, "full_6d": 0.9}[m]
+        b.errorbar(xs + dx, rr, yerr=[rr - lo_, hi_ - rr], color=col, marker=mk,
+                   ls="-", lw=1.25, ms=4.0, elinewidth=0.75, capsize=1.9,
+                   capthick=0.75, label=lab, zorder=3)
+
+    # The +-2% band the text quotes is kept as a reference, but subordinated to
+    # the intervals: it describes the spread of the point estimates, not what
+    # the experiment resolves.  The axis stays linear and tight, because the
+    # comparison that matters -- do the intervals cover unity -- needs
+    # resolution near 1, not room for the scalar excursion.  The scalar curve
+    # is clipped and reported where it leaves, as before.
+    TOP = 1.22
+    b.axhspan(0.98, 1.02, color="0.45", alpha=0.13, lw=0, zorder=0.5)
+    b.axhline(1.0, color="k", lw=0.8, ls="--", zorder=2)
+    b.set_ylim(0.90, TOP)
+    xs, rr, lo_, hi_ = ratio_curves["scalar"]
+    exits = [(s, r) for s, r in zip(xs, rr) if r > TOP]
     if exits:
-        b.text(0.5, 0.02,
+        b.text(0.5, 0.025,
                rf"scalar leaves the axis: {exits[0][1]:.2f} at "
                rf"{exits[0][0]:.0f} dB, {exits[-1][1]:.2f} at {exits[-1][0]:.0f} dB",
                transform=b.transAxes, ha="center", va="bottom", fontsize=6.3,
@@ -807,7 +894,7 @@ def fig_receiver(out: pathlib.Path) -> None:
            bbox=dict(boxstyle="square,pad=0.12", fc="white", ec="none", alpha=0.85))
     b.set_xlabel("SNR [dB]")
     b.set_ylabel("RMSE / PEB (inliers)")
-    b.set_title("(b) Efficiency ratio", pad=3)
+    b.set_title("(b) Efficiency ratio, 95% CI", pad=3)
     grid(b)
 
     mode_handles = [Line2D([], [], color=col, marker=mk, ls="-", label=lab)
@@ -989,25 +1076,72 @@ def fig_benchmark(out: pathlib.Path) -> None:
             mew=0.70,
             zorder=6,
         )
-    # Per-trial errors are needed for the p99 panel: the summary carries only
-    # interpolated percentiles, and p99 is exactly where that convention
-    # disagrees with the text (see ``nearest_rank``).
+    # Per-trial errors are needed for the two distribution panels.  They used
+    # to carry a p99 sweep, which this campaign cannot support: with the
+    # catastrophic mass of several routes sitting near 1%, the 99th percentile
+    # of 960 trials straddles the boundary between the in-basin mode and the
+    # wrong-basin mode, and jumps between them from realization to
+    # realization.  Bootstrapping the plotted statistic makes the size of the
+    # problem explicit -- the VBI/SBL p99 has a 95% interval spanning
+    # 0.015 mm to 958 mm at 20-30 dB, four orders of magnitude, so the
+    # non-monotone excursion the old panel drew was sampling noise, not
+    # behaviour.  The complementary CDF at the operating point carries the
+    # same information without conditioning on one order statistic: the
+    # median, the tail and the catastrophic mass are all read off one curve,
+    # and the bimodality that broke the quantile is visible as the cliff.
     BT = snr_rows(ds("benchmark", "benchmark_trials.csv"), "snr_db")
     snr_grid = sorted({fnum(r["snr_db"]) for r in BT})
+    # The operating point the manuscript defines, held fixed so the panel is
+    # the same experiment in the main text and in the supplementary wide-range
+    # build.
+    CCDF_SNR = -10.0
 
-    def quantile_curve(base: str, q: float):
-        xs, ys = [], []
-        for s in snr_grid:
-            e = [fnum(r["position_error_m"]) for r in BT
-                 if r["baseline"] == base and fnum(r["snr_db"]) == s]
-            if e:
-                xs.append(s)
-                ys.append(nearest_rank(e, q))
-        return np.array(xs), np.array(ys)
+    def ccdf_at(base: str, col: str, floor: float):
+        v = [abs(fnum(r[col])) for r in BT
+             if r["baseline"] == base and fnum(r["snr_db"]) == CCDF_SNR]
+        return ccdf(v, floor=floor)
+
+    def draw_ccdf(ax, col, floor, thresh, xlabel, title):
+        pooled = []
+        for i_, (v_, lab_, col_, mk_, ls_) in enumerate(series):
+            x, y = ccdf_at(v_, col, floor)
+            if x.size == 0:
+                continue
+            pooled.append(x)
+            # Markers repeat the legend key so the five curves stay separable
+            # in a grayscale print; they are placed by arc length along the
+            # curve, staggered per method, not at data indices.
+            ax.plot(x, 100 * y, color=col_, ls=ls_, lw=1.15,
+                    marker=mk_, ms=3.6, mfc=col_, mec=col_, mew=0.6,
+                    markevery=(0.06 + 0.05 * i_, 0.30),
+                    zorder=line_zorder[v_], label=lab_)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        # A handful of near-exact hits would otherwise stretch the axis over
+        # empty decades; the left edge is the 0.2% quantile of the pooled
+        # errors, which keeps every curve's body on the panel.
+        if pooled:
+            allv = np.concatenate(pooled)
+            allv = allv[allv > floor]
+            if allv.size:
+                ax.set_xlim(float(np.quantile(allv, 0.002)) / 1.5,
+                            float(allv.max()) * 1.8)
+        ax.axvline(thresh, color="0.25", lw=0.8, ls=(0, (3, 2)), zorder=2)
+        ax.set_ylim(100.0 / n_trial / 1.6, 160)
+        ax.set_yticks([100.0 / n_trial, 1, 10, 100])
+        ax.set_yticklabels([r"$1/n$", "1", "10", "100"])
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(r"$P(\,\cdot > x)$ [%]")
+        ax.set_title(title, pad=3)
+        grid(ax)
 
     # The three columns answer three different questions in the same order on
     # both rows: how precise inside the basin (left), how heavy the tail
     # (middle), how often the basin is lost (right).
+    # Cell size is read from the data: the benchmark runs at a different trial
+    # count from the other suites, so a hardcoded reference line would lie.
+    n_trial = max(int(fnum(r["n"])) for r in B if math.isfinite(fnum(r.get("n"))))
+
     fig, axes = plt.subplots(2, 3, figsize=(DBL_W, 3.95))
     (a, b, c), (d, e, f) = axes
 
@@ -1036,28 +1170,11 @@ def fig_benchmark(out: pathlib.Path) -> None:
     a.set_title("(a) Position, median", pad=3)
     grid(a)
 
-    for v, lab, col, mk, ls in series:
-        x, y = quantile_curve(v, 99.0)
-        draw_benchmark_curve(
-            b,
-            x,
-            1e3 * y,
-            method=v,
-            label=lab,
-            color=col,
-            marker=mk,
-            linestyle=ls,
-        )
-    b.set_xlabel("SNR [dB]")
-    b.set_ylabel("Error [mm]")
-    b.set_title("(b) Position, p99", pad=3)
-    # p99 is the tenth-largest of 960 trials, so it enters the wrong-basin
-    # population as soon as that mass exceeds ~1%: the decades between the
-    # proposed curve and the rest are wrong-basin mass, not precision.
-    b.axhspan(1e-4, 100.0, color=C["proposed"], alpha=0.055, lw=0)
-    b.text(0.03, 0.05, r"inlier region ($\leq 0.1$ m)", transform=b.transAxes,
-           ha="left", fontsize=6.2, color="0.35")
-    grid(b)
+    draw_ccdf(b, "position_error_m", 1e-7, 0.1, "Position error $x$ [m]",
+              rf"(b) Position CCDF at ${CCDF_SNR:.0f}$ dB")
+    b.axvspan(1e-7, 0.1, color=C["proposed"], alpha=0.055, lw=0, zorder=0.4)
+    b.text(0.035, 0.06, r"inlier region ($\leq 0.1$ m)", transform=b.transAxes,
+           ha="left", fontsize=6.0, color="0.35")
 
     # The rates span two decades here -- ALS-CPD holds a ~30% mass at every
     # SNR while three routes sit at or below one trial per cell -- so a linear
@@ -1065,7 +1182,7 @@ def fig_benchmark(out: pathlib.Path) -> None:
     # floor with a hollow marker and their interval still starts there.
     # Cell size is read from the data: the benchmark runs at a different trial
     # count from the other suites, so a hardcoded reference line would lie.
-    n_cell = max(int(fnum(r["n"])) for r in B if math.isfinite(fnum(r.get("n"))))
+    n_cell = n_trial
     # Exact zeros are parked half a trial below the one-trial line, so "no
     # failure" stays visibly distinct from "one failure" at any cell size.  A
     # fixed 0.1 floor collided with the one-trial line once n reached 960.
@@ -1111,26 +1228,32 @@ def fig_benchmark(out: pathlib.Path) -> None:
                 zorder=7,
             )
 
+        # Capped bars at this method's staggered marker positions.  Five
+        # translucent fills on a log rate axis all reach the floor and merge
+        # into a single wash, which hid the one curve the panel exists to
+        # show; bars keep each interval attached to its own marker.
         xl, lo, hi = band(
             B,
             "snr_db",
-            "outlier_ci_low",
-            "outlier_ci_high",
+            "catastrophic_ci_low",
+            "catastrophic_ci_high",
             "baseline",
             v,
         )
-        c.fill_between(
-            xl,
-            np.clip(100 * lo, floor, None),
-            np.clip(100 * hi, floor, None),
-            color=col,
-            alpha=0.10,
-            lw=0,
-            zorder=0.5,
-        )
+        k = phase_indices(len(xl), v)
+        yl = np.clip(100 * lo[k], floor, None)
+        yh = np.clip(100 * hi[k], floor, None)
+        ym = np.clip(100 * y[k], floor, None)
+        c.errorbar(xl[k], ym, yerr=[ym - yl, yh - ym], color=col, ls="none",
+                   elinewidth=0.7, capsize=1.7, capthick=0.7, zorder=5)
     c.axhline(100.0 / n_cell, color="k", lw=0.6, ls=":")
-    c.text(0.97, 100.0 / n_cell * 1.25, f"1 trial in {n_cell}", fontsize=5.8,
-           ha="right", va="bottom", transform=c.get_yaxis_transform())
+    # Every other element in this panel is data, so the reference label gets an
+    # opaque backing rather than a hunt for a gap that the next campaign moves.
+    c.text(0.975, 100.0 / n_cell * 1.35, f"1 trial in {n_cell}", fontsize=5.6,
+           ha="right", va="center", color="0.2",
+           transform=c.get_yaxis_transform(), zorder=8,
+           bbox=dict(boxstyle="square,pad=0.12", fc="white", ec="none",
+                     alpha=0.92))
     c.set_xlabel("SNR [dB]")
     c.set_ylabel("$P_{\\rm cat}$ [%]")
     c.set_ylim(floor * 0.75, 90)
@@ -1176,28 +1299,10 @@ def fig_benchmark(out: pathlib.Path) -> None:
     d.set_title("(d) Clock, median", pad=3)
     grid(d)
 
-    for v, lab, col, mk, ls in series:
-        x, y = curve(
-            B,
-            "snr_db",
-            "y_nmse_mean",
-            "baseline",
-            v,
-        )
-        draw_benchmark_curve(
-            e,
-            x,
-            y,
-            method=v,
-            label=lab,
-            color=col,
-            marker=mk,
-            linestyle=ls,
-        )
-    e.set_xlabel("SNR [dB]")
-    e.set_ylabel("NMSE")
-    e.set_title("(e) Observation NMSE, mean", pad=3)
-    grid(e)
+    draw_ccdf(e, "clock_error_ns", 1e-7, 1.0, r"$|$Clock error$|$ $x$ [ns]",
+              rf"(e) Clock CCDF at ${CCDF_SNR:.0f}$ dB")
+    e.text(0.965, 0.90, r"$>1$ ns", transform=e.transAxes, ha="right",
+           va="top", fontsize=6.0, color="0.35")
 
     # Same construction as (c) so the two rate panels read identically: log
     # axis, exact zeros parked half a trial below the one-trial line.
@@ -1248,15 +1353,12 @@ def fig_benchmark(out: pathlib.Path) -> None:
             "baseline",
             v,
         )
-        f.fill_between(
-            xl,
-            np.clip(100 * lo, floor, None),
-            np.clip(100 * hi, floor, None),
-            color=col,
-            alpha=0.10,
-            lw=0,
-            zorder=0.5,
-        )
+        k = phase_indices(len(xl), v)
+        yl = np.clip(100 * lo[k], floor, None)
+        yh = np.clip(100 * hi[k], floor, None)
+        ym = np.clip(100 * y[k], floor, None)
+        f.errorbar(xl[k], ym, yerr=[ym - yl, yh - ym], color=col, ls="none",
+                   elinewidth=0.7, capsize=1.7, capthick=0.7, zorder=5)
     f.axhline(100.0 / n_cell, color="k", lw=0.6, ls=":")
     f.set_xlabel("SNR [dB]")
     f.set_ylabel(r"$P_{\rm cat}^{\rm clk}$ [%]")
@@ -2004,7 +2106,15 @@ def fig_generalization(out: pathlib.Path) -> None:
     fig.savefig(out / "fig_generalization.pdf")
     plt.close(fig)
 
-    # resolvability heat maps ------------------------------------------------
+    # resolvability: overlap sensitivity --------------------------------------
+    # A heat map of the same cells forces the reader to difference 72 printed
+    # numbers to reach the claim, and cannot show an interval at all.  The
+    # claim is about how each mode's curve *moves* when the Jones vectors are
+    # made more parallel, so plot one curve per overlap and let the reader see
+    # it move -- or, for full EVS, not move.  Cochran-Armitage trend tests over
+    # the four overlap levels give Holm-adjusted p = 1.00 in every full-EVS
+    # cell and p as small as 1e-181 for the reduced modes, so the collapse and
+    # the fan-out are the finding, not an artifact of the colour scale.
     fig, axs = plt.subplots(1, 3, figsize=(DBL_W, 2.10), sharey=True)
     seps = sorted({fnum(r["target_delay_separation_ns"]) for r in Rv})
     ovs = sorted({fnum(r["polarization_overlap_target"]) for r in Rv})
@@ -2017,48 +2127,70 @@ def fig_generalization(out: pathlib.Path) -> None:
                        + np.linalg.norm(sc["ris"] - sc["bs"][None, :], axis=1))
                       / sc["c0"] * 1e9)
     dtau_ref = float(np.min(np.diff(tau_ref)))
-    lo = max(i for i, s in enumerate(seps) if s <= dtau_ref)
-    x_ref = lo + (math.log(dtau_ref) - math.log(seps[lo])) / (
-        math.log(seps[lo + 1]) - math.log(seps[lo])) if lo + 1 < len(seps) else lo
+
+    # Overlap is ordinal, so it gets a sequential ramp; markers and dash
+    # patterns carry the same ordering for a grayscale print.
+    ov_col = plt.get_cmap("viridis")(np.linspace(0.04, 0.88, len(ovs)))
+    ov_mk = ["o", "s", "^", "D"]
+    ov_ls = [":", "-.", "--", "-"]
+
     for ax, (m, lab) in zip(axs, [("scalar", "(c) Scalar"),
                                   ("dual_pol", "(d) Dual-polarized"),
                                   ("full_6d", "(e) Full EVS")]):
-        Z = np.full((len(ovs), len(seps)), np.nan)
+        spread = 0.0
+        per_sep = {s: [] for s in seps}
         for i, o in enumerate(ovs):
-            for j, s in enumerate(seps):
+            xs, ys, los, his = [], [], [], []
+            for s in seps:
                 rr = [r for r in Rv if r["receiver_mode"] == m
                       and abs(fnum(r["polarization_overlap_target"]) - o) < 1e-9
                       and abs(fnum(r["target_delay_separation_ns"]) - s) < 1e-9]
-                if rr:
-                    Z[i, j] = 100 * fnum(rr[0]["resolution_probability"])
-        im = ax.imshow(Z, origin="lower", aspect="auto", cmap="viridis", vmin=0, vmax=100)
-        ax.set_xticks(range(len(seps)))
-        ax.set_xticklabels([f"{s:g}" for s in seps], fontsize=6.2)
-        ax.set_yticks(range(len(ovs)))
-        ax.set_yticklabels([f"{o:g}" for o in ovs], fontsize=6.2)
+                if not rr:
+                    continue
+                xs.append(s)
+                ys.append(100 * fnum(rr[0]["resolution_probability"]))
+                los.append(100 * fnum(rr[0]["resolution_ci_low"]))
+                his.append(100 * fnum(rr[0]["resolution_ci_high"]))
+                per_sep[s].append(ys[-1])
+            ax.fill_between(xs, los, his, color=ov_col[i], alpha=0.17, lw=0,
+                            zorder=1.5)
+            ax.plot(xs, ys, color=ov_col[i], marker=ov_mk[i], ls=ov_ls[i],
+                    ms=3.4, lw=1.15, zorder=3,
+                    label=f"{o:g}")
+        spread = max((max(v) - min(v)) for v in per_sep.values() if v)
+        ax.set_xscale("log")
+        ax.set_xlim(seps[0] * 0.8, seps[-1] * 1.25)
+        ax.set_xticks(seps)
+        ax.set_xticklabels([f"{s:g}" for s in seps], fontsize=6.4)
+        ax.minorticks_off()
+        ax.set_ylim(-6, 118)
+        ax.set_yticks([0, 25, 50, 75, 100])
         ax.set_xlabel(r"$\Delta\tau$ [ns]")
         ax.set_title(lab, pad=3)
-        for i in range(len(ovs)):
-            for j in range(len(seps)):
-                if math.isfinite(Z[i, j]):
-                    ax.text(j, i, f"{Z[i, j]:.0f}", ha="center", va="center",
-                            fontsize=6.5, color="w" if Z[i, j] < 60 else "k")
-        ax.axvline(x_ref, color="w", lw=1.1, ls="--", zorder=6)
-        ax.axvline(x_ref, color="0.15", lw=0.5, ls="--", zorder=7)
-    # A header strip above the maps carries the operating-point marker, so it
-    # never has to be drawn over a cell value or a panel title.
-    axs[0].set_ylim(-0.5, len(ovs) + 0.10)
-    axs[-1].annotate(rf"$\Delta\tau_{{\min}}$ of the reference scene "
-                     rf"(${dtau_ref:.2f}$ ns)",
-                     xy=(x_ref, len(ovs) - 0.45), xytext=(x_ref - 0.12, len(ovs) - 0.15),
-                     ha="right", va="center", fontsize=5.8, color="0.15",
-                     arrowprops=dict(arrowstyle="->", lw=0.5, color="0.15"))
-    axs[0].set_ylabel("Jones overlap")
-    fig.subplots_adjust(left=0.07, right=0.89, top=0.87, bottom=0.235, wspace=0.12)
-    cax = fig.add_axes([0.915, 0.235, 0.014, 0.605])
-    cb = fig.colorbar(im, cax=cax)
-    cb.set_label("resolution probability [%]", fontsize=7.5)
-    cb.ax.tick_params(labelsize=7)
+        ax.axvline(dtau_ref, color="0.35", lw=0.8, ls=(0, (3, 2)), zorder=2)
+        # The effect size the trend tests certify, printed where it is read.
+        ax.text(0.035, 0.955, rf"max spread {spread:.1f} pp",
+                transform=ax.transAxes, ha="left", va="top", fontsize=6.3,
+                color="0.15",
+                bbox=dict(boxstyle="square,pad=0.16", fc="white", ec="0.75",
+                          lw=0.4, alpha=0.9))
+        grid(ax)
+
+    axs[0].set_ylabel("Resolution prob. [%]")
+    # The operating-point marker is labelled once, rotated along the line it
+    # names, in the one region every panel leaves empty.
+    axs[-1].text(dtau_ref * 1.09, 40,
+                 rf"scene $\Delta\tau_{{\min}}$ (${dtau_ref:.2f}$ ns)",
+                 rotation=90, ha="left", va="center", fontsize=5.9,
+                 color="0.25")
+    h, l = axs[0].get_legend_handles_labels()
+    leg = fig.legend(h, l, loc="lower center", bbox_to_anchor=(0.5, -0.012),
+                     ncol=len(ovs), frameon=False, fontsize=7.1,
+                     columnspacing=1.2, handlelength=2.0,
+                     title="Jones overlap", title_fontsize=7.1)
+    leg.get_title().set_position((0, 0))
+    fig.subplots_adjust(left=0.075, right=0.995, top=0.885, bottom=0.335,
+                        wspace=0.10)
     fig.savefig(out / "fig_resolvability.pdf")
     plt.close(fig)
 

@@ -6,15 +6,15 @@
 \citation{han2022dual,munawar2024dual}
 \citation{nehorai1994vector,khan2020sixcomponent,gong2026aimdf}
 \citation{yang2024nfris}
-\providecommand \oddpage@label [2]{}
-\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
-\newlabel{sec:introduction}{{I}{1}{}{}{}}
 \citation{lin2021tensor,liu2025multiris,kolda2009tensor,sidiropoulos2017tensor}
 \citation{cui2022channel,bayraktar2022momp,tipping2001sbl,li2024vbi,pati1993omp,fleury1999sage}
 \citation{yang2024nfris,zheng2025wideband}
 \citation{golub1973varpro,liu2026extended}
 \citation{peng2025sdp}
 \citation{gong2026aimdf}
+\providecommand \oddpage@label [2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\newlabel{sec:introduction}{{I}{1}{}{}{}}
 \newlabel{eq:premise}{{1}{2}{}{}{}}
 \citation{fascista2022rissync,zhao2021timing}
 \citation{lin2021tensor}
@@ -38,9 +38,12 @@
 \newlabel{eq:hk}{{7}{4}{}{}{}}
 \newlabel{eq:delta}{{8}{4}{}{}{}}
 \newlabel{eq:dk}{{9}{4}{}{}{}}
+\newlabel{eq:scalar}{{10}{4}{}{}{}}
 \citation{wymeersch2020nearfield}
 \citation{roy1989esprit,gong2026aimdf}
-\newlabel{eq:scalar}{{10}{5}{}{}{}}
+\citation{roy1989esprit,gong2026aimdf}
+\citation{kolda2009tensor,sidiropoulos2017tensor}
+\citation{lin2021tensor}
 \newlabel{eq:Ak}{{11}{5}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Observation Model and Estimation Problem}{5}{}\protected@file@percent }
 \newlabel{subsec:obsmodel}{{\mbox  {II-C}}{5}{}{}{}}
@@ -49,9 +52,6 @@
 \@writefile{toc}{\contentsline {section}{\numberline {III}Proposed Estimator: MKSC-GI Initialized CCOP-JVP}{5}{}\protected@file@percent }
 \newlabel{sec:algorithm}{{III}{5}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Maxwell--Kronecker Factor Recovery}{5}{}\protected@file@percent }
-\citation{roy1989esprit,gong2026aimdf}
-\citation{kolda2009tensor,sidiropoulos2017tensor}
-\citation{lin2021tensor}
 \citation{cui2022channel,zheng2025wideband}
 \newlabel{eq:coupledls_short}{{14}{6}{}{}{}}
 \newlabel{eq:assoc_score}{{15}{6}{}{}{}}
@@ -62,6 +62,7 @@
 \newlabel{eq:adjoint_short}{{18}{6}{}{}{}}
 \citation{byrd1995lbfgsb}
 \citation{golub1973varpro,liu2026extended}
+\citation{powell1964direct}
 \newlabel{eq:beamscore_short}{{19}{7}{}{}{}}
 \newlabel{eq:Jgeom_short}{{20}{7}{}{}{}}
 \newlabel{eq:refresh_short}{{21}{7}{}{}{}}
@@ -72,10 +73,9 @@
 \newlabel{eq:penalized_short}{{24}{7}{}{}{}}
 \newlabel{eq:nested_short}{{25}{7}{}{}{}}
 \newlabel{eq:trig_short}{{26}{7}{}{}{}}
-\citation{powell1964direct}
+\newlabel{eq:bound_short}{{27}{7}{}{}{}}
 \@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces MKSC-GI Initialized CCOP-JVP}}{8}{}\protected@file@percent }
 \newlabel{alg:mksc_ccop_short}{{1}{8}{}{}{}}
-\newlabel{eq:bound_short}{{27}{8}{}{}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {IV}Theoretical Analysis}{8}{}\protected@file@percent }
 \newlabel{sec:analysis}{{IV}{8}{}{}{}}
 \newlabel{eq:efim_short}{{28}{8}{}{}{}}
@@ -98,26 +98,26 @@
 \newlabel{subsec:res_setup}{{\mbox  {V-A}}{10}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-B}}C1: EVS Information and Resolvability}{10}{}\protected@file@percent }
 \newlabel{subsec:res_c1}{{\mbox  {V-B}}{10}{}{}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces C1 evidence under a common absolute noise level, $480$ paired trials per point or cell. (a)~Matched accuracy (solid) against the free-Jones PEB (dashed) for the three receiver modes. (b)~Paired inlier-conditional efficiency ratio with its $95\%$ paired-bootstrap interval ($4\,000$ replicates, trials resampled in pairs); the shaded band is $\pm 2\%$, the intervals are wider than it, and the scalar curve leaves the plotted range at the two printed values. (c)--(e)~Resolution probability versus delay separation at four Jones overlaps at $-10$~dB, with exact Clopper--Pearson bands; the dashed line is the reference scene's minimum cascaded-delay separation and each panel carries its largest spread across overlap.}}{11}{}\protected@file@percent }
+\newlabel{fig:c1_combined}{{2}{11}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-C}}C2: Compression and Acquisition}{11}{}\protected@file@percent }
 \newlabel{subsec:res_c2}{{\mbox  {V-C}}{11}{}{}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}C3: Clock-Unit Control}{11}{}\protected@file@percent }
-\newlabel{subsec:res_c3}{{\mbox  {V-D}}{11}{}{}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces C1 evidence under a common absolute noise level, $480$ paired trials per point or cell. (a)~Matched accuracy (solid) against the free-Jones PEB (dashed) for the three receiver modes. (b)~Paired inlier-conditional efficiency ratio with its $95\%$ paired-bootstrap interval ($4\,000$ replicates, trials resampled in pairs); the shaded band is $\pm 2\%$, the intervals are wider than it, and the scalar curve leaves the plotted range at the two printed values. (c)--(e)~Resolution probability versus delay separation at four Jones overlaps at $-10$~dB, with exact Clopper--Pearson bands; the dashed line is the reference scene's minimum cascaded-delay separation and each panel carries its largest spread across overlap.}}{12}{}\protected@file@percent }
-\newlabel{fig:c1_combined}{{2}{12}{}{}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces C3 control at $-10$~dB, $100$ paired strong-initializer trials. RMSEs are conditional on the inliers of each row, so $P_{\rm  cat}$ is reported beside them; ``Pos.'' denotes position RMSE, ``Eval.'' the median outer evaluation count, ``Unit inv.'' unit invariance, and ``Cert.'' a certified inner clock solve. Six decimal places expose the unit dependence of the explicit 4-D route and are not a precision claim.}}{12}{}\protected@file@percent }
-\newlabel{tab:c3_control}{{I}{12}{}{}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-D}}C3: Clock-Unit Control}{12}{}\protected@file@percent }
+\newlabel{subsec:res_c3}{{\mbox  {V-D}}{12}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-E}}External Benchmark}{12}{}\protected@file@percent }
 \newlabel{subsec:res_benchmark}{{\mbox  {V-E}}{12}{}{}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces C3 control at $-10$~dB, $100$ paired strong-initializer trials. RMSEs are conditional on the inliers of each row, so $P_{\rm  cat}$ is reported beside them; ``Pos.'' denotes position RMSE, ``Eval.'' the median outer evaluation count, ``Unit inv.'' unit invariance, and ``Cert.'' a certified inner clock solve. Six decimal places expose the unit dependence of the explicit 4-D route and are not a precision claim.}}{12}{}\protected@file@percent }
+\newlabel{tab:c3_control}{{I}{12}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-F}}Robustness and Spatial Generalization}{13}{}\protected@file@percent }
 \newlabel{subsec:res_robustness}{{\mbox  {V-F}}{13}{}{}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {V-G}}Computational Cost and Failure Diagnostics}{13}{}\protected@file@percent }
 \newlabel{subsec:res_cost}{{\mbox  {V-G}}{13}{}{}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces External benchmark with method-consistent continuous refinement, $960$ shared-realization trials per SNR, comparing the proposed MKSC-GI+CCOP-JVP, range-scaled 4-D Jones-VP, ALS-CPD with joint mapping, VBI/SBL with joint refinement, and near-field OMP--SAGE--WLS methods. Each column asks one question of position (top) and of the clock (bottom): precision inside the basin, the shape of the whole error distribution, and the failure rate. (b),~(e)~Empirical complementary CDFs at the $-10$~dB operating point; the dashed line marks the $0.1$-m position threshold and the $1$-ns clock threshold, so where each curve crosses it is that method's rate in~(c) and~(f). (d)~The CEB reference is the median bound of Section~\ref {subsec:res_setup} scaled by $\sigma $. Rate intervals in~(c) and~(f) are the released exact Clopper--Pearson limits; the dotted line is one trial in $960$, hollow markers on it being exact zeros.}}{14}{}\protected@file@percent }
 \newlabel{fig:benchmark_combined}{{3}{14}{}{}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{14}{}\protected@file@percent }
-\newlabel{sec:conclusion}{{VI}{14}{}{}{}}
 \@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Serialized single-thread cost at $-10$~dB: one process, one linear-algebra-library thread, peak resident set size sampled every $10$~ms, $30$ trials per row. Times are means over those trials.}}{14}{}\protected@file@percent }
 \newlabel{tab:cost}{{II}{14}{}{}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{14}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{VI}{14}{}{}{}}
 \bibstyle{IEEEtran}
 \bibdata{references}
 \bibcite{wymeersch2020risloc}{1}

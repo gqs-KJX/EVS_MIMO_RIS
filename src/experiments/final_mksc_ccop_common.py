@@ -28,6 +28,7 @@ from ..ccop_stage1_initializer import (
     refresh_ccop_stage1_jones_anchor,
     refine_ccop_stage1_joint_geometry,
 )
+from ..geometry import polarization_vector
 from ..global_vp import _initial_xi_from_stage1, build_jones_vp_dictionary
 from ..main_single_proposed import _make_data, run_stage1_only
 from ..metrics import relative_nmse
@@ -840,6 +841,36 @@ def run_paper_variant(
             else float("nan")
         )
         is_four_dimensional = variant in FOUR_D_CLOCK_COORDINATES
+        lambda_jones = np.asarray(
+            final.get("lambda_jones_per_path", []), dtype=float
+        ).reshape(-1)
+        x_hat = np.asarray(final.get("x_hat", []), dtype=complex).reshape(-1)
+        jones_direction_errors = []
+        if (
+            x_hat.size == 2 * int(data["scene"]["K"])
+            and "gamma_true" in data["scene"]
+            and "eta_true" in data["scene"]
+        ):
+            for path in range(int(data["scene"]["K"])):
+                estimate = x_hat[2 * path : 2 * path + 2]
+                truth = polarization_vector(
+                    float(data["scene"]["gamma_true"][path]),
+                    float(data["scene"]["eta_true"][path]),
+                )
+                denominator = float(
+                    np.linalg.norm(estimate) * np.linalg.norm(truth)
+                )
+                if denominator > 0.0:
+                    overlap = float(
+                        np.clip(
+                            abs(np.vdot(truth, estimate)) / denominator,
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    jones_direction_errors.append(
+                        float(np.degrees(np.arccos(overlap)))
+                    )
         row.update(
             {
                 "stage1_output_hash": canonical_hash(
@@ -860,6 +891,30 @@ def run_paper_variant(
                 "outlier": bool(position_error > float(outlier_threshold_m)),
                 "raw_objective_final": float(final["raw_objective_final"]),
                 "total_objective_final": float(final["total_objective_final"]),
+                # These diagnostics are intentionally not added to TRIAL_FIELDS,
+                # so existing experiment CSV schemas remain unchanged.  Dedicated
+                # Jones-penalty experiments may opt in by listing the keys in
+                # their own output schema.
+                "lambda_jones_per_path": json.dumps(lambda_jones.tolist()),
+                "lambda_jones_min": (
+                    float(np.min(lambda_jones)) if lambda_jones.size else float("nan")
+                ),
+                "lambda_jones_max": (
+                    float(np.max(lambda_jones)) if lambda_jones.size else float("nan")
+                ),
+                "jones_regularizer_objective_final": float(
+                    final.get("jones_regularizer_objective_final", np.nan)
+                ),
+                "jones_direction_error_mean_deg": (
+                    float(np.mean(jones_direction_errors))
+                    if jones_direction_errors
+                    else float("nan")
+                ),
+                "jones_direction_error_max_deg": (
+                    float(np.max(jones_direction_errors))
+                    if jones_direction_errors
+                    else float("nan")
+                ),
                 "stage1_position_error_m": float(np.linalg.norm(xi0[:3] - p_true)),
                 **_stage1_delay_diagnostics(stage1, data),
                 **stage1_times,
