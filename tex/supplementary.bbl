@@ -23,23 +23,33 @@
 
 \bibitem{byrd1995lbfgsb}
 R.~H. Byrd, P.~Lu, J.~Nocedal, and C.~Zhu, ``A limited memory algorithm for
-  bound constrained optimization,'' \emph{SIAM Journal on Scientific
-  Computing}, vol.~16, no.~5, pp. 1190--1208, Sep. 1995.
+  bound constrained optimization,'' \emph{SIAM J. Sci. Comput.}, vol.~16,
+  no.~5, pp. 1190--1208, Sep. 1995.
 
 \bibitem{powell1964direct}
 M.~J.~D. Powell, ``An efficient method for finding the minimum of a function of
-  several variables without calculating derivatives,'' \emph{The Computer
-  Journal}, vol.~7, no.~2, pp. 155--162, 1964.
+  several variables without calculating derivatives,'' \emph{Comput. J.},
+  vol.~7, no.~2, pp. 155--162, 1964.
 
 \bibitem{li2024vbi}
-Y.~Li, Y.~Luo, X.~Wu, Z.~Shi, S.~Ma, and G.~Yang, ``Variational bayesian
+Y.~Li, Y.~Luo, X.~Wu, Z.~Shi, S.~Ma, and G.~Yang, ``Variational {Bayesian}
   learning based localization and channel reconstruction in {RIS}-aided
-  systems,'' \emph{IEEE Transactions on Wireless Communications}, vol.~23,
-  no.~9, pp. 11\,309--11\,324, Sep. 2024.
+  systems,'' \emph{IEEE Trans. Wireless Commun.}, vol.~23, no.~9, pp.
+  11\,309--11\,324, 2024.
 
 \bibitem{lin2021tensor}
 Y.~Lin, S.~Jin, M.~Matthaiou, and X.~You, ``Tensor-based algebraic channel
-  estimation for hybrid {IRS}-assisted {MIMO-OFDM},'' \emph{IEEE Transactions
-  on Wireless Communications}, vol.~20, no.~6, pp. 3770--3784, Jun. 2021.
+  estimation for hybrid {IRS}-assisted {MIMO-OFDM},'' \emph{IEEE Trans.
+  Wireless Commun.}, vol.~20, no.~6, pp. 3770--3784, 2021.
+
+\bibitem{kolda2009tensor}
+T.~G. Kolda and B.~W. Bader, ``Tensor decompositions and applications,''
+  \emph{SIAM Rev.}, vol.~51, no.~3, pp. 455--500, 2009.
+
+\bibitem{yan2025ris}
+H.~Yan, H.~Chen, W.~Liu, S.~Yang, G.~Wang, and C.~Yuen, ``{RIS}-enabled joint
+  near-field {3D} localization and synchronization in {SISO} multipath
+  environments,'' \emph{IEEE Trans. Green Commun. Netw.}, vol.~9, no.~1, pp.
+  367--379, 2025.
 
 \end{thebibliography}

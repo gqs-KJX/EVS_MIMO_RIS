@@ -72,8 +72,8 @@ CAMPAIGNS = {
         "components_m20": [RES / "paper_v3" / "components_480_m20"],
         "receiver": [RES / "paper_v3" / "receiver_information_480"],
         "compression": [RES / "paper_v3" / "compression_matched_480"],
-        "benchmark": [RES / "paper_v3" / "benchmark_as_published_960_5"],
-        "benchmark_clock": [RES / "paper_v3" / "benchmark_as_published_960_5"],
+        "benchmark": [RES / "paper_v3" / "benchmark_as_published_960_4"],
+        "benchmark_clock": [RES / "paper_v3" / "benchmark_as_published_960_4"],
         "maxwell_mismatch": [RES / "paper_v3" / "maxwell_mismatch_480"],
         "colored_noise": [RES / "paper_v3" / "colored_noise_boundary_480"],
         "ris_calibration": [RES / "paper_v3" / "ris_bs_calibration_boundary_480"],
@@ -81,13 +81,8 @@ CAMPAIGNS = {
         "positions": [RES / "paper_v3" / "positions50x480"],
         "resolvability": [RES / "paper_v3" / "evs_resolvability_480"],
         "scaling": [RES / "paper_v3" / "robustness_scaling_480"],
-        "benchmark_runtime": [RES / "paper_v3" / "benchmark_runtime30_cpu_as_published_v2"],
-        # Host-matched to "benchmark_runtime" above: both serialized cost
-        # suites must be profiled on one machine or their totals are not
-        # comparable.  The _v2 copy of this suite is numerically identical
-        # (9 significant digits on every accuracy metric) but was profiled on
-        # a different host, so it cannot be mixed with the cluster benchmark.
-        "components_cost": [RES / "paper_v3" / "components_cost30_cpu"],
+        "benchmark_runtime": [RES / "paper_v3" / "benchmark_runtime30_cpu_as_published"],
+        "components_cost": [RES / "paper_v3" / "components_cost30_cpu_v2"],
     },
     # 10 trials per cell.  A pipeline smoke test, NOT a source of paper
     # numbers: at n = 10 a Clopper-Pearson interval on a rate spans roughly
@@ -228,21 +223,6 @@ def fnum(v) -> float:
 def snr_rows(rows, col="x_value") -> list[dict]:
     """Keep only the rows of an SNR sweep at or above ``SNR_MIN``."""
     return [r for r in rows if fnum(r[col]) >= SNR_MIN]
-
-
-def rate_ticks(floor, top):
-    """Decade ticks for a log rate axis, extended only as far as the data."""
-    ticks = [floor, 1.0, 10.0]
-    if top > 10.0:
-        ticks.append(100.0)
-    return ticks
-
-
-def rate_ticklabels(floor, top):
-    labels = ["$0$", "1", "10"]
-    if top > 10.0:
-        labels.append("100")
-    return labels
 
 
 def clip_ylim(ax, main, wide) -> None:
@@ -991,7 +971,7 @@ def fig_benchmark(out: pathlib.Path) -> None:
     series = [
         ("mksc_ccop", "Proposed", C["proposed"], "o", "-"),
         ("scaled_4d", "4-D VP", C["r2"], "s", ":"),
-        ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
+        ("als_cpd", "ALS-CPD", C["als"], "D", "--"),
         ("ris_vbi_sbl", "VBI/SBL", C["vbi"], "P", "-."),
         ("nf_ris_groupomp_localgrid_wls", "OMP-SAGE-WLS", C["omp"], "X", "--"),
     ]
@@ -1183,10 +1163,6 @@ def fig_benchmark(out: pathlib.Path) -> None:
     # failure" stays visibly distinct from "one failure" at any cell size.  A
     # fixed 0.1 floor collided with the one-trial line once n reached 960.
     floor = 100.0 / n_cell / 2.0
-    # Highest rate actually drawn (curve or interval cap).  A hardcoded top
-    # silently clipped a comparator once a baseline reached 100%, which is
-    # precisely the value the panel has to show.
-    pos_top = 0.0
     for v, lab, col, mk, ls in series:
         x, y = curve(
             B,
@@ -1196,7 +1172,6 @@ def fig_benchmark(out: pathlib.Path) -> None:
             v,
         )
         pct_ = np.clip(100 * y, floor, None)
-        pos_top = max(pos_top, float(np.nanmax(pct_)))
 
         draw_benchmark_curve(
             c,
@@ -1245,7 +1220,6 @@ def fig_benchmark(out: pathlib.Path) -> None:
         yl = np.clip(100 * lo[k], floor, None)
         yh = np.clip(100 * hi[k], floor, None)
         ym = np.clip(100 * y[k], floor, None)
-        pos_top = max(pos_top, float(np.nanmax(yh)))
         c.errorbar(xl[k], ym, yerr=[ym - yl, yh - ym], color=col, ls="none",
                    elinewidth=0.7, capsize=1.7, capthick=0.7, zorder=5)
     c.axhline(100.0 / n_cell, color="k", lw=0.6, ls=":")
@@ -1258,9 +1232,9 @@ def fig_benchmark(out: pathlib.Path) -> None:
                      alpha=0.92))
     c.set_xlabel("SNR [dB]")
     c.set_ylabel("$P_{\\rm cat}$ [%]")
-    c.set_ylim(floor * 0.75, max(90.0, 1.30 * pos_top))
-    c.set_yticks(rate_ticks(floor, pos_top))
-    c.set_yticklabels(rate_ticklabels(floor, pos_top))
+    c.set_ylim(floor * 0.75, 90)
+    c.set_yticks([floor, 1, 10])
+    c.set_yticklabels(["$0$", "1", "10"])
     c.set_title(r"(c) Position, $P_{\rm cat}$", pad=3)
     grid(c, which="major")
 
@@ -1308,7 +1282,6 @@ def fig_benchmark(out: pathlib.Path) -> None:
 
     # Same construction as (c) so the two rate panels read identically: log
     # axis, exact zeros parked half a trial below the one-trial line.
-    clk_top = 0.0
     for v, lab, col, mk, ls in series:
         x, y = curve(
             B,
@@ -1318,7 +1291,6 @@ def fig_benchmark(out: pathlib.Path) -> None:
             v,
         )
         pct_ = np.clip(100 * y, floor, None)
-        clk_top = max(clk_top, float(np.nanmax(pct_)))
 
         draw_benchmark_curve(
             f,
@@ -1361,15 +1333,14 @@ def fig_benchmark(out: pathlib.Path) -> None:
         yl = np.clip(100 * lo[k], floor, None)
         yh = np.clip(100 * hi[k], floor, None)
         ym = np.clip(100 * y[k], floor, None)
-        clk_top = max(clk_top, float(np.nanmax(yh)))
         f.errorbar(xl[k], ym, yerr=[ym - yl, yh - ym], color=col, ls="none",
                    elinewidth=0.7, capsize=1.7, capthick=0.7, zorder=5)
     f.axhline(100.0 / n_cell, color="k", lw=0.6, ls=":")
     f.set_xlabel("SNR [dB]")
     f.set_ylabel(r"$P_{\rm cat}^{\rm clk}$ [%]")
-    f.set_ylim(floor * 0.75, max(30.0, 1.30 * clk_top))
-    f.set_yticks(rate_ticks(floor, clk_top))
-    f.set_yticklabels(rate_ticklabels(floor, clk_top))
+    f.set_ylim(floor * 0.75, 30)
+    f.set_yticks([floor, 1, 10])
+    f.set_yticklabels(["$0$", "1", "10"])
     f.set_title(r"(f) Clock, $P_{\rm cat}$ ($>1$ ns)", pad=3)
     grid(f, which="major")
 
@@ -1409,7 +1380,7 @@ def fig_benchmark_clock(out: pathlib.Path) -> None:
         ("scaled_4d", "4-D VP", C["r2"], "s", ":"),
     ]
     external = [
-        ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
+        ("als_cpd", "ALS-CPD", C["als"], "D", "--"),
         ("ris_vbi_sbl", "VBI/SBL", C["vbi"], "P", "-."),
         ("nf_ris_groupomp_localgrid_wls", "OMP-SAGE-WLS", C["omp"], "X", "--"),
     ]
@@ -2270,7 +2241,7 @@ def fig_cost(out: pathlib.Path) -> None:
             "s",
         ),
         "als_cpd": (
-            "Algebraic CPD",
+            "ALS-CPD",
             C["als"],
             "D",
         ),

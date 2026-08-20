@@ -1,9 +1,4 @@
-"""Tensor CPD baselines on the raw observation tensor.
-
-The default solver is the algebraic GEVD route of Lin et al. (IEEE TWC
-2021), Algorithm 1; ``complex_cp_als`` is retained under
-``baselines.als_cpd.cpd_solver = "als"`` as a diagnostic control.
-"""
+"""Standalone complex CP-ALS tensor baseline."""
 
 from __future__ import annotations
 
@@ -242,20 +237,12 @@ def complex_cp_als(
     tol: float = 1.0e-8,
     sigma2: float | None = None,
     reg: float | None = None,
-    init: list[np.ndarray] | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, Any]]:
-    """Complex CP-ALS following the supplied Complex_ALS.m update logic.
-
-    ``init`` overrides the deterministic SVD start, which is how the algebraic
-    GEVD solution of Lin et al. is polished without changing any update rule.
-    """
+    """Complex CP-ALS following the supplied Complex_ALS.m update logic."""
     x = np.asarray(tensor, dtype=complex)
     rank = int(rank)
     sigma2_value = float(sigma2 if sigma2 is not None else reg if reg is not None else 1.0e-8)
-    if init is None:
-        a_factor, b_factor, c_factor = _svd_init(x, rank)
-    else:
-        a_factor, b_factor, c_factor = (np.array(f, dtype=complex) for f in init)
+    a_factor, b_factor, c_factor = _svd_init(x, rank)
     weights = np.ones(rank, dtype=complex)
     factors = [a_factor, b_factor, c_factor]
     tensor_norm = float(np.linalg.norm(x))
@@ -313,7 +300,6 @@ def complex_cp_als(
     )
     diagnostics = {
         "als_matlab_compatible": True,
-        "als_initialization": "svd" if init is None else "external",
         "als_residual": residual,
         "als_iterations": iteration,
         "als_converged": bool(converged),
@@ -323,187 +309,6 @@ def complex_cp_als(
         "sigma2": sigma2_value,
         "als_update_kernel": "mttkrp_small_gram_solve",
         "als_residual_kernel": "cp_gram_identity",
-    }
-    return factors, weights, diagnostics
-
-
-# ------------------------------------------------------------------ Lin et al.
-# Algebraic CPD of Lin et al. (IEEE TWC 2021), Algorithm 1 steps 2-6.
-#
-# The reference solves the CPD as a *simultaneous diagonalization* problem by
-# GEVD, explicitly avoiding "iterative runs and random initialization" and
-# returning the exact solution in the noiseless case.  ALS appears in that paper
-# only as a competing method in its complexity comparison, so the algebraic
-# route below - not CP-ALS - is what carries the citation.
-#
-# The reference tensor is *partially* observed (a hybrid IRS exposes only N_A
-# active sensors), which is why its Algorithm 1 carries the fiber-selection
-# indicator d_sel, the compound-matrix transform Q_2 and the bipartite-graph
-# connectivity condition of Theorem 1.  This repository observes the full
-# EVS x subcarrier x training tensor, so the completion machinery has nothing to
-# complete and drops out; what transports is the algebraic core:
-#   (14) multilinear SVD compression,
-#   step 5 CPD by GEVD / simultaneous diagonalization,
-#   Remark 4 / (36) rank-one splitting of the collapsed mode by dominant
-#           left/right singular vectors.
-
-
-def mdl_rank_estimate(matrix: np.ndarray, num_samples: int | None = None) -> int:
-    """Minimum-description-length rank estimate, Lin et al. (12)-(13).
-
-    Kept available for diagnostics.  The benchmark protocol hands every method
-    the same known model order, so this is not used to set the rank there; the
-    dedicated model-order sweep is what varies it.
-    """
-    z = np.asarray(matrix, dtype=complex)
-    n_a = int(num_samples if num_samples is not None else z.shape[0])
-    p = int(z.shape[1])
-    eigenvalues = np.linalg.eigvalsh(z.conj().T @ z / max(n_a, 1))
-    eigenvalues = np.sort(np.real(eigenvalues))[::-1]
-    eigenvalues = np.maximum(eigenvalues, 1.0e-300)
-    best_cost, best_rank = np.inf, 1
-    for ell in range(0, p):
-        tail = eigenvalues[ell:]
-        if tail.size == 0:
-            continue
-        geometric = float(np.exp(np.mean(np.log(tail))))
-        arithmetic = float(np.mean(tail))
-        if arithmetic <= 0.0:
-            continue
-        cost = (
-            0.5 * ell * (2 * p - ell) * np.log(max(n_a, 2))
-            - n_a * (p - ell) * np.log(max(geometric / arithmetic, 1.0e-300))
-        )
-        if cost < best_cost:
-            best_cost, best_rank = float(cost), int(ell)
-    return int(max(best_rank, 1))
-
-
-def _multilinear_compress(
-    tensor: np.ndarray, rank: int
-) -> tuple[np.ndarray, list[np.ndarray]]:
-    """Truncated multilinear SVD, the compression of Lin et al. (14)."""
-    bases: list[np.ndarray] = []
-    for mode in range(3):
-        unfolding = _unfold(tensor, mode)
-        left, _, _ = np.linalg.svd(unfolding, full_matrices=False)
-        bases.append(left[:, :rank])
-    core = np.einsum("ia,ijk->ajk", bases[0].conj(), tensor, optimize=True)
-    core = np.einsum("jb,ajk->abk", bases[1].conj(), core, optimize=True)
-    core = np.einsum("kc,abk->abc", bases[2].conj(), core, optimize=True)
-    return core, bases
-
-
-def _pencil_candidates(core: np.ndarray) -> list[np.ndarray]:
-    """Deterministic slice combinations for the matrix pencil.
-
-    The plain core slices come first, so a well-conditioned pencil is normally
-    found without any combination; the DFT rows that follow only serve as a
-    deterministic fallback when two individual slices are degenerate.  No random
-    draw enters, per the reference's "avoids random initialization".
-    """
-    rank = core.shape[2]
-    candidates = [core[:, :, index] for index in range(rank)]
-    if rank > 1:
-        dft = np.exp(
-            -2j * np.pi * np.outer(np.arange(rank), np.arange(rank)) / rank
-        ) / np.sqrt(rank)
-        for row in range(rank):
-            candidates.append(
-                np.einsum("abc,c->ab", core, dft[row], optimize=True)
-            )
-    return candidates
-
-
-def algebraic_cp_gevd(
-    tensor: np.ndarray,
-    rank: int,
-) -> tuple[list[np.ndarray], np.ndarray, dict[str, Any]]:
-    """CPD by GEVD simultaneous diagonalization, Lin et al. Algorithm 1.
-
-    Returns the same ``(factors, weights, diagnostics)`` contract as
-    :func:`complex_cp_als`, with the weights absorbed into the third factor, so
-    the whole downstream geometry mapping is untouched.
-    """
-    x = np.asarray(tensor, dtype=complex)
-    rank = int(rank)
-    core, bases = _multilinear_compress(x, rank)
-
-    candidates = _pencil_candidates(core)
-    # Denominator: the best-conditioned candidate.
-    smallest = [
-        float(np.linalg.svd(candidate, compute_uv=False)[-1])
-        for candidate in candidates
-    ]
-    denominator_index = int(np.argmax(smallest))
-    denominator = candidates[denominator_index]
-    inverse = np.linalg.pinv(denominator)
-
-    # Numerator: the candidate whose eigenvalues separate best, since the
-    # eigenvector accuracy of the pencil is governed by that separation.
-    best_score, best_pair = -np.inf, None
-    for index, candidate in enumerate(candidates):
-        if index == denominator_index:
-            continue
-        product = candidate @ inverse
-        try:
-            values, vectors = np.linalg.eig(product)
-        except np.linalg.LinAlgError:
-            continue
-        if not np.all(np.isfinite(values)):
-            continue
-        if rank > 1:
-            separation = np.abs(values[:, None] - values[None, :])
-            separation = separation + np.eye(rank) * np.max(separation + 1.0)
-            score = float(np.min(separation))
-        else:
-            score = 1.0
-        if score > best_score:
-            best_score, best_pair = score, (values, vectors)
-    if best_pair is None:
-        raise np.linalg.LinAlgError("no admissible matrix pencil")
-    _, eigenvectors = best_pair
-
-    first = bases[0] @ eigenvectors
-    first, _ = _normalize_columns(first)
-
-    # Remaining two factors: Lin et al. Remark 4 / (36).  Solving the mode-0
-    # system leaves the Khatri-Rao column C(:,l) kron B(:,l); each column is a
-    # rank-one matrix whose dominant singular pair splits it.
-    unfolding0 = _unfold(x, 0)
-    khatri = np.linalg.lstsq(first, unfolding0, rcond=None)[0].T
-    second = np.zeros((x.shape[1], rank), dtype=complex)
-    third = np.zeros((x.shape[2], rank), dtype=complex)
-    for column in range(rank):
-        omega = khatri[:, column].reshape(x.shape[1], x.shape[2], order="F")
-        left, singular, right = np.linalg.svd(omega, full_matrices=False)
-        second[:, column] = left[:, 0]
-        third[:, column] = singular[0] * right[0, :]
-
-    factors = [first, second, third]
-    weights = np.ones(rank, dtype=complex)
-    tensor_norm = float(np.linalg.norm(x))
-    residual = float(
-        np.sqrt(
-            max(_cp_residual_norm_sq(x, tensor_norm**2, factors, weights), 0.0)
-        )
-        / (tensor_norm + 1.0e-12)
-    )
-    diagnostics = {
-        "cpd_solver": "lin_gevd",
-        "cpd_algebraic": True,
-        "cpd_iterations": 0,
-        "cpd_random_initialization": False,
-        "cpd_residual": residual,
-        "als_residual": residual,
-        "als_iterations": 0,
-        "als_converged": True,
-        "gevd_denominator_index": denominator_index,
-        "gevd_eigenvalue_separation": float(best_score),
-        "factor_shapes": [tuple(factor.shape) for factor in factors],
-        "tensor_shape": tuple(x.shape),
-        "rank": rank,
-        "cpd_rank_one_split": "dominant_singular_pair_eq36",
     }
     return factors, weights, diagnostics
 
@@ -1057,41 +862,13 @@ def run_als_cpd_baseline(data: dict, config: dict) -> BaselineResult:
     y_noisy = np.asarray(data["Y_noisy"], dtype=complex)
     baseline_cfg = dict(config.get("baselines", {}).get("als_cpd", {}))
     rank = int(baseline_cfg.get("rank", scene["K"]))
-    max_iter = int(baseline_cfg.get("max_iter", 3000))
-    tol = float(baseline_cfg.get("tol", 1.0e-8))
-    sigma2 = float(baseline_cfg.get("sigma2", baseline_cfg.get("reg", 1.0e-8)))
-    # "lin_gevd"      - Lin et al. Algorithm 1 alone (deterministic, no iteration)
-    # "lin_gevd_als"  - that algebraic solution polished by CP-ALS (default)
-    # "als"           - CP-ALS from its SVD start, the pre-existing control
-    cpd_solver = str(baseline_cfg.get("cpd_solver", "lin_gevd_als"))
-    gevd_diagnostics: dict[str, Any] = {}
-    if cpd_solver in ("lin_gevd", "lin_gevd_als"):
-        try:
-            factors, weights, diagnostics = algebraic_cp_gevd(y_noisy, rank)
-            gevd_diagnostics = {
-                "cpd_gevd_residual": diagnostics.get("cpd_residual"),
-                "cpd_gevd_fallback": False,
-            }
-        except np.linalg.LinAlgError as exc:  # noqa: BLE001 - degenerate pencil
-            factors, weights, diagnostics = complex_cp_als(
-                y_noisy, rank, max_iter=max_iter, tol=tol, sigma2=sigma2
-            )
-            gevd_diagnostics = {
-                "cpd_gevd_fallback": True,
-                "cpd_gevd_fallback_reason": f"{type(exc).__name__}: {exc}",
-            }
-            cpd_solver = "als_after_gevd_failure"
-        if cpd_solver == "lin_gevd_als":
-            factors, weights, polish = complex_cp_als(
-                y_noisy, rank, max_iter=max_iter, tol=tol, sigma2=sigma2,
-                init=factors,
-            )
-            diagnostics = {**diagnostics, **polish}
-    else:
-        factors, weights, diagnostics = complex_cp_als(
-            y_noisy, rank, max_iter=max_iter, tol=tol, sigma2=sigma2
-        )
-    diagnostics = {**diagnostics, **gevd_diagnostics, "cpd_solver_requested": str(baseline_cfg.get("cpd_solver", "lin_gevd_als")), "cpd_solver_used": cpd_solver}
+    factors, weights, diagnostics = complex_cp_als(
+        y_noisy,
+        rank,
+        max_iter=int(baseline_cfg.get("max_iter", 3000)),
+        tol=float(baseline_cfg.get("tol", 1.0e-8)),
+        sigma2=float(baseline_cfg.get("sigma2", baseline_cfg.get("reg", 1.0e-8))),
+    )
     y_hat = reconstruct_cp_tensor(factors, weights)
     taus = np.asarray(
         [
@@ -1130,13 +907,10 @@ def run_als_cpd_baseline(data: dict, config: dict) -> BaselineResult:
     diagnostics.update(exact_diag)
     diagnostics.update(
         {
-            "dictionary_mode": "algebraic_cpd_tensor",
+            "dictionary_mode": "als_cpd_tensor",
             "adaptation_note": (
-                "Lin et al. algebraic GEVD CPD (Algorithm 1 steps 2-6, with the "
-                "fiber-sampling completion dropped because this tensor is fully "
-                "observed) polished by CP-ALS, then joint "
-                "EVS-and-training-factor common-position, "
-                "one-component-per-panel geometry mapping"
+                "CP-ALS channel factors with joint EVS-and-training-factor "
+                "common-position, one-component-per-panel geometry mapping"
             ),
             "refinement_tier": tier,
             "refinement_tier_sensitive": True,

@@ -407,9 +407,12 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "position_grid_shape": (3, 3, 2),
                     "geometry_refinement_starts": 2,
                     "geometry_refinement_maxiter": 30,
+                    "exact_refinement_max_nfev": 20,
+                    "exact_refinement_axis_grid_size": 3,
+                    "exact_refinement_starts": 2,
                 },
                 "ris_vbi_sbl": {"nf_grid_x": 7, "nf_grid_y": 7, "nf_grid_z": 5, "delay_grid_size": 61, "vbi_max_iter": 20, "vbi_refine_maxiter": 80},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "max_groups": config["K"], "cpd_max_iter": 10, "sage_enabled": True, "sage_iterations": 1, "sage_maxiter": 5, "wls_enabled": True, "wls_max_nfev": 20},
+                "nf_ris_groupomp_localgrid_wls": {"acquisition_mode": "paper_core", "direction_grid_size": 5, "range_grid_size": 5, "delay_grid_size": 5, "range_lasso_lambda_rel": 0.05, "max_groups": config["K"], "cpd_max_iter": 10, "sage_enabled": True, "sage_iterations": 1, "sage_maxiter": 5, "wls_enabled": True, "wls_max_nfev": 20},
             }
         )
     elif profile == "medium":
@@ -419,9 +422,12 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "position_grid_shape": (5, 5, 3),
                     "geometry_refinement_starts": 4,
                     "geometry_refinement_maxiter": 60,
+                    "exact_refinement_max_nfev": 60,
+                    "exact_refinement_axis_grid_size": 3,
+                    "exact_refinement_starts": 2,
                 },
                 "ris_vbi_sbl": {"nf_grid_x": 9, "nf_grid_y": 9, "nf_grid_z": 7, "delay_grid_size": 121, "vbi_max_iter": 40, "vbi_refine_maxiter": 200},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "max_groups": config["K"], "cpd_max_iter": 80, "sage_enabled": True, "sage_iterations": 2, "sage_maxiter": 30, "wls_enabled": True, "wls_max_nfev": 100},
+                "nf_ris_groupomp_localgrid_wls": {"acquisition_mode": "paper_core", "direction_grid_size": 31, "range_grid_size": 31, "delay_grid_size": 41, "range_lasso_lambda_rel": 0.05, "max_groups": config["K"], "cpd_max_iter": 80, "sage_enabled": True, "sage_iterations": 2, "sage_maxiter": 30, "wls_enabled": True, "wls_max_nfev": 100},
             }
         )
     elif profile == "fine":
@@ -431,9 +437,12 @@ def _apply_grid_profile(config: dict, profile: str) -> dict:
                     "position_grid_shape": (7, 7, 5),
                     "geometry_refinement_starts": 8,
                     "geometry_refinement_maxiter": 80,
+                    "exact_refinement_max_nfev": 80,
+                    "exact_refinement_axis_grid_size": 3,
+                    "exact_refinement_starts": 2,
                 },
                 "ris_vbi_sbl": {"nf_grid_x": 11, "nf_grid_y": 11, "nf_grid_z": 9, "delay_grid_size": 161, "vbi_max_iter": 60, "vbi_refine_maxiter": 300},
-                "nf_ris_groupomp_localgrid_wls": {"direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "max_groups": config["K"], "cpd_max_iter": 120, "sage_enabled": True, "sage_iterations": 3, "sage_maxiter": 50, "wls_enabled": True, "wls_max_nfev": 150},
+                "nf_ris_groupomp_localgrid_wls": {"acquisition_mode": "paper_core", "direction_grid_size": 45, "range_grid_size": 45, "delay_grid_size": 61, "range_lasso_lambda_rel": 0.05, "max_groups": config["K"], "cpd_max_iter": 120, "sage_enabled": True, "sage_iterations": 3, "sage_maxiter": 50, "wls_enabled": True, "wls_max_nfev": 150},
             }
         )
     else:
@@ -2168,13 +2177,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--baseline-refinement-tier",
         choices=REFINEMENT_TIERS,
-        default="refinement_matched",
+        default="as_published",
         help=(
             "declared comparison policy for the external baselines. "
-            "'refinement_matched' (default) grants every route the same final "
+            "'as_published' (default) stops each baseline at its own reference "
+            "read-out; 'refinement_matched' grants ALS-CPD and VBI/SBL an extra "
             "continuous exact-model polish of (p_u, Delta_t) from its own "
-            "seed; 'as_published' stops each baseline where its own reference "
-            "stops. Only ris_vbi_sbl is tier-sensitive."
+            "seed. ALS-CPD and ris_vbi_sbl are tier-sensitive."
         ),
     )
     args = parser.parse_args(argv)

@@ -57,9 +57,11 @@ def _make_data(config: dict) -> dict:
             "noise_variance": noise_variance}
 
 
-def test_default_tier_is_refinement_matched():
-    assert baseline_refinement_tier({}) == "refinement_matched"
-    assert baseline_refinement_tier(default_config()) == "refinement_matched"
+def test_default_tier_is_as_published():
+    """The paper's headline benchmark is the as-published protocol, so that is
+    the default; ``refinement_matched`` is the explicitly requested tier."""
+    assert baseline_refinement_tier({}) == "as_published"
+    assert baseline_refinement_tier(default_config()) == "as_published"
     assert set(REFINEMENT_TIERS) == {"refinement_matched", "as_published"}
 
 
@@ -132,6 +134,7 @@ def test_refinement_matched_tier_preserves_the_existing_behaviour(monkeypatch):
     monkeypatch.setattr(module, "_raw_objective", counting)
 
     config = _small_config()
+    config["baselines"]["refinement_tier"] = "refinement_matched"
     data = _make_data(config)
     result = run_ris_vbi_sbl_baseline(data, config)
 
@@ -143,6 +146,7 @@ def test_refinement_matched_tier_preserves_the_existing_behaviour(monkeypatch):
 
 def test_tier_is_recorded_and_the_two_tiers_differ():
     config_matched = _small_config()
+    config_matched["baselines"]["refinement_tier"] = "refinement_matched"
     data = _make_data(config_matched)
 
     matched = run_ris_vbi_sbl_baseline(data, config_matched)

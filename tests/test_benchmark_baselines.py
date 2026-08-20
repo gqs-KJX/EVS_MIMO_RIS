@@ -344,7 +344,17 @@ def test_als_geometry_mapping_uses_common_position_and_unique_panels():
         ],
         dtype=float,
     )
+    evs_factor = np.column_stack(
+        [
+            np.asarray(
+                common.build_jones_basis_evs_atoms(scene, config, panel_index=panel)[0][0],
+                dtype=complex,
+            ).reshape(-1)
+            for panel in (1, 0)
+        ]
+    )
     supports, diagnostics = als_cpd._joint_match_training_factors_to_geometry(
+        evs_factor,
         training_factor,
         taus,
         scene,
@@ -354,7 +364,9 @@ def test_als_geometry_mapping_uses_common_position_and_unique_panels():
     assert [support["panel"] for support in supports] == [1, 0]
     assert all(np.array_equal(support["position"], truth) for support in supports)
     assert diagnostics["als_geometry_unique_panel_count"] == 2
-    assert diagnostics["als_geometry_mapping"].startswith("joint_common_position")
+    assert diagnostics["als_geometry_mapping"].startswith(
+        "joint_evs_training_common_position"
+    )
     assert diagnostics["als_geometry_refined_clock_std_ns"] < 1.0e-6
 
 

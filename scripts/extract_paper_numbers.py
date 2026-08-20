@@ -64,7 +64,7 @@ def section(title: str) -> None:
 LABELS = {
     "mksc_ccop": "Proposed MKSC-GI + CCOP-JVP",
     "scaled_4d": "R2 scale-normalized 4-D Jones-VP",
-    "als_cpd": "ALS-CPD + joint mapping",
+    "als_cpd": "Algebraic CPD + mapping",
     "ris_vbi_sbl": "VBI/SBL joint loc.+rec.",
     "nf_ris_groupomp_localgrid_wls": "NF-RIS CPD-OMP-SAGE-WLS",
     "peb": "Free-Jones PEB",
@@ -438,14 +438,14 @@ def main() -> None:
                 return candidate
         return root / names[0]
 
-    matched = pick("benchmark_refinement_matched_960",
-                   "benchmark_refinement_matched_480",
+    matched = pick("benchmark_refinement_matched_960_4",
                    "benchmark_matched_480", "benchmark_matched")
     benchmark_block(matched, [-20.0, -15.0, -10.0, -5.0, 0.0, 30.0])
     clock_block(matched, [-10.0, 0.0, 10.0, 30.0])
-    benchmark_block(pick("benchmark_as_published_480", "benchmark_as_published"),
+    benchmark_block(pick("benchmark_as_published_960_5", "benchmark_as_published"),
                     [-15.0, -10.0, 0.0, 10.0])
-    runtime_block(pick("benchmark_runtime30_cpu"))
+    runtime_block(pick("benchmark_runtime30_cpu_as_published_v2",
+                       "benchmark_runtime30_cpu"))
     cost_decomposition(pick("components_cost30_cpu"))
     internal = pick("snr_internal_480", "snr_internal")
     for variant in ("proposed", "scaled_4d"):

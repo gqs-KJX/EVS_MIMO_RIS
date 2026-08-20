@@ -62,21 +62,19 @@ REFINEMENT_TIERS = ("refinement_matched", "as_published")
 def baseline_refinement_tier(config: dict) -> str:
     """Return the declared baseline refinement tier.
 
-    ``"refinement_matched"`` (default) gives every method the same continuous
-    exact-model likelihood polish over ``(p_u, Delta_t)`` from its own seed, so
-    a residual accuracy gap measures acquisition and basin reliability rather
-    than the presence or absence of a final refinement.  ``"as_published"``
-    stops each baseline where its own reference stops.
+    ``"as_published"`` (default) stops each baseline where its own reference
+    stops.  ``"refinement_matched"`` is an explicitly requested supplementary
+    tier that adds a continuous exact-model likelihood polish over
+    ``(p_u, Delta_t)`` from each method's own seed.
 
-    The tier is only load-bearing for a baseline whose reference contains no
-    such continuous refinement.  ``als_cpd`` refines in the CP-factor domain and
-    ``nf_ris_groupomp_localgrid_wls`` runs the SAGE step its reference
-    prescribes, so both are unaffected; ``ris_vbi_sbl`` is not, because Li et
-    al. recover the location in closed form from the converged angle support and
-    a delay difference (see that module's ``_fuse_position_clock``).
+    The tier is load-bearing for ``als_cpd`` and ``ris_vbi_sbl``.  ALS uses an
+    exact raw-model ``(p_u, Delta_t)`` polish only in ``refinement_matched``;
+    Li et al. recover the location in closed form from converged support and a
+    delay difference.  ``nf_ris_groupomp_localgrid_wls`` already runs the SAGE
+    refinement prescribed by its reference and is therefore tier-invariant.
     """
     tier = str(
-        config.get("baselines", {}).get("refinement_tier", "refinement_matched")
+        config.get("baselines", {}).get("refinement_tier", "as_published")
     ).strip().lower()
     if tier not in REFINEMENT_TIERS:
         raise ValueError(
@@ -1204,6 +1202,8 @@ def fit_position_clock_data_domain(
     enabled: bool = True,
     max_nfev: int = 60,
     ridge: float = 1.0e-10,
+    scale_clock_by_c0: bool = False,
+    factorized_exact_ls: bool = False,
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, list[dict[str, Any]], dict[str, Any]]:
     """Refine p_u and clock by minimizing baseline data-domain LS residual."""
     y_vec = np.asarray(y_vec, dtype=complex).reshape(-1)
@@ -1212,22 +1212,45 @@ def fit_position_clock_data_domain(
         dtype=float,
     )
     bounds_dt = np.asarray(config.get("delta_t_bounds", [0.0, 10.0e-9]), dtype=float)
-    lower = np.r_[bounds_p[:, 0], bounds_dt[0]]
-    upper = np.r_[bounds_p[:, 1], bounds_dt[1]]
-    x0 = np.clip(np.r_[np.asarray(initial_position, dtype=float).reshape(3), float(initial_clock)], lower, upper)
+    clock_scale = float(scene["c0"]) if scale_clock_by_c0 else 1.0
+    lower = np.r_[bounds_p[:, 0], bounds_dt[0] * clock_scale]
+    upper = np.r_[bounds_p[:, 1], bounds_dt[1] * clock_scale]
+    x0 = np.clip(
+        np.r_[
+            np.asarray(initial_position, dtype=float).reshape(3),
+            float(initial_clock) * clock_scale,
+        ],
+        lower,
+        upper,
+    )
     warning = ""
 
     def fit_for_x(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
         groups = supports_from_position_clock(
             scene,
             x[:3],
-            float(x[3]),
+            float(x[3] / clock_scale),
             panels,
             model_variant=model_variant,
         )
-        expanded = [support for group in groups for support in expand_jones_group(group, 2)]
-        Phi = supports_to_design(scene, config, expanded)
-        coeffs, y_hat, residual = linear_ls_fit(Phi, y_vec, ridge=ridge)
+        expanded = [
+            support
+            for group in groups
+            for support in expand_jones_group(group, 2)
+        ]
+        if factorized_exact_ls:
+            # The exact Kronecker Gram/RHS calculation avoids materializing the
+            # I*N*T by 2K design while remaining algebraically identical.
+            from .factorized_scoring import factorized_fit_supports
+
+            coeffs, y_hat, residual = factorized_fit_supports(
+                scene, config, expanded, y_vec, ridge=ridge
+            )
+        else:
+            design = supports_to_design(scene, config, expanded)
+            coeffs, y_hat, residual = linear_ls_fit(
+                design, y_vec, ridge=ridge
+            )
         return coeffs, y_hat, residual, groups
 
     coeffs0, y_hat0, residual0, groups0 = fit_for_x(x0)
@@ -1282,14 +1305,16 @@ def fit_position_clock_data_domain(
         "refinement_residual_norm": float(np.linalg.norm(residual_best)),
         "refinement_cost": cost,
         "refinement_initial_position": x0[:3].copy(),
-        "refinement_initial_clock": float(x0[3]),
+        "refinement_initial_clock": float(x0[3] / clock_scale),
         "refined_position": x_best[:3].copy(),
-        "refined_clock": float(x_best[3]),
+        "refined_clock": float(x_best[3] / clock_scale),
+        "refinement_clock_scaled_by_c0": bool(scale_clock_by_c0),
+        "refinement_factorized_exact_ls": bool(factorized_exact_ls),
         "warning": warning,
     }
     return (
         x_best[:3].astype(float),
-        float(x_best[3]),
+        float(x_best[3] / clock_scale),
         coeffs_best,
         y_hat_best,
         groups_best,

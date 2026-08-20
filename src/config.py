@@ -517,16 +517,10 @@ def default_config() -> dict:
             "enable_unscaled_efim_cache": False,
         },
         "baselines": {
-            # Declared comparison policy, recorded in every baseline's
-            # diagnostics.  "refinement_matched" grants every method the same
-            # continuous exact-model polish over (p_u, Delta_t) from its own
-            # seed, so a residual gap measures acquisition/basin reliability.
-            # "as_published" stops each baseline where its own reference stops.
-            # Only ris_vbi_sbl is tier-sensitive: als_cpd refines in the
-            # CP-factor domain and nf_ris_groupomp_localgrid_wls runs the SAGE
-            # step its reference prescribes, whereas Li et al. localize in
-            # closed form with no continuous refinement.
-            "refinement_tier": "refinement_matched",
+            # Primary comparisons stop each external baseline at its own
+            # reference-method read-out.  The stronger, explicitly requested
+            # "refinement_matched" tier is retained for supplementary diagnosis.
+            "refinement_tier": "as_published",
             "backend_config": {
                 "backend": "cpu",
                 "gpu_device": 0,
@@ -547,9 +541,17 @@ def default_config() -> dict:
                 "vbi_refine_maxiter": 200,
             },
             "nf_ris_groupomp_localgrid_wls": {
+                # Paper-core acquisition: far-field direction followed by a
+                # one-dimensional exact near-field range dictionary.  The old
+                # 3-D exact-NF seed remains available only as
+                # acquisition_mode="exact_nf_adapted" for diagnostics.
+                "acquisition_mode": "paper_core",
                 "direction_grid_size": 31,
                 "range_grid_size": 31,
                 "delay_grid_size": 41,
+                "range_lasso_lambda_rel": 0.05,
+                "range_lasso_max_iter": 200,
+                "range_lasso_tol": 1.0e-7,
                 "cpd_max_iter": 80,
                 "cpd_tol": 1.0e-7,
                 "cpd_reg": 1.0e-8,

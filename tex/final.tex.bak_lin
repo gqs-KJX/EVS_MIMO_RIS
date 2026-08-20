@@ -139,7 +139,7 @@ maximized by branch-and-bound with a deterministic optimality-gap
 certificate, reducing the outer search from four dimensions to three.
 At $-10$~dB the two-phase estimator attains a $0.31$-mm median position
 error with $0.42\%$ position and $0.21\%$ clock catastrophic-event rates, against
-$1.98\%$ for its closest in-model control and $9.79\%$--$100\%$ for three
+$1.98\%$ for its closest in-model control and $9.79\%$--$99.9\%$ for three
 adapted baselines at their own read-outs.
 \end{abstract}
 
@@ -291,8 +291,7 @@ multilinear factors into a physically associated near-field initializer,
 and Phase~II refines position and clock on the exact complex OFDM
 likelihood. At $-10$~dB it reaches a $0.31$-mm median position error at a
 $0.42\%$ catastrophic rate, against $1.98\%$ for its closest in-model
-control and $9.79$--$100\%$ for three adapted literature baselines at
-their own read-outs.
+control and $9.79$--$99.9\%$ for three adapted literature baselines.
 
 The rest of this paper is organized as follows.
 Section~\ref{sec:system_model} develops the cascaded signal model and the
@@ -1277,7 +1276,7 @@ is supplementary.
 \includegraphics[width=0.8\textwidth]{fig_benchmark.pdf}
 \caption{External benchmark, as-published tier, $960$ shared-realization
 trials per SNR, comparing the proposed MKSC-GI+CCOP-JVP, range-scaled 4-D
-Jones-VP, Algebraic CPD with joint mapping, VBI/SBL stopped at its own
+Jones-VP, ALS-CPD with joint mapping, VBI/SBL stopped at its own
 closed-form fusion, and near-field OMP--SAGE--WLS methods. The top and
 bottom rows report position and clock metrics, respectively; the three
 columns show in-basin precision, error-distribution tails, and
@@ -1293,11 +1292,9 @@ being exact zeros.}
 
 Five methods run on shared realizations under an as-published protocol
 (Fig.~\ref{fig:benchmark_combined}): every route is stopped at the
-continuous read-out its own cited formulation prescribes -- the algebraic
-canonical polyadic decomposition (CPD) of~\cite{lin2021tensor}, solved by
-generalized-eigenvalue simultaneous diagonalization, polished by alternating
-least squares~\cite{kolda2009tensor} and read out in the CP-factor domain;
-near-field orthogonal matching
+continuous read-out its own cited formulation prescribes -- alternating
+least squares for the canonical polyadic decomposition (ALS-CPD) in the
+CP-factor domain~\cite{lin2021tensor}, near-field orthogonal matching
 pursuit (OMP) through space-alternating generalized
 expectation--maximization (SAGE) sweeps and a weighted least-squares
 read-out~\cite{yan2025ris}, and variational Bayesian inference with
@@ -1306,8 +1303,8 @@ fusion~\cite{li2024vbi} --
 and no comparator receives the proposed route's exact-model Phase~II
 polish. Every number below is a property of the evaluated adaptation to
 this common forward model, not of the reference method itself; sources,
-grids, caps and stopping rules are supplementary, and a refinement-matched
-audit below separates acquisition from read-out.
+grids, caps, stopping rules and a refinement-matched VBI/SBL diagnostic
+separating its acquisition stage from its read-out are supplementary.
 
 The comparison against the closest in-model control isolates the
 contribution of the proposed route. At $-10$~dB it attains a $0.310$-mm median
@@ -1317,28 +1314,28 @@ is therefore in reliability, not in in-basin precision.
 
 The three adapted baselines separate more sharply once each is stopped at
 its own read-out. VBI/SBL's closed-form fusion gives a $26.2$-mm median at
-a $9.79\%$ catastrophic rate, the Algebraic CPD adaptation is catastrophic on
-$46.4\%$ of trials, and near-field OMP fails on all $960$ with a $1.2$-m
-median. Each floor is SNR-independent over $-5$ to $30$~dB: the VBI/SBL
-median stays within $26.10$--$26.13$~mm, set by its native read-out rather
-than by resolution; the Algebraic CPD rate stays at $33.6$--$39.4\%$; and
-near-field OMP stays above $99.8\%$ throughout, its far-field
-direction-acquisition stage failing to bracket a basin in this blocked-LoS,
-deep-near-field scene.
+a $9.79\%$ catastrophic rate, the ALS-CPD adaptation is catastrophic on
+$45.4\%$ of trials, and near-field OMP fails on $99.9\%$ with a $1.2$-m
+median. Each retains an SNR-independent floor over $-5$ to $30$~dB: the
+VBI/SBL median stays at $26.1$--$26.5$~mm, set by its native read-out
+rather than by resolution; the ALS-CPD catastrophic rate stays at
+$34$--$37\%$; and the near-field OMP adaptation fails on essentially every
+trial, its far-field direction-acquisition stage failing to bracket a basin
+in this blocked-LoS, deep-near-field scene.
 
 These gaps are statistically resolved. McNemar's exact test on the paired
 catastrophic indicator rejects equality against every comparator
 ($p\le1.5\times10^{-3}$), with $21$ exchanges against range-scaled 4-D VP
-and $98$, $441$ and $956$ against VBI/SBL, Algebraic CPD and near-field OMP,
-the last two entirely one-sided. Against the same-forward-model control that
-advantage is confined to acquisition: from $-5$~dB upward the proposed route
-has no catastrophic trial, matched by range-scaled 4-D VP only from $0$~dB,
-and above $0$~dB the two coincide to a few micrometers.
+and $98$, $432$ and $955$ against VBI/SBL, ALS-CPD and near-field OMP, all
+but the first entirely one-sided. The advantage is nonetheless confined to
+acquisition: from $-5$~dB upward the proposed route has no catastrophic
+trial, matched by range-scaled 4-D VP only from $0$~dB, and above $0$~dB
+the two coincide to a few micrometers.
 
 Synchronization mirrors the position ranking: at $-10$~dB the
 clock-catastrophic rates are $0.21\%$ for the proposed route against
-$1.56\%$, $7.29\%$, $7.92\%$ and $89.7\%$ for range-scaled 4-D VP,
-Algebraic CPD, VBI/SBL and near-field OMP, and at $0$~dB the proposed clock RMSE
+$1.56\%$, $6.15\%$, $7.92\%$ and $88.9\%$ for range-scaled 4-D VP,
+ALS-CPD, VBI/SBL and near-field OMP, and at $0$~dB the proposed clock RMSE
 ($1.08$~ps) sits at a $1.06$-ps CEB reference, a descriptive comparison and
 not a bound test (Remark~\ref{rem:peb_reading}). The range-scaled 4-D route
 matches that inlier precision; the adapted baselines carry
@@ -1346,22 +1343,9 @@ $8.1\times10^{-3}$--$0.11$ normalized mean-square error among their own
 inliers, a property of the geometries they acquire. The ordering survives
 outside the declared region: at $-15$ and $-20$~dB the proposed route keeps
 catastrophic rates of $1.25\%$ and $5.00\%$ against $6.88\%$ and $22.08\%$
-for range-scaled 4-D VP, the lowest of any evaluated route at both points.
-The full below-region sweep is supplementary.
-
-A refinement-matched audit, on an independent seed root, feeds each
-tier-sensitive acquisition into the same exact-model refinement -- a common
-diagnostic map, not a stage of any cited method. VBI/SBL then reaches a
-$0.315$-mm median at $0.52\%$ against $0.316$~mm and $0.31\%$ for the
-proposed route, with matching median reconstruction and clock errors and
-McNemar not rejecting equality ($p=0.73$): its $26$-mm floor is a property
-of the adapted read-out, not of the sparse Bayesian acquisition. Algebraic
-CPD recovers comparable in-basin precision ($0.438$ against $0.453$~mm
-conditional RMSE) yet keeps a $41.9\%$ catastrophic rate, placing its loss
-in acquisition and panel association. Near-field OMP--SAGE--WLS is
-tier-invariant, the polish it runs being the SAGE stage its own reference
-prescribes, and is unchanged. Rates are paired within a tier only; the
-complete sweep is supplementary.
+for range-scaled 4-D VP, the lowest of any evaluated route at both points,
+while near-field OMP is catastrophic on every trial. The full below-region
+sweep is supplementary.
 
 \begin{figure*}[!tb]
 \centering
@@ -1608,15 +1592,14 @@ infrastructure layout and samples no panel-placement diversity.
 \label{subsec:res_cost}
 
 In the serialized single-thread benchmark at $-10$~dB the proposed route
-requires $3.20$~s and $2.52$~GB peak resident set size: faster than Algebraic CPD
-($4.51$~s) and near-field OMP--SAGE--WLS ($11.5$~s), slower than
-range-scaled 4-D VP ($2.42$~s) and VBI/SBL's native read-out ($1.06$~s),
+requires $2.19$~s and $2.52$~GB peak resident set size: faster than ALS-CPD
+($3.41$~s) and near-field OMP--SAGE--WLS ($11.1$~s), slower than
+range-scaled 4-D VP ($1.59$~s) and VBI/SBL's native read-out ($0.92$~s),
 the fastest tier but the one that pays the floor of
-Section~\ref{subsec:res_benchmark}; all serialized timings quoted here share
-one host, absolute seconds not being portable. An independently seeded $30$-trial
-decomposition agrees with that total to under $1\%$ and places the dominant cost
-in the exact spherical panel projection ($1.69$~s) rather than in certified
-clock profiling ($0.33$~s). Per-method memory and the full component
+Section~\ref{subsec:res_benchmark}. An independently seeded $30$-trial
+decomposition agrees with that total to $5\%$ and places the dominant cost
+in the exact spherical panel projection ($1.12$~s) rather than in certified
+clock profiling ($0.25$~s). Per-method memory and the full component
 breakdown are supplementary.
 
 The training budget is set by mobility rather than by bandwidth. With

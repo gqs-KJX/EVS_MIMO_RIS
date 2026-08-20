@@ -872,27 +872,23 @@ refinement its own cited formulation prescribes (the as-published tier).
 This section reports the complementary diagnostic, in which a comparator
 is additionally granted the proposed route's own bounded continuous polish
 over $(\bp,\Delta t)$ against the exact forward model, seeded from its own
-acquisition output. It separates acquisition quality from read-out
-quality -- a route that receives this polish is no longer the cited
-estimator, since it is that estimator's acquisition composed with the
-proposed route's own machinery. The polish applies to the two
-tier-sensitive adaptations, VBI/SBL and Algebraic CPD. Near-field
-OMP--SAGE--WLS is tier-invariant, because the exact-model refinement it
-already runs is the SAGE stage its own reference prescribes; the tier
-therefore grants it nothing and its catastrophic rate is unchanged at
-$99.9\%$, which places its failure upstream of any final read-out. The
-diagnostic uses an independently seeded $960$-trial stream, so comparisons
-within it are paired and comparisons against the main as-published
-stream are not. Table~\ref{tab:s_matched_audit} collects the outcome.
+acquisition output. The diagnostic is reported only for VBI/SBL, where the
+effect is largest, and only to separate acquisition quality from
+refinement quality -- a route that receives this polish is no longer the
+cited estimator, since it is that estimator's acquisition composed with
+the proposed route's own machinery. The diagnostic uses an independently
+seeded $960$-trial stream, not paired with the main external-benchmark
+stream, so its numbers are read qualitatively rather than matched
+trial-for-trial against the main comparison.
 
 \emph{VBI/SBL's native-readout floor is small and SNR-independent, not a
 broken read-out.} At $-10$~dB the closed-form fusion of \cite{li2024vbi},
 run to convergence with no downstream polish, has a $26.2$-mm median
 position error and a $9.79\%$ catastrophic rate, and the floor is nearly
-flat in SNR, $26.10$--$26.13$~mm from $-5$ to $30$~dB
+flat in SNR, $26.1$--$26.5$~mm from $-5$ to $30$~dB
 (Section~\ref{main-subsec:res_benchmark} of the main paper). Its position
 error correlates strongly with the range-equivalent clock error
-$c_0|\hat{\Delta t}-\Delta t^\star|$ (Pearson $0.93$--$0.99$ across $-10$
+$c_0|\hat{\Delta t}-\Delta t^\star|$ (Pearson $0.94$--$0.99$ across $-10$
 to $30$~dB) at a median ratio of $2.2$--$2.5$, while the clock estimate is
 almost never pinned at the $[0,10]$-ns search-box boundary (at most
 $5/960$ trials at any tested SNR). This is materially different from an
@@ -924,60 +920,13 @@ common-clock/geometry coupling that the native closed-form fusion cannot
 eliminate in this scene, not to a correction of the acquisition. Because
 the improvement comes from the proposed route's own refinement machinery
 rather than from VBI/SBL's acquisition, it is reported only as a
-diagnostic and is excluded from the primary baseline comparison. On the
-same stream the paired McNemar test does not reject equality of the
-catastrophic indicator against the proposed route ($3$ against $5$
-discordant trials, $p=0.73$), so the two are comparable at $-10$~dB once
-the read-out is held common, and no claim of separation is made.
-
-\emph{Algebraic CPD is limited by acquisition, not by read-out.} The same
-polish applied to the Algebraic CPD acquisition recovers essentially the
-proposed route's in-basin precision -- $0.438$ against $0.453$~mm
-inlier-conditional RMSE at $-10$~dB -- while its catastrophic rate falls
-only from $46.4\%$ to $41.9\%$ and stays at $29.0\%$ at $0$~dB. Its
-median improves to $0.608$~mm at $-10$~dB and $0.135$~mm at $0$~dB, so the
-route is bimodal: trials whose acquisition reaches the correct basin are
-repaired by the common refinement, and the remaining mass is not, at any
-SNR. The paired McNemar test rejects equality against the proposed route
-($0$ against $399$ discordant trials). Together with
-Section~\ref{sec:als} this places the dominant Algebraic CPD loss in
-acquisition and panel association rather than in the final geometric map,
-which is the opposite diagnosis from VBI/SBL's.
-
-\begin{table}[t]
-\caption{Refinement-matched audit at $-10$~dB, $960$ trials per cell on an
-independently seeded stream. ``Matched'' grants the acquisition the
-proposed route's exact-model polish over $(\bp,\Delta t)$; it is a common
-downstream diagnostic map, not part of any cited method. Near-field
-OMP--SAGE--WLS is tier-invariant, so its two columns differ only by seed.
-$p$ is McNemar's exact test on the paired catastrophic indicator against
-the proposed route within the matched stream.}
-\label{tab:s_matched_audit}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{3.4pt}
-\begin{tabular}{lccccl}
-\toprule
-& \multicolumn{2}{c}{Native read-out} & \multicolumn{2}{c}{Matched} & \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-Acquisition & med. & $P_{\rm cat}$ & med. & $P_{\rm cat}$ & Diagnosis\\
-& [mm] & [\%] & [mm] & [\%] & \\
-\midrule
-VBI/SBL & $26.2$ & $9.79$ & $0.315$ & $0.52$ & read-out limited\\
-Algebraic CPD & $1.58$ & $46.4$ & $0.608$ & $41.9$ & acquisition limited\\
-Near-field OMP & $1246$ & $100$ & $1254$ & $99.9$ & acquisition limited\\
-\midrule
-\textbf{Proposed} & $\mathbf{0.310}$ & $\mathbf{0.42}$ &
-$\mathbf{0.316}$ & $\mathbf{0.31}$ & ---\\
-\bottomrule
-\end{tabular}
-\end{table}
+diagnostic and is excluded from the primary baseline comparison.
 
 \section{Anatomy of the Algebraic CPD Read-Out Failure}
 \label{sec:als}
 
 The main paper reports the Algebraic CPD adaptation at face value, with a
-catastrophic rate of $46.4\%$ at $-10$~dB and $33.6$--$37.5\%$ from $0$ to
+catastrophic rate of $45.4\%$ at $-10$~dB and $34.0$--$36.8\%$ from $0$ to
 $30$~dB. The persistent high-SNR floor is consistent with a geometric
 read-out branch downstream of the tensor factorization. This section gives
 the evidence, all of it from the archived per-trial records of the same
@@ -985,9 +934,9 @@ $960$-trial cells.
 
 Four facts hold jointly on the failing trials. \emph{(i)~The failing branch
 has a nearly fixed offset}: the median position error of the
-failing subset is $0.1793$, $0.1796$ and $0.1794$~m at $0$, $10$ and
+failing subset is $0.1794$, $0.1795$ and $0.1794$~m at $0$, $10$ and
 $30$~dB, constant to sub-millimeter precision over a $30$~dB span, and
-already $0.1807$~m at $-10$~dB. This is behavior inconsistent with ordinary
+already $0.1803$~m at $-10$~dB. This is behavior inconsistent with ordinary
 noise-limited decay. \emph{(ii)~The tensor fit remains accurate}: the median
 observation-domain NMSE of the failing trials is
 indistinguishable from that of the succeeding trials of the \emph{same}
@@ -997,11 +946,9 @@ with SNR exactly as the succeeding trials' does. A route whose factorization
 had failed could not reconstruct the observation to the same accuracy as one
 whose factorization succeeded. \emph{(iii)~The panel association is
 complete and unique} in every failing trial at every SNR
-($445/445$, $360/360$, $336/336$ and $337/337$ at $-10$, $0$, $10$ and
+($436/436$, $353/353$, $339/339$ and $336/336$ at $-10$, $0$, $10$ and
 $30$~dB), so the failure is not a permutation error. \emph{(iv)~The
-CP-factor refinement reports convergence} in every failing trial from
-$0$~dB upward and in $443$ of the $445$ at $-10$~dB, the two exceptions
-being the only non-convergent trials inside the operating region.
+CP-factor refinement reports convergence} in every one of them.
 
 These diagnostics localize the observed failure downstream of factor
 fitting and association, in the map from converged CP factors to position.
@@ -1031,8 +978,8 @@ sits near $1\%$, the p99 order statistic of $960$ trials falls between the
 inlier and outlier populations and reports whichever of the two it happens
 to land in: at $-10$~dB it is $1019$~mm for range-scaled 4-D VP against
 $1.35$~mm for the proposed route, and its bootstrap interval spans
-$[443,1880]$ and $[989,1310]$~mm for range-scaled 4-D VP and VBI/SBL, the
-two routes whose mass is closest to that boundary. The main paper therefore reads the tail from the
+$[197,1365]$ and $[368,1347]$~mm for the two baselines whose mass is
+closest to that boundary. The main paper therefore reads the tail from the
 catastrophic rate and the full complementary cumulative distribution rather
 than from a single quantile, and p95 is quoted where a quantile is wanted.
 
@@ -1046,7 +993,7 @@ $0$~dB is $0.115$ over its $949$ inliers and $0.119$ once its $11$
 catastrophic trials are included. The p99 column indicates tail mass but
 does not resolve it: for a route carrying about $1\%$ catastrophic mass
 that order statistic lands on the boundary between the two modes, giving
-bootstrap $95\%$ intervals at $-10$~dB of $[443,1880]$ and $[989,1310]$~mm
+bootstrap $95\%$ intervals at $-10$~dB of $[381,1880]$ and $[1000,1310]$~mm
 for range-scaled 4-D VP and VBI/SBL against $[1.09,1.63]$~mm for the
 proposed route. The main paper's complementary CDFs carry the tail
 comparison.}
@@ -1062,16 +1009,16 @@ comparison.}
 Method & med. [mm] & p95 [mm] & p99 [mm] & $P_{\rm cat}$ [\%] &
 med. [mm] & $P_{\rm cat}$ [\%] & NMSE & med. [mm] & s / GB\\
 \midrule
-Algebraic CPD + mapping & $1.58$ & $2134$ & $2459$ & $46.4$ & $0.333$ & $37.5$ &
-$8.1\!\times\!10^{-4}$ & $0.0106$ & $4.51/1.07$\\
+Algebraic CPD + mapping & $1.52$ & $375$ & $2458$ & $45.4$ & $0.330$ & $36.8$ &
+$8.4\!\times\!10^{-4}$ & $0.0106$ & $3.41/1.06$\\
 VBI/SBL, as published & $26.2$ & $636$ & $1099$ & $9.79$ & $26.1$ & $1.15$ &
-$0.119$ & $26.1$ & $1.06/1.10$\\
-Near-field RIS OMP--SAGE--WLS & $1246$ & $1880$ & $2144$ & $100$ & $1253$ & $100$ &
-$0.988$ & $1250$ & $11.5/1.72$\\
+$0.119$ & $26.1$ & $0.92/1.08$\\
+Near-field RIS OMP--SAGE--WLS & $1217$ & $1866$ & $2144$ & $99.9$ & $1223$ & $100$ &
+$0.989$ & $1208$ & $11.1/1.72$\\
 Range-scaled 4-D VP & $0.312$ & $0.918$ & $1019$ & $1.98$ & $0.0977$ & $0$ &
-$5.5\!\times\!10^{-6}$ & $0.0031$ & $2.42/1.79$\\
+$5.5\!\times\!10^{-6}$ & $0.0031$ & $1.59/1.79$\\
 \textbf{Proposed} & $\mathbf{0.310}$ & $\mathbf{0.850}$ & $\mathbf{1.35}$ & $\mathbf{0.42}$ &
-$\mathbf{0.0977}$ & $\mathbf{0}$ & $\mathbf{5.2\!\times\!10^{-6}}$ & $\mathbf{0.0031}$ & $3.20/2.52$\\
+$\mathbf{0.0977}$ & $\mathbf{0}$ & $\mathbf{5.2\!\times\!10^{-6}}$ & $\mathbf{0.0031}$ & $2.19/2.52$\\
 \midrule
 Free-Jones PEB (RMS) & $0.440$ & --- & --- & --- & $0.139$ & --- & --- & $0.0044$ & ---\\
 \bottomrule
@@ -1235,27 +1182,19 @@ the number of candidates per listed axis.}
 Item & Setting\\
 \midrule
 \multicolumn{2}{l}{\emph{Algebraic CPD with geometric mapping}~\cite{lin2021tensor,kolda2009tensor}}\\
-Acquisition & Algebraic CPD of the raw
-$(\text{EVS}\times\text{tone}\times\text{training})$ tensor at rank $K$:
-minimum-description-length rank check, truncated multilinear SVD
-compression, then simultaneous diagonalization of the compressed pencils by
-generalized eigendecomposition, each Khatri--Rao column split by its
-dominant singular pair; polished by complex CP-ALS warm-started from that
-solution\\
-Initialization & None: the algebraic stage is deterministic, runs no
-iterations and draws no random numbers. A fixed-seed complex Gaussian draw
-is used only if the eigendecomposition raises, in which case the route
-falls back to plain CP-ALS\\
-Iteration cap & $0$ algebraic; $\leq3000$ ALS sweeps for the polish\\
+Acquisition & Complex CP-ALS on the raw
+$(\text{EVS}\times\text{tone}\times\text{training})$ tensor, rank $K$\\
+Initialization & Per-mode SVD of the raw tensor unfolding (top-$K$ left
+singular vectors); a fixed-seed complex Gaussian draw is used only if the
+SVD fails or a mode has fewer than $K$ singular vectors\\
+Iteration cap & $3000$ ALS sweeps\\
 Stopping rule & Relative factor change $<10^{-8}$\\
 Read-out & CP factors to position by grid search over $5\times5\times3$
 candidates per panel, then $4$ off-grid least-squares restarts, $60$
 iterations each, $\texttt{ftol}=10^{-12}$\\
 Refinement received & CP-factor-domain refinement (its own formulation)\\
-Adaptation & Fiber-sampling tensor completion of the reference dropped,
-this tensor being fully observed; panel labels taken from the association
-of the CP factors; mapping extended to oriented panels and a common
-clock\\
+Adaptation & Panel labels taken from the association of the CP factors;
+mapping extended to oriented panels and a common clock\\
 \midrule
 \multicolumn{2}{l}{\emph{VBI/SBL, as published}~\cite{li2024vbi}}\\
 Acquisition & Mean-field VBI with Gamma--Gaussian automatic relevance
@@ -1277,19 +1216,8 @@ position grid; one block per panel; explicit clock unknown retained\\
 \midrule
 \multicolumn{2}{l}{\emph{Near-field RIS OMP--SAGE--WLS}~\cite{yan2025ris}}\\
 Acquisition & Sequential rank-one CPD with orthogonal residual updates,
-$\leq K$ groups, followed by the reference's own far-field direction match
-and one-dimensional $\ell_1$-regularized near-field range recovery
-(\texttt{acquisition\_mode}=\texttt{paper\_core}). The alternative
-\texttt{exact\_nf\_adapted} mode, which instead seeds an exact
-three-dimensional near-field position grid, is not the reference's
-acquisition and is retained only as a diagnostic\\
-Dictionary & Direction grid $31$, restricted to rays meeting the declared
-UE box; range grid $31$; delay grid $41$\\
-Path consistency & Remark~2 gate: paths whose implied clock offset departs
-from the median-absolute-deviation consensus by more than $3\sigma$,
-floored at $10\%$ of the clock search interval, are discarded before the
-weighted-least-squares fusion, which is then recomputed on the retained
-set; at least two paths are always kept\\
+$\leq K$ groups\\
+Dictionary & Direction grid $31$; range grid $31$; delay grid $41$\\
 Iteration cap & $80$ CPD iterations per group; $2$ SAGE cycles of $\leq30$
 iterations; WLS $\leq100$ function evaluations\\
 Stopping rule & CPD relative tolerance $10^{-7}$ with ridge $10^{-8}$ and
@@ -1332,7 +1260,7 @@ trajectory.
 The evaluation counts are medians over the $100$ trials of the outer
 L-BFGS-B iterate count, not of inner clock solves; each outer evaluation of
 the profiled route additionally performs one certified clock solve over a
-median of $2\,036$ grid points, whose cost is the $0.33$~s reported in
+median of $2\,036$ grid points, whose cost is the $0.25$~s reported in
 Section~\ref{main-subsec:res_cost}. Finally, the two mis-scaled labels lose
 one trial in $100$ that the range-scaled and profiled routes keep; with a
 single discordant pair this is an illustration of the scaling hazard, not a
@@ -1422,11 +1350,11 @@ nevertheless carries the native-readout floor of Section~\ref{sec:aspub}.}
 \toprule
 Route & Time [s] & Peak RSS [GB]\\
 \midrule
-Algebraic CPD + mapping & $4.51$ & $1.07$\\
-VBI/SBL, as published & $1.06$ & $1.10$\\
-Near-field RIS OMP--SAGE--WLS & $11.5$ & $1.72$\\
-Range-scaled 4-D VP & $2.42$ & $1.79$\\
-Proposed & $3.20$ & $2.52$\\
+Algebraic CPD + mapping & $3.41$ & $1.06$\\
+VBI/SBL, as published & $0.92$ & $1.08$\\
+Near-field RIS OMP--SAGE--WLS & $11.1$ & $1.72$\\
+Range-scaled 4-D VP & $1.59$ & $1.79$\\
+Proposed & $2.19$ & $2.52$\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1466,13 +1394,11 @@ denote the proposed and range-scaled 4-D routes.}
 \end{figure*}
 
 Under the serialized as-published protocol the proposed mean wall time is
-$3.20$~s (Table~\ref{tab:s_cost}); an independently seeded $30$-trial
-decomposition run on the same host gives a sum of component medians of
-$3.19$~s, within $0.4\%$ of that total: $0.23$~s for Maxwell--Kronecker
-projection, $0.85$~s for four-start common geometry, $0.09$~s for anchor
-refresh, $0.33$~s for certified Phase~II, and $1.69$~s for the remaining
-Phase~I blocks. Absolute seconds are not portable across machines, so the
-benchmark and the decomposition are profiled on one host throughout. Peak
+$2.19$~s (Table~\ref{tab:s_cost}); an independently seeded $30$-trial
+decomposition run gives a sum of component medians of $2.30$~s, within
+$5\%$ of that total: $0.22$~s for Maxwell--Kronecker projection, $0.63$~s
+for four-start common geometry, $0.07$~s for anchor refresh, $0.25$~s for
+certified Phase~II, and $1.12$~s for the remaining Phase~I blocks. Peak
 RSS is $2.52$~GB, dominated by the raw Hankel tensor retained for the
 mode-1 contraction. The detailed accuracy--cost comparison is shown in
 Fig.~\ref{fig:s_cost}.
@@ -1638,18 +1564,18 @@ method's capability. The two in-model routes degrade as in the operating
 region, only more so: range-scaled 4-D VP loses its basin four to five
 times as often as the proposed route ($22.08\%$ against $5.00\%$ at
 $-20$~dB, $6.88\%$ against $1.25\%$ at $-15$~dB), and the Algebraic CPD
-adaptation, already carrying the $33.6$--$37.5\%$ high-SNR floor of
-Section~\ref{sec:als}, degrades to $58$--$78\%$.
+adaptation, already carrying a $34$--$37\%$ high-SNR read-out floor,
+degrades to $56$--$72\%$.
 
 The clock comparison extends into the threshold region on the same
 realizations (Fig.~\ref{fig:s_benchmark_clock}), and the synchronization
 ranking tracks the position ranking here as well, without a crossover. The
 proposed route keeps a clock-catastrophic rate of $1.04\%$ at $-15$~dB and
 $3.65\%$ at $-20$~dB, against $5.42\%$ and $17.81\%$ for the range-scaled
-4-D route; near-field OMP instead carries a $3.6$--$3.7$-ns median with
-clock-catastrophic rates of $90.42\%$ and $88.54\%$, VBI/SBL a $14.58\%$
+4-D route; near-field OMP instead carries a $3.4$--$3.5$-ns median with
+clock-catastrophic rates of $89.17\%$ and $87.81\%$, VBI/SBL a $14.58\%$
 and $24.58\%$ outlier mass consistent with its position floor, and
-Algebraic CPD $13.96\%$ and $37.81\%$.
+Algebraic CPD the largest ($12.71\%$ and $31.35\%$).
 
 \begin{table}[t]
 \caption{External benchmark below the operating region, $960$
@@ -1669,12 +1595,12 @@ point.}
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
 Method & $P_{\rm cat}$ & med. & p95 & $P_{\rm cat}$ & med. & p95\\
 \midrule
-Algebraic CPD + mapping & $77.81$ & $699$ & $2461$ &
-$58.33$ & $176$ & $2443$\\
+Algebraic CPD + mapping & $71.67$ & $253$ & $2460$ &
+$55.94$ & $175$ & $2432$\\
 VBI/SBL, as published & $33.02$ & $30.1$ & $1150$ &
 $19.38$ & $26.5$ & $990$\\
-Near-field RIS OMP--SAGE--WLS & $99.90$ & $1275$ & $1904$ &
-$99.79$ & $1256$ & $1899$\\
+Near-field RIS OMP--SAGE--WLS & $100.0$ & $1241$ & $1874$ &
+$100.0$ & $1227$ & $1871$\\
 R2: range-scaled 4-D VP & $22.08$ & $1.19$ & $1638$ &
 $6.88$ & $0.571$ & $708$\\
 \textbf{Proposed} & $\mathbf{5.00}$ & $\mathbf{1.01}$ &

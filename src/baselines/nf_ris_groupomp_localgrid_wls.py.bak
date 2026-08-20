@@ -1104,59 +1104,9 @@ def _wls_position_clock(
     dt0 = float(np.median(dt_candidates)) if dt_candidates else float(np.mean(bounds_dt))
     dt0 = float(np.clip(dt0, bounds_dt[0], bounds_dt[1]))
 
-    # Remark 2 of the reference: a path whose implied clock offset departs from
-    # the consensus one is treated as a corrupted parameter estimate and its
-    # contribution is excluded from the weighted least squares of (50).  The
-    # reference anchors the consensus on the LOS path, which this RIS-only scene
-    # does not have, so the robust median over panels takes that role and the
-    # per-path statistic reduces to the same quantity: tau_k minus the geometric
-    # delay implied by the consensus position.  The gate is scale free (a robust
-    # MAD score) with an absolute floor, so it fires only on gross inconsistency
-    # and never on a tightly agreeing panel set.
-    path_indices = list(range(len(selected)))
-    gate_trace: dict[str, Any] = {"remark2_gate_enabled": False}
-    if bool(cfg.get("remark2_gate_enabled", True)) and len(dt_candidates) >= 3:
-        deviations = np.abs(np.asarray(dt_candidates, dtype=float) - dt0)
-        mad = float(np.median(deviations))
-        robust_sigma = 1.4826 * mad
-        floor = float(cfg.get("remark2_gate_floor_rel", 0.10)) * float(
-            bounds_dt[1] - bounds_dt[0]
-        )
-        threshold = max(float(cfg.get("remark2_gate_sigma", 3.0)) * robust_sigma, floor)
-        keep = [i for i in path_indices if deviations[i] <= threshold]
-        # (50) needs at least two panels to constrain (p_u, Delta_t); never gate
-        # below that, and never gate away more than half of the evidence.
-        floor_count = max(2, int(np.ceil(0.5 * len(path_indices))))
-        if len(keep) < min(floor_count, len(path_indices)):
-            keep = list(np.argsort(deviations)[: min(floor_count, len(path_indices))])
-            keep = sorted(int(i) for i in keep)
-        gate_trace = {
-            "remark2_gate_enabled": True,
-            "remark2_gate_threshold_s": float(threshold),
-            "remark2_gate_robust_sigma_s": float(robust_sigma),
-            "remark2_gate_deviations_s": [float(v) for v in deviations],
-            "remark2_gate_discarded": [i for i in path_indices if i not in keep],
-            "remark2_gate_num_discarded": int(len(path_indices) - len(keep)),
-        }
-        if len(keep) != len(path_indices):
-            path_indices = keep
-            kept_positions = positions[path_indices]
-            p0 = np.clip(
-                np.median(kept_positions, axis=0), bounds_p[:, 0], bounds_p[:, 1]
-            )
-            dt0 = float(
-                np.clip(
-                    np.median([dt_candidates[i] for i in path_indices]),
-                    bounds_dt[0],
-                    bounds_dt[1],
-                )
-            )
-
-    selected = [selected[i] for i in path_indices]
-
     sqrt_weights: list[np.ndarray] = []
     weight_trace: list[dict[str, Any]] = []
-    for path_index, support in zip(path_indices, selected):
+    for path_index, support in enumerate(selected):
         try:
             efim, trace = _support_efim(
                 scene,
@@ -1243,7 +1193,6 @@ def _wls_position_clock(
         "wls_final_cost": float(np.linalg.norm(residual_fn(solution)) ** 2),
         "wls_weight_model": "local_channel_efim_after_jones_projection",
         "wls_weight_trace": weight_trace,
-        **gate_trace,
     }
 
 

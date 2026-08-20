@@ -120,27 +120,27 @@ Distributed Near-Field RIS-Aided OFDM}
 \maketitle
 
 \begin{abstract}
-We address 3-D localization and synchronization of a single-antenna user
+We consider 3-D localization and synchronization for a single-antenna user
 in a wideband orthogonal frequency-division multiplexing (OFDM) uplink
 observed by an electromagnetic vector-sensor (EVS) array only through
 distributed near-field reconfigurable intelligent surfaces (RISs). The
 direct path is blocked, all cascaded paths share an unknown clock offset,
-and gains and Jones coefficients are nuisances. A per-panel factorization
-into space--frequency and calibrated Maxwell--Jones terms splits the
-orthogonal projector and yields three exact consequences. First,
-receiver selection only scales a panel's free-Jones Fisher information by
-the retained polarization energy without altering its geometric structure,
-and we characterize when two or fewer components lose panel separability.
-Second, a parameter-independent projection compresses the receive dimension
-from $96$ to $6$ as a pointwise likelihood isometry preserving that
-information exactly. Third, the clock's unitary phase-ramp orbit renders the
-conditional clock profile a finite trigonometric polynomial, globally
-maximized by branch-and-bound with a deterministic optimality-gap
-certificate, reducing the outer search from four dimensions to three.
-At $-10$~dB the two-phase estimator attains a $0.31$-mm median position
-error with $0.42\%$ position and $0.21\%$ clock catastrophic-event rates, against
-$1.98\%$ for its closest in-model control and $9.79\%$--$100\%$ for three
-adapted baselines at their own read-outs.
+and gains and Jones coefficients are nuisances. Each panel response factors
+into a space--frequency term and a calibrated Maxwell--Jones term, so its
+projector splits; we derive three exact consequences. First, receiver
+selection does not alter the geometric structure of a panel's free-Jones
+Fisher information but only scales it by the retained polarization energy,
+and we give the condition under which two or fewer components lose panel
+separability outright. Second, a parameter-independent projection
+compresses the receive dimension from $96$ to $6$ as a pointwise likelihood
+isometry preserving that information exactly. Third, the clock's unitary phase-ramp orbit turns the conditional
+clock profile into a finite trigonometric polynomial. We solve it by
+branch-and-bound with a deterministic optimality-gap certificate, reducing
+the outer search from four dimensions to three. At $-10$~dB the
+two-phase estimator attains a $0.31$-mm median position error
+with $0.42\%$ position and $0.21\%$ clock catastrophic-event rates, against
+$1.98\%$ for its closest in-model control and $9.79\%$--$99.9\%$ for three
+adapted literature baselines at their own read-outs.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -181,10 +181,8 @@ polarization is the missing observable: it enters RIS work as a
 controllable beamforming resource~\cite{han2022dual,munawar2024dual} or as
 an unknown recovered jointly with angle and
 delay~\cite{nehorai1994vector,khan2020sixcomponent,gong2026aimdf}, while
-the closest cascaded near-field formulations remain scalar-sensor, modeling
-the wideband XL-RIS channel without a clock~\cite{yang2024nfris} or
-synchronizing through one SISO panel rather than through a clock shared
-across distributed panels~\cite{yan2025ris}. Because the retained Maxwell
+the closest cascaded near-field model~\cite{yang2024nfris} neither
+incorporates a shared clock offset nor exploits polarization. Because the retained Maxwell
 response is fixed by the calibrated RIS-to-BS direction, a calibrated EVS
 supplies that discrimination without enlarging the physical aperture --
 unless at most two components are retained, in which case
@@ -264,17 +262,16 @@ a competing Jones block of full row rank, panels sharing a
 space--frequency signature lose polarimetric separation entirely.
 Simulations confirm that the distinction matters in practice: reducing the
 receiver from six Maxwell components to one raises the catastrophic rate by
-$13.6\times$, whereas the corresponding matched-PEB ratio is only
-$5.7\times$.
+$13.6\times$ while costing only $5.7\times$ in information.
 \item \textbf{C2: Sufficient compression and reliable acquisition}
 (Theorem~\ref{thm:compress}). A parameter-independent Maxwell--Kronecker
 projection takes the receive dimension from $96$ to $6$ while leaving the
 profiled likelihood pointwise unchanged and the free-Jones information
-exactly equal. Applied ahead of delay recovery, the projection
-improves the delay p95 error $35$-fold and cuts the catastrophic rate from
-$2.29\%$ to $0.62\%$. Together with a Rayleigh-spaced beam-space search
-and scale-profiled common-geometry fusion, it returns a physically labeled
-initializer with no fixed-grid resolution floor.
+exactly equal. Applied ahead of delay recovery it improves the delay p95
+error $35$-fold. Combined with a Rayleigh-spaced beam-space search and
+scale-profiled common-geometry fusion, it returns a physically labeled
+initializer with no fixed-grid resolution floor and cuts the catastrophic
+rate from $2.29\%$ to $0.62\%$.
 \item \textbf{C3: Certified common-clock profiling}
 (Theorem~\ref{thm:clock}). The clock's unitary phase-ramp orbit leaves the
 Jones Gram matrix invariant, turning the conditional clock profile into a
@@ -291,8 +288,7 @@ multilinear factors into a physically associated near-field initializer,
 and Phase~II refines position and clock on the exact complex OFDM
 likelihood. At $-10$~dB it reaches a $0.31$-mm median position error at a
 $0.42\%$ catastrophic rate, against $1.98\%$ for its closest in-model
-control and $9.79$--$100\%$ for three adapted literature baselines at
-their own read-outs.
+control and $9.79$--$99.9\%$ for three adapted literature baselines.
 
 The rest of this paper is organized as follows.
 Section~\ref{sec:system_model} develops the cascaded signal model and the
@@ -617,10 +613,11 @@ quadrilinear,
 \begin{equation}
 	\mathcal Z_{\rm d}=\sum_{k=1}^{K}
 	\ba_k\circ\bd_{P,k}\circ\bd_{L,k}\circ\bt_k+\mathcal N_{\rm d},
+	\quad
+	[\bd_{P,k}]_p=z_k^{p},\ \ [\bd_{L,k}]_\ell=z_k^{\ell},
 	\label{eq:sharedpole}
 \end{equation}
-with $[\bd_{P,k}]_p=z_k^{p}$ and $[\bd_{L,k}]_\ell=z_k^{\ell}$: one
-physical delay generates \emph{both} frequency factors. With
+in which one physical delay generates \emph{both} frequency factors. With
 $\bD_P=[\bd_{P,1},\ldots,\bd_{P,K}]$ and $\underline{\bD}_P$,
 $\overline{\bD}_P$ denoting $\bD_P$ without its last and first row, that
 single pole is exactly a shift invariance,
@@ -990,19 +987,12 @@ $\partial\bTheta/\partial\bchi=\mathbf0$, the second term vanishes. Here and
 in \eqref{eq:panelres_short}, $\bTheta=\bTheta_k^{(6)}$ is the \emph{full}
 six-component block of \eqref{eq:Theta}, and $\bS_{\rm mode}$ ranges over
 the candidate component selections of Section~\ref{sec:system_model}. The
-mode retaining $\bS_{\rm mode}$ therefore yields, for a single panel and
-whenever the retained signal is nonzero,
-\begin{equation}
-	\bJ_\chi^{\bS_{\rm mode}}=\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full},
-	\quad
-	{\rm PEB}^{\bS_{\rm mode}}
-	=\alpha_{\bS_{\rm mode}}^{-1/2}\,{\rm PEB}^{\rm full},
-	\label{eq:c1_scaling}
-\end{equation}
-with $\alpha_{\bS_{\rm mode}}
-=\|\bS_{\rm mode}\bTheta\bx\|^2/\|\bTheta\bx\|^2$. Both statements are
-single-panel; across panels the scaling becomes a panel-wise reweighting
-rather than a global scalar, as treated after the theorem.
+mode retaining $\bS_{\rm mode}$ yields
+$\bJ_\chi^{\bS_{\rm mode}}=\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full}$ with
+$\alpha_{\bS_{\rm mode}}
+=\|\bS_{\rm mode}\bTheta\bx\|^2/\|\bTheta\bx\|^2$ whenever the retained
+signal is nonzero. This exact scaling is a single-panel statement; the
+multi-panel case is treated after the theorem.
 
 \textbf{(ii) Discrimination consequence.} For this comparison, define
 $\bA_k^{(\bS)}(\bchi)=\bc_k(\bchi)\otimes
@@ -1059,8 +1049,9 @@ $\|\bPi_{\bTheta_{k'}^{(6)}}^{\perp}\bz\|\ge\sin\theta_{\min}\|\bz\|$.
 C1 says that polarization enters the geometry of the problem as a scalar.
 Component selection cannot rotate the information eigenvectors of a panel:
 it can only rescale that panel's contribution by the fraction
-$\alpha_{\bS_{\rm mode}}$ of polarization energy it retains, which is
-\eqref{eq:c1_scaling}. Across panels the scaling is no longer
+$\alpha_{\bS_{\rm mode}}$ of polarization energy it retains, so the
+single-panel CRB scales by $\alpha_{\bS_{\rm mode}}^{-1}$ and the PEB by
+$\alpha_{\bS_{\rm mode}}^{-1/2}$. Across panels the scaling is no longer
 global, since $\bPi_{\bA}^{\perp}$ built on the full
 $\bA=[\bA_1,\ldots,\bA_K]$ factors into per-panel projectors only when the
 blocks and their projected tangents are mutually orthogonal. In the
@@ -1272,12 +1263,69 @@ is supplementary.
 \subsection{External Benchmark}
 \label{subsec:res_benchmark}
 
+Five methods run on shared realizations under an as-published protocol
+(Fig.~\ref{fig:benchmark_combined}): every route is stopped at the
+continuous read-out its own cited formulation prescribes -- alternating
+least squares for the canonical polyadic decomposition (ALS-CPD) in the
+CP-factor domain~\cite{lin2021tensor}, near-field orthogonal matching
+pursuit (OMP) through space-alternating generalized
+expectation--maximization (SAGE) sweeps and a weighted least-squares
+read-out~\cite{yang2024nfris}, and variational Bayesian inference with
+sparse Bayesian learning (VBI/SBL) through its native closed-form
+fusion~\cite{li2024vbi} --
+and no comparator receives the proposed route's exact-model Phase~II
+polish. Every number below is a property of the evaluated adaptation to
+this common forward model, not of the reference method itself; sources,
+grids, caps, stopping rules and a refinement-matched VBI/SBL diagnostic
+separating its acquisition stage from its read-out are supplementary.
+
+The comparison against the closest in-model control isolates what the
+proposed route actually buys. At $-10$~dB it attains a $0.310$-mm median
+position error at a $0.42\%$ catastrophic rate, whereas range-scaled 4-D VP
+matches the median ($0.312$~mm) but not the tail ($1.98\%$). The advantage
+is therefore in reliability, not in in-basin precision.
+
+The three adapted baselines separate more sharply once each is stopped at
+its own read-out. VBI/SBL's closed-form fusion gives a $26.2$-mm median at
+a $9.79\%$ catastrophic rate, the ALS-CPD adaptation is catastrophic on
+$45.4\%$ of trials, and near-field OMP fails on $99.9\%$ with a $1.2$-m
+median. Each retains an SNR-independent floor over $-5$ to $30$~dB: the
+VBI/SBL median stays at $26.1$--$26.5$~mm, set by its native read-out
+rather than by resolution; the ALS-CPD catastrophic rate stays at
+$34$--$37\%$; and the near-field OMP adaptation fails on essentially every
+trial, its far-field direction-acquisition stage failing to bracket a basin
+in this blocked-LoS, deep-near-field scene.
+
+These gaps are statistically resolved. McNemar's exact test on the paired
+catastrophic indicator rejects equality against every comparator
+($p\le1.5\times10^{-3}$), with $21$ exchanges against range-scaled 4-D VP
+and $98$, $432$ and $955$ against VBI/SBL, ALS-CPD and near-field OMP, all
+but the first entirely one-sided. The advantage is nonetheless confined to
+acquisition: from $-5$~dB upward the proposed route has no catastrophic
+trial, matched by range-scaled 4-D VP only from $0$~dB, and above $0$~dB
+the two coincide to a few micrometers.
+
+Synchronization mirrors the position ranking: at $-10$~dB the
+clock-catastrophic rates are $0.21\%$ for the proposed route against
+$1.56\%$, $6.15\%$, $7.92\%$ and $88.9\%$ for range-scaled 4-D VP,
+ALS-CPD, VBI/SBL and near-field OMP, and at $0$~dB the proposed clock RMSE
+($1.08$~ps) sits at a $1.06$-ps CEB reference, a descriptive comparison and
+not a bound test (Remark~\ref{rem:peb_reading}). The range-scaled 4-D route
+matches that inlier precision; the adapted baselines carry
+$8.1\times10^{-3}$--$0.11$ normalized mean-square error among their own
+inliers, a property of the geometries they acquire. The ordering survives
+outside the declared region: at $-15$ and $-20$~dB the proposed route keeps
+catastrophic rates of $1.25\%$ and $5.00\%$ against $6.88\%$ and $22.08\%$
+for range-scaled 4-D VP, the lowest of any evaluated route at both points,
+while near-field OMP is catastrophic on every trial. The full below-region
+sweep is supplementary.
+
 \begin{figure*}[!tb]
 \centering
 \includegraphics[width=0.8\textwidth]{fig_benchmark.pdf}
 \caption{External benchmark, as-published tier, $960$ shared-realization
 trials per SNR, comparing the proposed MKSC-GI+CCOP-JVP, range-scaled 4-D
-Jones-VP, Algebraic CPD with joint mapping, VBI/SBL stopped at its own
+Jones-VP, ALS-CPD with joint mapping, VBI/SBL stopped at its own
 closed-form fusion, and near-field OMP--SAGE--WLS methods. The top and
 bottom rows report position and clock metrics, respectively; the three
 columns show in-basin precision, error-distribution tails, and
@@ -1291,90 +1339,6 @@ being exact zeros.}
 \label{fig:benchmark_combined}
 \end{figure*}
 
-Five methods run on shared realizations under an as-published protocol
-(Fig.~\ref{fig:benchmark_combined}): every route is stopped at the
-continuous read-out its own cited formulation prescribes -- the algebraic
-canonical polyadic decomposition (CPD) of~\cite{lin2021tensor}, solved by
-generalized-eigenvalue simultaneous diagonalization, polished by alternating
-least squares~\cite{kolda2009tensor} and read out in the CP-factor domain;
-near-field orthogonal matching
-pursuit (OMP) through space-alternating generalized
-expectation--maximization (SAGE) sweeps and a weighted least-squares
-read-out~\cite{yan2025ris}, and variational Bayesian inference with
-sparse Bayesian learning (VBI/SBL) through its native closed-form
-fusion~\cite{li2024vbi} --
-and no comparator receives the proposed route's exact-model Phase~II
-polish. Every number below is a property of the evaluated adaptation to
-this common forward model, not of the reference method itself; sources,
-grids, caps and stopping rules are supplementary, and a refinement-matched
-audit below separates acquisition from read-out.
-
-The comparison against the closest in-model control isolates the
-contribution of the proposed route. At $-10$~dB it attains a $0.310$-mm median
-position error at a $0.42\%$ catastrophic rate, whereas range-scaled 4-D VP
-matches the median ($0.312$~mm) but not the tail ($1.98\%$). The advantage
-is therefore in reliability, not in in-basin precision.
-
-The three adapted baselines separate more sharply once each is stopped at
-its own read-out. VBI/SBL's closed-form fusion gives a $26.2$-mm median at
-a $9.79\%$ catastrophic rate, the Algebraic CPD adaptation is catastrophic on
-$46.4\%$ of trials, and near-field OMP fails on all $960$ with a $1.2$-m
-median. Each floor is SNR-independent over $-5$ to $30$~dB: the VBI/SBL
-median stays within $26.10$--$26.13$~mm, set by its native read-out rather
-than by resolution; the Algebraic CPD rate stays at $33.6$--$39.4\%$; and
-near-field OMP stays above $99.8\%$ throughout, its far-field
-direction-acquisition stage failing to bracket a basin in this blocked-LoS,
-deep-near-field scene.
-
-These gaps are statistically resolved. McNemar's exact test on the paired
-catastrophic indicator rejects equality against every comparator
-($p\le1.5\times10^{-3}$), with $21$ exchanges against range-scaled 4-D VP
-and $98$, $441$ and $956$ against VBI/SBL, Algebraic CPD and near-field OMP,
-the last two entirely one-sided. Against the same-forward-model control that
-advantage is confined to acquisition: from $-5$~dB upward the proposed route
-has no catastrophic trial, matched by range-scaled 4-D VP only from $0$~dB,
-and above $0$~dB the two coincide to a few micrometers.
-
-Synchronization mirrors the position ranking: at $-10$~dB the
-clock-catastrophic rates are $0.21\%$ for the proposed route against
-$1.56\%$, $7.29\%$, $7.92\%$ and $89.7\%$ for range-scaled 4-D VP,
-Algebraic CPD, VBI/SBL and near-field OMP, and at $0$~dB the proposed clock RMSE
-($1.08$~ps) sits at a $1.06$-ps CEB reference, a descriptive comparison and
-not a bound test (Remark~\ref{rem:peb_reading}). The range-scaled 4-D route
-matches that inlier precision; the adapted baselines carry
-$8.1\times10^{-3}$--$0.11$ normalized mean-square error among their own
-inliers, a property of the geometries they acquire. The ordering survives
-outside the declared region: at $-15$ and $-20$~dB the proposed route keeps
-catastrophic rates of $1.25\%$ and $5.00\%$ against $6.88\%$ and $22.08\%$
-for range-scaled 4-D VP, the lowest of any evaluated route at both points.
-The full below-region sweep is supplementary.
-
-A refinement-matched audit, on an independent seed root, feeds each
-tier-sensitive acquisition into the same exact-model refinement -- a common
-diagnostic map, not a stage of any cited method. VBI/SBL then reaches a
-$0.315$-mm median at $0.52\%$ against $0.316$~mm and $0.31\%$ for the
-proposed route, with matching median reconstruction and clock errors and
-McNemar not rejecting equality ($p=0.73$): its $26$-mm floor is a property
-of the adapted read-out, not of the sparse Bayesian acquisition. Algebraic
-CPD recovers comparable in-basin precision ($0.438$ against $0.453$~mm
-conditional RMSE) yet keeps a $41.9\%$ catastrophic rate, placing its loss
-in acquisition and panel association. Near-field OMP--SAGE--WLS is
-tier-invariant, the polish it runs being the SAGE stage its own reference
-prescribes, and is unchanged. Rates are paired within a tier only; the
-complete sweep is supplementary.
-
-\begin{figure*}[!tb]
-\centering
-\includegraphics[width=0.68\textwidth]{fig_receiver.pdf}
-\caption{C1 information and efficiency, $480$ paired trials per cell at a
-common absolute noise level, verifying Theorem~\ref{thm:split}(i).
-(a)~Matched accuracy (solid) against the free-Jones PEB (dashed).
-(b)~Paired inlier-conditional efficiency ratio with its $95\%$
-paired-bootstrap interval ($4\,000$ replicates, trials resampled in pairs);
-the shaded band is $\pm2\%$ and the intervals are wider than it.}
-\label{fig:c1_receiver}
-\end{figure*}
-
 \subsection{C1: EVS Information and Panel Separability}
 \label{subsec:res_c1}
 
@@ -1385,21 +1349,22 @@ $\bJ_\chi^{\bS_{\rm mode}}=\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full}$ to
 $5.7\times10^{-16}$ (audit supplementary). Its consequence is measurable:
 at $0$~dB the scalar, dual and full modes reach conditional RMSEs of
 $0.815$, $0.330$ and $0.133$~mm, tracking the matched PEB order of
-Fig.~\ref{fig:c1_receiver}(a).
+Fig.~\ref{fig:c1_combined}(a).
 
 \textit{Separability.} Discrimination changes by more than information
 alone predicts. At $-10$~dB the three modes carry catastrophic rates of
 $14.17\%$, $2.29\%$ and $1.04\%$ -- a $13.6\times$ scalar/full ratio
 against a $5.7\times$ matched-PEB ratio -- and the excess is the
 panel-label loss of Theorem~\ref{thm:split}(ii).
-Fig.~\ref{fig:c1_separability} isolates that mechanism. At $1$~ns
-cascaded-delay separation, full EVS resolves a panel pair with probability
-$0.87$--$0.88$ across the four tested Jones overlaps: their largest spread
-is $1.7$ percentage points, below the $4.6$-point Clopper--Pearson
-half-width of a single cell, so the sweep resolves no dependence on
-overlap. The dual-polarized and scalar modes instead collapse toward zero
-as the overlap grows, spanning $82.7$ and $61.9$ points. Formal trend tests
-over overlap are supplementary.
+Fig.~\ref{fig:c1_combined}(c)--(e) isolates that mechanism. At $1$~ns cascaded-delay
+separation, full EVS resolves a panel pair with probability
+$0.87$--$0.88$ \emph{irrespective of Jones overlap}: the largest spread
+over the four tested overlaps is $1.7$ percentage points, inside the
+$4.6$-point Clopper--Pearson half-width of a single cell, and the
+Cochran--Armitage trend test over overlap is insignificant in all six
+full-EVS delay cells (Holm-adjusted $p=1.00$). The dual-polarized and
+scalar modes instead collapse toward zero as the overlap grows, spanning
+$82.7$ and $61.9$ points and rejecting the same null at $p\le10^{-181}$.
 This is \eqref{eq:panelres_short} in the data: with $d\le2$ retained
 components the competing Jones block spans $\C^{d}$ and the residual
 separating the two panels can vanish outright, whereas six components hold
@@ -1410,7 +1375,7 @@ alike; only the reduced modes are additionally limited by polarization.
 is $0.98$--$1.02$ across two independently seeded suites, consistent with
 efficiency once the $\pm6\%$ paired-bootstrap intervals are accounted for;
 those intervals resolve no ordering between them, and their separation from
-scalar sensing in Fig.~\ref{fig:c1_receiver}(a) tracks the SNR-independent
+scalar sensing in Fig.~\ref{fig:c1_combined}(a) tracks the SNR-independent
 PEB ratios $5.7$ and $2.3$. The scalar mode's high-SNR floor (near
 $0.098$~mm at $30$~dB) belongs to the rank-one structure of
 single-component sensing and persists identically at $\lambda_k=0$: a
@@ -1421,16 +1386,21 @@ regularizer. Full sweeps and bootstrap tables are supplementary.
 
 \begin{figure*}[!tb]
 \centering
+\includegraphics[width=0.66\textwidth]{fig_receiver.pdf}\\[3pt]
 \includegraphics[width=0.80\textwidth]{fig_resolvability.pdf}
-\caption{Polarimetric panel separability at $-10$~dB, the mechanism of
-Theorem~\ref{thm:split}(ii): resolution probability against cascaded-delay
-separation at four Jones overlaps with exact Clopper--Pearson bands, for
-(a)~scalar, (b)~dual-polarized and (c)~full-EVS reception. The dashed
-vertical line marks the reference scene's minimum separation and the boxed
-number the largest spread over overlap. Reducing the retained Maxwell
-components makes separability overlap dependent; the full-EVS spread stays
-within the sampling resolution of a single cell.}
-\label{fig:c1_separability}
+\caption{C1 evidence, $480$ paired trials per cell. \emph{Information}
+(common absolute noise level): (a)~matched accuracy (solid) against the
+free-Jones PEB (dashed); (b)~paired inlier-conditional efficiency ratio
+with its $95\%$ paired-bootstrap interval ($4\,000$ replicates, trials
+resampled in pairs), the shaded band being $\pm2\%$ and the intervals wider
+than it. \emph{Separability} at $-10$~dB, (c)--(e): resolution probability
+against cascaded-delay separation at four Jones overlaps with exact
+Clopper--Pearson bands, the dashed vertical line marking the reference
+scene's minimum separation and the boxed number the largest spread over
+overlap. Reducing the retained Maxwell components makes separability
+overlap dependent, the mechanism of Theorem~\ref{thm:split}(ii); full EVS
+is flat to $1.7$ percentage points.}
+\label{fig:c1_combined}
 \end{figure*}
 
 \subsection{C2: Sufficient Compression and Reliable Acquisition}
@@ -1445,8 +1415,8 @@ sees. At $-10$~dB the leakage ratio $\sigma_{K+1}/\sigma_K$ falls from
 $0.822$ to $0.353$, the delay p95 error improves $35\times$
 ($4.87\to0.141$~ns), basin acquisition rises from $97.50\%$ to $99.38\%$
 and the catastrophic position rate falls from $2.29\%$ to $0.62\%$. The
-isometry therefore does not alter the exact-likelihood accuracy; what it
-permits is discarding $90$ of $96$ receive dimensions before a subspace
+isometry is therefore credited with no accuracy of its own; it is what
+licenses discarding $90$ of $96$ receive dimensions before a subspace
 method is applied to the remainder.
 
 \textit{Contribution of the individual Phase~I mechanisms.} Table~\ref{tab:c2_ladder}
@@ -1465,7 +1435,7 @@ land within one trial of the proposed rung.
 \textit{Aperture scaling.} Growing the panel
 from $16^2$ to $64^2$ elements lowers conditional RMSE from $1.66$ to
 $0.42$~mm while holding the catastrophic rate in $[0.21,0.62]\%$, so the
-estimator realizes the aperture gain that motivates near-field operation.
+aperture gain that motivates near-field operation is actually collected.
 Collecting it is an acquisition property, not a refinement property: the
 proposed Phase~I holds a basin rate of $99.2$--$99.6\%$ across that
 sixteenfold change in element count, whereas the baseline Phase~I ranges
@@ -1509,8 +1479,7 @@ routes the same $100$ MKSC-GI initializers, so the rows differ only in how
 the clock coordinate is carried. CCOP-JVP preserves the $0.509$-mm,
 $3.44$-ps precision of a correctly range-scaled 4-D search while removing
 one nonlinear coordinate, cutting the median outer evaluation count from
-$13$ to $9$, while eliminating sensitivity to the clock coordinate's
-units: the
+$13$ to $9$, and it does so without a scaling choice to get wrong: the
 explicit 4-D route depends on whether the clock is carried in seconds,
 nanoseconds or range units, the two mis-scaled labels losing one trial in
 $100$ that the profiled route keeps and the seconds label degrading
@@ -1555,31 +1524,13 @@ $\mathbf{0}$ & $\mathbf{9}$ & yes & yes\\
 \end{tabular}
 \end{table}
 
-\begin{figure*}[!tb]
-\centering
-\includegraphics[width=\textwidth]{fig_boundaries.pdf}
-\caption{Operating boundaries of the proposed estimator, resolving the
-three boundaries of Section~\ref{sec:conclusion}. (a)--(b)~RIS--BS
-angular-calibration error at $-10$~dB, separating the accuracy floor from
-the capture boundary. (c)~Model-order mismatch at $0$~dB: bars give
-$P_{\rm cat}$ (left axis) and markers the median and p95 position error
-(right axis). (d)~Per-position catastrophic rate against the minimum true
-cascaded-delay separation over the $5\times5\times2$ grid at $-10$~dB,
-marker color being the median free-Jones EFIM condition number; the shaded
-strip marks the coincidence region and the dash-dotted line the reference
-scene.}
-\label{fig:boundaries}
-\end{figure*}
-
 \subsection{Deployment Boundaries and Spatial Generalization}
 \label{subsec:res_robustness}
 
-Three sensitivities set the deployment envelope, one per panel of
-Fig.~\ref{fig:boundaries}; the remaining mismatch and generalization sweeps
-and the audit of the frozen Phase~I constants are supplementary.
-\textit{Calibration} is the binding one
-(Fig.~\ref{fig:boundaries}(a)--(b)): RIS--BS angular error degrades
-precision long before capture,
+Three sensitivities set the deployment envelope; the remaining mismatch
+and generalization sweeps and the audit of the frozen Phase~I constants are
+supplementary. \textit{Calibration} is the
+binding one: RIS--BS angular error degrades precision long before capture,
 raising conditional RMSE from $0.447$ to $31.2$~mm at $0.25^\circ$ while
 the basin rate holds at $99.17\%$, and capture itself collapses only at
 $1^\circ$ ($59.58\%$). Receiver gain, phase and sensor-position mismatch,
@@ -1587,14 +1538,14 @@ RIS element-phase error and first-order colored noise are all milder over
 their tested ranges.
 
 \textit{Model order} is a material assumption rather than a tuning
-parameter (Fig.~\ref{fig:boundaries}(c)). In the dedicated $0$-dB sweep, $\widehat K=2$ is structurally
+parameter. In the dedicated $0$-dB sweep, $\widehat K=2$ is structurally
 destructive ($0.710$-m median, $P_{\rm cat}=65.4\%$), and $\widehat K=4$
 and $5$ keep submillimeter medians while carrying $35.4\%$ and $49.0\%$
 catastrophic rates -- which is also why median-only robustness reporting
 would mislead in either direction.
 
-\textit{Delay coincidence} bounds acquisition where information does not
-(Fig.~\ref{fig:boundaries}(d)). Across a $5\times5\times2$ position grid the proposed median per-position
+\textit{Delay coincidence} bounds acquisition where information does not.
+Across a $5\times5\times2$ position grid the proposed median per-position
 catastrophic rate is $0.62\%$ against $2.92\%$ for 4-D VP, and both hard
 corners lie near a cascaded-delay coincidence surface, the worst reaching
 $31.25\%$ at a minimum separation of $0.062/B_{\rm occ}$ -- while the
@@ -1608,16 +1559,18 @@ infrastructure layout and samples no panel-placement diversity.
 \label{subsec:res_cost}
 
 In the serialized single-thread benchmark at $-10$~dB the proposed route
-requires $3.20$~s and $2.52$~GB peak resident set size: faster than Algebraic CPD
-($4.51$~s) and near-field OMP--SAGE--WLS ($11.5$~s), slower than
-range-scaled 4-D VP ($2.42$~s) and VBI/SBL's native read-out ($1.06$~s),
-the fastest tier but the one that pays the floor of
-Section~\ref{subsec:res_benchmark}; all serialized timings quoted here share
-one host, absolute seconds not being portable. An independently seeded $30$-trial
-decomposition agrees with that total to under $1\%$ and places the dominant cost
-in the exact spherical panel projection ($1.69$~s) rather than in certified
-clock profiling ($0.33$~s). Per-method memory and the full component
-breakdown are supplementary.
+requires $2.19$~s and $2.52$~GB peak resident set size (RSS): faster than
+ALS-CPD ($3.41$~s, $1.06$~GB) and near-field OMP--SAGE--WLS ($11.1$~s,
+$1.72$~GB), slower and heavier than range-scaled 4-D VP ($1.59$~s,
+$1.79$~GB) and VBI/SBL's native read-out ($0.92$~s, $1.08$~GB), which is
+the fastest tier but pays the floor of
+Section~\ref{subsec:res_benchmark}. An independently seeded $30$-trial
+decomposition agrees with that total to $5\%$ and places the cost where
+theory does not: the exact spherical panel projection takes $1.12$~s
+against $0.25$~s for certified clock profiling, and the $2.52$~GB peak is
+the raw Hankel tensor retained for the mode-1 contraction, the dense raw
+Phase~II dictionary never being formed. Certified clock profiling is
+therefore not the dominant computational cost.
 
 The training budget is set by mobility rather than by bandwidth. With
 $\Delta f=5$~MHz a $25\%$ cyclic prefix is $50$~ns, covering the $19.1$-ns
