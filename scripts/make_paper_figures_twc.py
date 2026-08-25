@@ -349,9 +349,14 @@ def nearest_rank(values, q: float) -> float:
 
     ``benchmark_summary.csv`` stores linearly interpolated percentiles, which
     disagree with the text by two orders of magnitude in the bimodal tail (the
-    4-D route at -10 dB: 126 mm interpolated against 734 mm nearest-rank).  Any
-    quantile drawn beside a quoted one is therefore recomputed here from the
-    per-trial column with ``ceil(q/100 * n) - 1`` on the ascending sort.
+    4-D route at -10 dB: 126 mm interpolated against 734 mm nearest-rank).
+
+    Currently unreferenced: no figure panel draws a quantile.  Panel tails are
+    drawn as full CCDFs, which need no quantile convention at all, and that is
+    why the discrepancy above never reaches a released figure.  Kept because
+    any future panel that does draw a p95 beside a quoted one must recompute it
+    from the per-trial column with ``ceil(q/100 * n) - 1`` on the ascending
+    sort rather than read the summary field of the same name.
     """
     v = sorted(x for x in values if math.isfinite(x))
     if not v:
@@ -529,7 +534,7 @@ def fig_internal(out: pathlib.Path) -> None:
         ("proposed", "Proposed MKSC-GI + CCOP-JVP", C["proposed"], MK["proposed"], "-"),
         ("mksc_gi_4_no_refresh_ccop", "MKSC-GI, no anchor refresh", C["gi4"], MK["gi4"], "--"),
         ("old_stage1_ccop", "R3: frozen Phase I + CCOP-JVP", C["r3"], MK["r3"], "-."),
-        ("scaled_4d", "R2: frozen Phase I + 4-D Jones-VP", C["r2"], MK["r2"], ":"),
+        ("scaled_4d", "R2: frozen Phase I + 4D-JVP", C["r2"], MK["r2"], ":"),
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(DBL_W, 4.0))
@@ -906,6 +911,33 @@ def fig_receiver(out: pathlib.Path) -> None:
     fig.savefig(out / "fig_receiver.pdf")
     plt.close(fig)
 
+    # Single-column main-text cut: panel (a) only.  The efficiency ratio is a
+    # descriptive consistency check whose three numbers and two interval widths
+    # are quoted in the text (Remark 1 governs their reading), so the main text
+    # carries the information panel and the supplement keeps the ratio panel.
+    figm, am = plt.subplots(1, 1, figsize=(COL_W, 2.45))
+    for m, lab, col, mk, ls in modes:
+        x, y = curve(S, "x_value", "position_conditional_rmse_m", "variant", f"proposed_{m}")
+        am.semilogy(x, y, color=col, marker=mk, ls="-", label=lab)
+        x, y = curve(S, "x_value", "peb_position_m_rms", "variant", f"free_jones_peb_{m}")
+        am.semilogy(x, y, color=col, ls="--", lw=1.05)
+    am.set_xlabel("SNR [dB]")
+    am.set_ylabel("Conditional RMSE [m]")
+    am.annotate("scalar: rank-one\nsensing floor", xy=(28, 9.4e-5),
+                xytext=(13.0, 7.5e-4), fontsize=5.8, ha="center",
+                color=C["scalar"], linespacing=0.95,
+                arrowprops=dict(arrowstyle="->", lw=0.5, color=C["scalar"]))
+    grid(am)
+    # Solid/dashed is defined in the caption, so the legend carries modes only.
+    figm.legend(handles=[Line2D([], [], color=col, marker=mk, ls="-", label=lab)
+                         for _, lab, col, mk, _ in modes],
+                loc="lower center", bbox_to_anchor=(0.5, 0.005), ncol=3,
+                frameon=False, fontsize=6.8, columnspacing=0.9,
+                handlelength=1.6)
+    figm.subplots_adjust(left=0.175, right=0.985, top=0.965, bottom=0.30)
+    figm.savefig(out / "fig_receiver_main.pdf")
+    plt.close(figm)
+
 
 # ======================================================== fig: compression ==
 def fig_compression(out: pathlib.Path) -> None:
@@ -990,7 +1022,7 @@ def fig_benchmark(out: pathlib.Path) -> None:
         "snr_db")
     series = [
         ("mksc_ccop", "Proposed", C["proposed"], "o", "-"),
-        ("scaled_4d", "4-D VP", C["r2"], "s", ":"),
+        ("scaled_4d", "4D-JVP", C["r2"], "s", ":"),
         ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
         ("ris_vbi_sbl", "VBI/SBL", C["vbi"], "P", "-."),
         ("nf_ris_groupomp_localgrid_wls", "OMP-SAGE-WLS", C["omp"], "X", "--"),
@@ -1381,6 +1413,60 @@ def fig_benchmark(out: pathlib.Path) -> None:
     fig.savefig(out / "fig_benchmark.pdf")
     plt.close(fig)
 
+    # Main-text cut: the median and CCDF columns for both quantities.  The two
+    # P_cat columns are kept in the supplement -- the CCDF's threshold crossing
+    # is the same rate at this SNR -- while the running text quotes how that
+    # rate moves with SNR.  The clock row stays: the paper is a localization
+    # *and synchronization* paper, so the main benchmark has to show both.
+    figm, ((am, bm), (dm, em)) = plt.subplots(2, 2, figsize=(DBL_W, 4.05))
+
+    for v, lab, col, mk, ls in series:
+        x, y = curve(B, "snr_db", "position_error_m_median", "baseline", v)
+        draw_benchmark_curve(am, x, 1e3 * y, method=v, label=lab, color=col,
+                             marker=mk, linestyle=ls)
+    x, y = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
+    am.semilogy(x, 1e3 * y, color="k", ls=(0, (4, 2)), lw=1.0,
+                label="Free-Jones PEB")
+    am.set_xlabel("SNR [dB]")
+    am.set_ylabel("Error [mm]")
+    am.set_title("(a) Position, median", pad=3)
+    grid(am)
+
+    draw_ccdf(bm, "position_error_m", 1e-7, 0.1, "Position error $x$ [m]",
+              rf"(b) Position CCDF at ${CCDF_SNR:.0f}$ dB")
+    bm.axvspan(1e-7, 0.1, color=C["proposed"], alpha=0.055, lw=0, zorder=0.4)
+    bm.text(0.035, 0.06, r"inlier region ($\leq 0.1$ m)", transform=bm.transAxes,
+            ha="left", fontsize=6.0, color="0.35")
+
+    for v, lab, col, mk, ls in series:
+        med_col = ("clock_error_ns_median"
+                   if v in ("mksc_ccop", "scaled_4d")
+                   else "clock_median_abs_error_ns")
+        x, y = curve(B, "snr_db", med_col, "baseline", v)
+        draw_benchmark_curve(dm, x, 1e3 * y, method=v, label=lab, color=col,
+                             marker=mk, linestyle=ls)
+    xp, yp = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
+    if xp.size:
+        anchor = yp[np.argmin(np.abs(xp + 10.0))]
+        dm.semilogy(xp, CEB_REF_PS_AT_MINUS10 * yp / anchor, color="k",
+                    ls=(0, (4, 1.4, 1, 1.4)), lw=1.0,
+                    label=r"CEB ($\sigma$-scaled)")
+    dm.set_xlabel("SNR [dB]")
+    dm.set_ylabel("Error [ps]")
+    dm.set_title("(c) Clock, median", pad=3)
+    grid(dm)
+
+    draw_ccdf(em, "clock_error_ns", 1e-7, 1.0, r"$|$Clock error$|$ $x$ [ns]",
+              rf"(d) Clock CCDF at ${CCDF_SNR:.0f}$ dB")
+    em.text(0.965, 0.90, r"$>1$ ns", transform=em.transAxes, ha="right",
+            va="top", fontsize=6.0, color="0.35")
+
+    figm.subplots_adjust(left=0.075, right=0.995, top=0.935, bottom=0.175,
+                         wspace=0.30, hspace=0.60)
+    fig_legend(figm, am, ncol=3, y=0.030, extra=ceb_handle)
+    figm.savefig(out / "fig_benchmark_main.pdf")
+    plt.close(figm)
+
 
 # =================================================== fig: benchmark clock ===
 def fig_benchmark_clock(out: pathlib.Path) -> None:
@@ -1406,7 +1492,7 @@ def fig_benchmark_clock(out: pathlib.Path) -> None:
     # (proposed, R2) internal: median/p95 from summary [ns]; externals: from Cx.
     internal = [
         ("mksc_ccop", "Proposed", C["proposed"], "o", "-"),
-        ("scaled_4d", "4-D VP", C["r2"], "s", ":"),
+        ("scaled_4d", "4D-JVP", C["r2"], "s", ":"),
     ]
     external = [
         ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
@@ -1708,18 +1794,23 @@ def fig_boundaries(out: pathlib.Path) -> None:
 
     Mild receiver mismatch, colored noise, and resource scaling remain in the
     supplement.  The main figure instead aligns directly with the three
-    limitations stated in the conclusion: angular-calibration bias, known
-    model order, and acquisition failure near delay coincidence despite a
-    full-rank local EFIM.
+    limitations stated in the conclusion: angular-calibration bias and
+    acquisition failure near delay coincidence despite a full-rank local
+    EFIM.  Model-order mismatch is a discrete robustness test whose three
+    numbers are quoted in the text; its panel is in the supplement.
+
+    The delay-coincidence panel carries two method markers, a colorbar and
+    two annotated regions, so it is given ~1.45x the width of the two
+    calibration curves rather than an equal third.
     """
     M = ds("maxwell_mismatch", "robustness_summary.csv")
-    F9 = ds("model_order", "fig9_k_mismatch_summary.csv")
     G = ds("positions", "position_generalization_summary.csv")
     Tp = [r for r in ds("positions", "robustness_trials.csv")
           if r["variant"] == "proposed"]
 
-    fig, axes = plt.subplots(2, 2, figsize=(DBL_W, 3.35))
-    (a, b), (c, d) = axes
+    fig, (a, b, d) = plt.subplots(
+        1, 3, figsize=(DBL_W, 2.15),
+        gridspec_kw={"width_ratios": [1.0, 1.0, 1.45]})
 
     angle = sel(M, x_name="ris_bs_angle_deg", variant="proposed")
     x, y = curve(angle, "x_value", "position_conditional_rmse_m")
@@ -1733,7 +1824,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
            va="top", fontsize=6.8, color="0.35", linespacing=0.95)
     a.set_xlabel("RIS--BS angle error [deg]")
     a.set_ylabel("Error [mm]")
-    a.set_title(r"(a) Calibration accuracy floor ($-10$ dB)", pad=3)
+    a.set_title("(a) Calibration accuracy floor", pad=3)
     a.legend(loc="lower right", fontsize=7.0)
     grid(a)
 
@@ -1746,36 +1837,10 @@ def fig_boundaries(out: pathlib.Path) -> None:
     b.set_xlabel("RIS--BS angle error [deg]")
     b.set_ylabel("Rate [%]")
     b.set_ylim(-3, 104)
-    b.set_title(r"(b) Calibration capture boundary ($-10$ dB)", pad=3)
+    b.set_title("(b) Calibration capture boundary", pad=3)
     b.legend(loc="center left", fontsize=7.0)
     grid(b)
 
-    order = [r for r in F9 if r["baseline"] == "mksc_ccop"]
-    x, y = curve(order, "x_value", "outlier_rate")
-    c.bar(x, 100 * y, width=0.32, color=C["proposed"], alpha=0.25,
-          edgecolor=C["proposed"], label=r"$P_{\rm cat}$")
-    c.plot(x, 100 * y, color=C["proposed"], marker="o", ls="none")
-    c.set_xlabel(r"Assumed order $\widehat K$ (true $K=3$)")
-    c.set_ylabel(r"$P_{\rm cat}$ [%]")
-    c.set_xticks([2, 3, 4, 5])
-    # Headroom for the legend: at the frozen 72% ceiling the K=2 bar ran into
-    # it.  The order sweep is the one panel of this figure measured at 0 dB.
-    c.set_ylim(-2, 96)
-    c2 = c.twinx()
-    x, y = curve(order, "x_value", "median_m")
-    c2.semilogy(x, y, color=C["gi4"], marker="v", ls="none",
-                label="median error")
-    x, y = curve(order, "x_value", "p95_m")
-    c2.semilogy(x, y, color=C["r2"], marker="s", mfc="white", ls="none",
-                label="p95 error")
-    c2.set_ylabel("Error [m]", labelpad=1)
-    c2.set_ylim(5e-5, 40.0)
-    c.set_title(r"(c) Model-order mismatch ($0$ dB)", pad=3)
-    h1, l1 = c.get_legend_handles_labels()
-    h2, l2 = c2.get_legend_handles_labels()
-    c.legend(h1 + h2, l1 + l2, loc="upper center", fontsize=6.6, ncol=3,
-             columnspacing=0.9, handletextpad=0.4, borderpad=0.25)
-    grid(c)
 
     # True cascaded-delay separations are derived only from the released v3
     # position coordinates and resolved geometry.  The common clock cancels
@@ -1819,7 +1884,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
     sc = d.scatter(xp, yp, c=cp, cmap="viridis", marker="o", s=27,
                    edgecolor="0.2", linewidth=0.35, label="Proposed", zorder=3)
     d.scatter(xr, yr, facecolors="none", edgecolors=C["r2"], marker="s",
-              s=25, linewidth=0.9, label="4-D VP", zorder=2)
+              s=25, linewidth=0.9, label="4D-JVP", zorder=2)
     d.axvline(1.2, color=C["r2"], lw=0.8, ls="--")
     d.text(0.99, 0.60, f"free-Jones EFIM full rank\nin {len(Tp) - defic}/{len(Tp)} trials",
            ha="right", va="top", transform=d.transAxes, fontsize=6.4,
@@ -1837,15 +1902,15 @@ def fig_boundaries(out: pathlib.Path) -> None:
     d.set_xlabel("Minimum true delay separation [ns]")
     d.set_ylabel(r"$P_{\rm cat}$ [%]", labelpad=1)
     d.set_xlim(left=0)
-    d.set_title(r"(d) Delay-coincidence boundary ($-10$ dB)", pad=3)
+    d.set_title("(c) Delay-coincidence boundary", pad=3)
     d.legend(loc="upper right", fontsize=7.0)
     cb = fig.colorbar(sc, ax=d, fraction=0.047, pad=0.025)
     cb.set_label("EFIM condition number", fontsize=7.2)
     cb.ax.tick_params(labelsize=7)
     grid(d)
 
-    fig.subplots_adjust(left=0.08, right=0.965, top=0.94, bottom=0.12,
-                        wspace=0.48, hspace=0.54)
+    fig.subplots_adjust(left=0.065, right=0.965, top=0.90, bottom=0.185,
+                        wspace=0.42)
     fig.savefig(out / "fig_boundaries.pdf")
     plt.close(fig)
 
@@ -1879,7 +1944,7 @@ def fig_generalization(out: pathlib.Path) -> None:
     ]
 
     for v, lab, col, mk in [("proposed", "Proposed", C["proposed"], "o"),
-                            ("scaled_4d", "R2: 4-D Jones-VP", C["r2"], "s")]:
+                            ("scaled_4d", "R2: 4D-JVP", C["r2"], "s")]:
         rs = sel(G, variant=v)
         e = sorted(100 * fnum(r["catastrophic_rate"]) for r in rs)
         y = np.arange(1, len(e) + 1) / len(e)
@@ -1993,7 +2058,7 @@ def fig_generalization(out: pathlib.Path) -> None:
             mfc="white",
             mec=C["r2"],
             mew=0.75,
-            label="4-D VP",
+            label="4D-JVP",
             zorder=2,
         )
 
@@ -2086,7 +2151,7 @@ def fig_generalization(out: pathlib.Path) -> None:
             ls="--",
             mfc="white",
             mec=C["r2"],
-            label="4-D VP",
+            label="4D-JVP",
         ),
     ]
 
@@ -2265,7 +2330,7 @@ def fig_cost(out: pathlib.Path) -> None:
             "o",
         ),
         "scaled_4d": (
-            "4-D VP",
+            "4D-JVP",
             C["r2"],
             "s",
         ),

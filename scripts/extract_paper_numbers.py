@@ -42,7 +42,19 @@ def finite(values) -> list[float]:
 
 
 def pct(values: list[float], q: float) -> float:
-    """Nearest-rank percentile, the convention the released summaries use."""
+    """Nearest-rank percentile, the convention the *manuscript* declares.
+
+    Not the convention the released summary CSVs carry: those are written by
+    ``final_mksc_ccop_common.py`` with ``np.percentile``, i.e. linearly
+    interpolated.  The two agree to the manuscript's displayed precision on
+    unimodal error columns and disagree sharply on bimodal ones, where the
+    interpolated quantile blends across the catastrophic threshold (at -20 dB
+    the proposed route's position p95 is 5.14 mm nearest-rank against 15.0 mm
+    interpolated).  Quantiles are therefore recomputed here from the per-trial
+    columns rather than read from the summary column of the same name, and a
+    small disagreement against a ``*_p95`` summary field is expected, not a
+    regression.
+    """
     vals = sorted(finite(values))
     if not vals:
         return float("nan")

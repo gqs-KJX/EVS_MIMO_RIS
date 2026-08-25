@@ -211,9 +211,9 @@ PEB / PEB$|_{\Delta t\,{\rm known}}$ & $1.050$ & $[1.016,1.498]$\\
 \section{Spatial-Narrowband Sufficient Condition}
 \label{sec:squint_supp}
 
-Section~\ref{main-sec:system_model} of the main paper defines the neglected
-spatial phase $\epsilon_{\rm sq}$ in \eqref{main-eq:squint} and audits it
-through the exact wavefront differences. The
+Section~\ref{main-sec:system_model} of the main paper audits the neglected
+spatial phase
+$\epsilon_{{\rm sq},k}$ through the exact wavefront differences. The
 following closed-form sufficient condition is the design-time version of
 that audit. With fractional bandwidth $\beta_{\rm BW}=B_{\rm occ}/f_c$,
 aperture radius $a_k$, UE range $R_k$, and in-plane direction component
@@ -290,7 +290,7 @@ $\hat\tau$ med. & NMSE (mean / p95) & Time\\
 \midrule
 \multicolumn{8}{c}{\textit{operating region, ${\rm SNR}=-10$~dB}}\\
 \midrule
-R2: baseline Phase~I + 4D-JVP & $1.88\ [0.86,3.53]$ & $97.50$ & $0.4145$ &
+R2: baseline Phase~I + 4-D VP & $1.88\ [0.86,3.53]$ & $97.50$ & $0.4145$ &
 $8.72\!\times\!10^{-4}$ & $0.0338$ & $1.9\!\times\!10^{-2}$ / $1.0\!\times\!10^{-4}$ & $3.87$\\
 R3: baseline Phase~I + CCOP-JVP & $2.08\ [1.00,3.80]$ & $97.50$ & $0.4145$ &
 $8.85\!\times\!10^{-4}$ & $0.0338$ & $2.1\!\times\!10^{-2}$ / $1.0\!\times\!10^{-4}$ & $3.75$\\
@@ -310,7 +310,7 @@ $2.1\!\times\!10^{-3}$ / $8.3\!\times\!10^{-5}$ & $5.44$\\
 \midrule
 \multicolumn{8}{c}{\textit{below the region, ${\rm SNR}=-20$~dB (mechanism)}}\\
 \midrule
-R2: baseline Phase~I + 4D-JVP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.229$ &
+R2: baseline Phase~I + 4-D VP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.229$ &
 $1.613$ & $0.914$ & $2.0\!\times\!10^{-1}$ / $9.96\!\times\!10^{-1}$ & $3.97$\\
 R3: baseline Phase~I + CCOP-JVP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.228$ &
 $1.618$ & $0.914$ & $2.0\!\times\!10^{-1}$ / $9.93\!\times\!10^{-1}$ & $3.83$\\
@@ -666,12 +666,10 @@ read off one scalar sample. Pilots are unit modulus and removed by pilot
 normalization, so with $y_{i,n,t}$ the sample at receive index $i$,
 subcarrier $n$ and configuration $t$,
 \begin{equation}
-\begin{split}
 	y_{i,n,t}=\sum_{k=1}^{K}
-	&\Big(\sum_{m=1}^{M_R}[\bOmega_k]_{t,m}[\bg_k]_m\Big)\\
-	&\times e^{-j2\pi n\Delta f\tau_k}\,
+	\Big(\sum_{m=1}^{M_R}[\bOmega_k]_{t,m}[\bg_k]_m\Big)
+	e^{-j2\pi n\Delta f\tau_k}\,
 	[\bBm_k]_{i,:}\bx_k+n_{i,n,t},
-\end{split}
 	\label{eq:s_scalar}
 \end{equation}
 with $\bg_k=\bg_k(\bp)$ as in main-paper Eq.~\eqref{main-eq:hk}. The inner
@@ -1053,9 +1051,9 @@ The p99 column needs the sampling caveat recorded in the table caption, and
 the reason is structural rather than incidental. When the catastrophic mass
 sits near $1\%$, the p99 order statistic of $960$ trials falls between the
 inlier and outlier populations and reports whichever of the two it happens
-to land in: at $-10$~dB it is $1019$~mm for range-scaled 4D-JVP against
+to land in: at $-10$~dB it is $1019$~mm for range-scaled 4-D VP against
 $1.35$~mm for the proposed route, and its bootstrap interval spans
-$[443,1880]$ and $[989,1310]$~mm for range-scaled 4D-JVP and VBI/SBL, the
+$[443,1880]$ and $[989,1310]$~mm for range-scaled 4-D VP and VBI/SBL, the
 two routes whose mass is closest to that boundary. The main paper therefore reads the tail from the
 catastrophic rate and the full complementary cumulative distribution rather
 than from a single quantile, and p95 is quoted where a quantile is wanted.
@@ -1071,7 +1069,7 @@ catastrophic trials are included. The p99 column indicates tail mass but
 does not resolve it: for a route carrying about $1\%$ catastrophic mass
 that order statistic lands on the boundary between the two modes, giving
 bootstrap $95\%$ intervals at $-10$~dB of $[443,1880]$ and $[989,1310]$~mm
-for range-scaled 4D-JVP and VBI/SBL against $[1.09,1.63]$~mm for the
+for range-scaled 4-D VP and VBI/SBL against $[1.09,1.63]$~mm for the
 proposed route. The main paper's complementary CDFs carry the tail
 comparison.}
 \label{tab:s_benchmark_main}
@@ -1092,7 +1090,7 @@ VBI/SBL, as published & $26.2$ & $636$ & $1099$ & $9.79$ & $26.1$ & $1.15$ &
 $0.119$ & $26.1$ & $1.06/1.10$\\
 Near-field RIS OMP--SAGE--WLS & $1246$ & $1880$ & $2144$ & $100$ & $1253$ & $100$ &
 $0.988$ & $1250$ & $11.5/1.72$\\
-Range-scaled 4D-JVP & $0.312$ & $0.918$ & $1019$ & $1.98$ & $0.0977$ & $0$ &
+Range-scaled 4-D VP & $0.312$ & $0.918$ & $1019$ & $1.98$ & $0.0977$ & $0$ &
 $5.5\!\times\!10^{-6}$ & $0.0031$ & $2.42/1.79$\\
 \textbf{Proposed} & $\mathbf{0.310}$ & $\mathbf{0.850}$ & $\mathbf{1.35}$ & $\mathbf{0.42}$ &
 $\mathbf{0.0977}$ & $\mathbf{0}$ & $\mathbf{5.2\!\times\!10^{-6}}$ & $\mathbf{0.0031}$ & $3.20/2.52$\\
@@ -1449,7 +1447,7 @@ Route & Time [s] & Peak RSS [GB]\\
 Algebraic CPD + mapping & $4.51$ & $1.07$\\
 VBI/SBL, as published & $1.06$ & $1.10$\\
 Near-field RIS OMP--SAGE--WLS & $11.5$ & $1.72$\\
-Range-scaled 4D-JVP & $2.42$ & $1.79$\\
+Range-scaled 4-D VP & $2.42$ & $1.79$\\
 Proposed & $3.20$ & $2.52$\\
 \bottomrule
 \end{tabular}
@@ -1633,8 +1631,7 @@ in seven) and are reported for completeness only.
 \includegraphics[width=\textwidth]{fig_receiver.pdf}
 \caption{Receiver-mode study over the full campaign range under nested
 component masks at a common absolute noise level. Panels extend
-Fig.~\ref{main-fig:c1_receiver} of the main paper, which carries panel~(a)
-only. The efficiency ratios
+Fig.~\ref{main-fig:c1_receiver} of the main paper. The efficiency ratios
 of the masked modes below $-10$~dB
 are conditioned on a small inlier subset and are reported for completeness
 only.}
@@ -1660,7 +1657,7 @@ this is a property of
 the evaluated adaptation on this scene, not a general claim about
 uniform dominance outside the tested region or about the reference
 method's capability. The two in-model routes degrade as in the operating
-region, only more so: range-scaled 4D-JVP loses its basin four to five
+region, only more so: range-scaled 4-D VP loses its basin four to five
 times as often as the proposed route ($22.08\%$ against $5.00\%$ at
 $-20$~dB, $6.88\%$ against $1.25\%$ at $-15$~dB), and the Algebraic CPD
 adaptation, already carrying the $33.6$--$37.5\%$ high-SNR floor of
@@ -1700,7 +1697,7 @@ VBI/SBL, as published & $33.02$ & $30.1$ & $1150$ &
 $19.38$ & $26.5$ & $990$\\
 Near-field RIS OMP--SAGE--WLS & $99.90$ & $1275$ & $1904$ &
 $99.79$ & $1256$ & $1899$\\
-R2: range-scaled 4D-JVP & $22.08$ & $1.19$ & $1638$ &
+R2: range-scaled 4-D VP & $22.08$ & $1.19$ & $1638$ &
 $6.88$ & $0.571$ & $708$\\
 \textbf{Proposed} & $\mathbf{5.00}$ & $\mathbf{1.01}$ &
 $\mathbf{5.14}$ & $\mathbf{1.25}$ & $\mathbf{0.554}$ & $\mathbf{1.58}$\\
@@ -1715,8 +1712,7 @@ Free-Jones PEB (RMS) & --- & $1.39$ & --- & --- & $0.783$ & ---\\
 \includegraphics[width=\textwidth]{fig_benchmark.pdf}
 \caption{External benchmark over the full campaign range, $960$
 shared-realization trials per SNR point. Panels extend
-Fig.~\ref{main-fig:benchmark_combined} of the main paper, which carries the
-median and CCDF columns only. In~(c), among the
+Fig.~\ref{main-fig:benchmark_combined} of the main paper. In~(c), among the
 evaluated native-readout adaptations the proposed route holds the lowest
 catastrophic rate at every tested SNR, including the two points below the
 operating region, where the evaluated near-field OMP adaptation's
@@ -1728,8 +1724,7 @@ far-field direction-acquisition stage fails on essentially every trial.}
 \centering
 \includegraphics[width=\textwidth]{fig_benchmark_clock.pdf}
 \caption{External synchronization comparison over the full campaign range.
-The main paper reports these quantities numerically in its benchmark section
-rather than as panels.
+Panels extend Fig.~\ref{main-fig:benchmark_combined}(e)--(f) of the main paper.
 The two leftmost points of each curve lie below the reported operating region.}
 \label{fig:s_benchmark_clock}
 \end{figure*}

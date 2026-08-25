@@ -152,13 +152,12 @@ Parameter & Value\\
 $f_c$ & $60$~GHz ($\lambda_c=5.00$~mm)\\
 RISs & $K=3$, $64\times64$, $\lambda_c/2$ spacing\\
 BS array & $M_A=16$ full-EVS ULA, $\lambda_c/2$ spacing\\
-OFDM / smoothing & $N=63$, $\Delta f=5$~MHz; $P=L=32$\\
+OFDM / Hankel & $N=63$, $\Delta f=5$~MHz; $P=L=32$\\
 Training & $T=256$ RIS configurations; block-static UE, clock, Jones states,
 and gains\\
 Clock & $\Delta t^\star=5$~ns; $\mathcal T=[0,10]$~ns\\
 Path gains & $\beta_k\stackrel{\rm iid}{\sim}\mathcal{CN}(0,1/K)$\\
-Jones states & $\be_k=[\sin\gamma_k e^{j\psi_k},\cos\gamma_k]^{\mathsf T}$,
-$\gamma_k\stackrel{\rm iid}{\sim}\mathcal U(0.35,1.10)$,
+Jones states & $\gamma_k\stackrel{\rm iid}{\sim}\mathcal U(0.35,1.10)$;
 $\psi_k\stackrel{\rm iid}{\sim}\mathcal U(-\pi,\pi]$\\
 SNR & $10\log_{10}(\|\bmu_{\rm act}\|_2^2/(M_{\rm act}\sigma^2))$; the
 receiver-mode study reuses the full-EVS $\sigma^2$ across masks\\
@@ -211,9 +210,9 @@ PEB / PEB$|_{\Delta t\,{\rm known}}$ & $1.050$ & $[1.016,1.498]$\\
 \section{Spatial-Narrowband Sufficient Condition}
 \label{sec:squint_supp}
 
-Section~\ref{main-sec:system_model} of the main paper defines the neglected
-spatial phase $\epsilon_{\rm sq}$ in \eqref{main-eq:squint} and audits it
-through the exact wavefront differences. The
+Section~\ref{main-sec:system_model} of the main paper audits the neglected
+spatial phase
+$\epsilon_{{\rm sq},k}$ through the exact wavefront differences. The
 following closed-form sufficient condition is the design-time version of
 that audit. With fractional bandwidth $\beta_{\rm BW}=B_{\rm occ}/f_c$,
 aperture radius $a_k$, UE range $R_k$, and in-plane direction component
@@ -275,9 +274,9 @@ main paper.
 one component; all rungs share seeds, scenes, noise realizations and
 Phase~II route. $P_{\rm cat}$ intervals are exact Clopper--Pearson. The
 $-10$~dB block is the operating-region result; the $-20$~dB block is below
-the reported region and is the one reproduced, reduced to the catastrophic
-rate, basin, p95 error and p95 NMSE columns, as
-Table~\ref{main-tab:c2_ladder} of the main paper.}
+the reported region and is the one reproduced, with the delay and
+reconstruction columns dropped, as Table~\ref{main-tab:c2_ladder} of the
+main paper.}
 \label{tab:s_ablation}
 \centering
 \scriptsize
@@ -290,7 +289,7 @@ $\hat\tau$ med. & NMSE (mean / p95) & Time\\
 \midrule
 \multicolumn{8}{c}{\textit{operating region, ${\rm SNR}=-10$~dB}}\\
 \midrule
-R2: baseline Phase~I + 4D-JVP & $1.88\ [0.86,3.53]$ & $97.50$ & $0.4145$ &
+R2: baseline Phase~I + 4-D VP & $1.88\ [0.86,3.53]$ & $97.50$ & $0.4145$ &
 $8.72\!\times\!10^{-4}$ & $0.0338$ & $1.9\!\times\!10^{-2}$ / $1.0\!\times\!10^{-4}$ & $3.87$\\
 R3: baseline Phase~I + CCOP-JVP & $2.08\ [1.00,3.80]$ & $97.50$ & $0.4145$ &
 $8.85\!\times\!10^{-4}$ & $0.0338$ & $2.1\!\times\!10^{-2}$ / $1.0\!\times\!10^{-4}$ & $3.75$\\
@@ -310,20 +309,20 @@ $2.1\!\times\!10^{-3}$ / $8.3\!\times\!10^{-5}$ & $5.44$\\
 \midrule
 \multicolumn{8}{c}{\textit{below the region, ${\rm SNR}=-20$~dB (mechanism)}}\\
 \midrule
-R2: baseline Phase~I + 4D-JVP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.229$ &
+R2: baseline Phase~I + 4-D VP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.229$ &
 $1.613$ & $0.914$ & $2.0\!\times\!10^{-1}$ / $9.96\!\times\!10^{-1}$ & $3.97$\\
 R3: baseline Phase~I + CCOP-JVP & $21.46\ [17.87,25.41]$ & $62.08$ & $1.228$ &
 $1.618$ & $0.914$ & $2.0\!\times\!10^{-1}$ / $9.93\!\times\!10^{-1}$ & $3.83$\\
 A1: \;+ MKSC delay compression & $5.62\ [3.74,8.08]$ & $78.12$ & $1.270$ &
-$0.276$ & $0.125$ & $5.3\!\times\!10^{-2}$ / $8.8\!\times\!10^{-1}$ & $3.99$\\
+$0.277$ & $0.125$ & $5.3\!\times\!10^{-2}$ / $8.9\!\times\!10^{-1}$ & $3.99$\\
 A2: \;+ common geometry (1 start) & $3.96\ [2.40,6.11]$ & $96.04$ & $1.278$ &
-$3.09\!\times\!10^{-3}$ & $0.125$ & $3.8\!\times\!10^{-2}$ / $2.7\!\times\!10^{-2}$ & $4.38$\\
+$3.09\!\times\!10^{-3}$ & $0.125$ & $3.8\!\times\!10^{-2}$ / $2.8\!\times\!10^{-2}$ & $4.38$\\
 A3: \;+ four deterministic starts & $3.54\ [2.08,5.61]$ & $96.25$ & $1.277$ &
 $3.05\!\times\!10^{-3}$ & $0.125$ & $3.3\!\times\!10^{-2}$ / $2.6\!\times\!10^{-2}$ & $5.46$\\
 \textbf{Proposed}: \;+ anchor refresh & $\mathbf{3.54}\ [2.08,5.61]$ &
 $\mathbf{96.25}$ & $\mathbf{1.275}$ & $\mathbf{3.06\!\times\!10^{-3}}$ &
 $\mathbf{0.125}$ & $\mathbf{3.3\!\times\!10^{-2}}$ /
-$\mathbf{9.6\!\times\!10^{-4}}$ & $5.59$\\
+$\mathbf{9.7\!\times\!10^{-4}}$ & $5.59$\\
 \;\;\emph{ctrl:} oracle-position start & $3.33\ [1.92,5.36]$ & $96.46$ &
 $1.274$ & $2.98\!\times\!10^{-3}$ & $0.125$ &
 $3.0\!\times\!10^{-2}$ / $9.4\!\times\!10^{-4}$ & $5.64$\\
@@ -338,7 +337,7 @@ $3.0\!\times\!10^{-2}$ / $9.4\!\times\!10^{-4}$ & $5.64$\\
 $-20$~dB (dashed, below it). (a)~Catastrophic rate with exact $95\%$
 intervals; annotations between rungs are absolute percentage-point changes
 at $-20$~dB. (b)~Phase~I basin acquisition rate. (c)~Empirical position-error
-CDF for the five rungs; the $-20$~dB R3 plateau is
+CDF for the four informative rungs; the $-20$~dB R3 plateau is
 wrong-basin mass, removed chiefly by MKSC delay compression (A1) and
 further reduced by the common-geometry initializer (A2).}
 \label{fig:s_ablation}
@@ -363,15 +362,9 @@ statistics behind it.}
 This section gives the full test table behind
 Fig.~\ref{main-fig:c1_separability} and the separability claim of
 Section~\ref{main-subsec:res_c1}. Each cell is $480$ paired trials at
-$-10$~dB at one delay separation and one Jones overlap. A trial counts as
-resolved when four conditions hold jointly: the estimator does not fail, it
-returns exactly $K$ components, every component is paired with the correct
-physical panel, its largest Phase-I delay error is at most $0.5$~ns, and its
-smallest estimated delay separation is at least $0.05$~ns. Position accuracy
-is deliberately not part of the criterion, so the statistic measures
-separation of the components themselves rather than the accuracy of the fix
-built on them; a failure of any condition leaves the trial in the
-denominator. Table~\ref{tab:s_resolv} reports the resolution probability
+$-10$~dB at one delay separation and one Jones overlap, and a pair counts as
+resolved when both components are recovered within the stated position
+tolerance. Table~\ref{tab:s_resolv} reports the resolution probability
 against overlap for the three receiver modes.
 
 At $1$~ns separation full EVS resolves the pair with probability
@@ -383,14 +376,11 @@ $0.53$ at $0.5$~ns, varying by less than $0.018$ over the four overlaps,
 while at $0.1$~ns no mode resolves more than one pair in $480$ trials.
 
 The overlap-invariance of the full-EVS curves is a tested null and not a
-reading of the plot. A two-sided Cochran--Armitage trend test of resolution
-probability against overlap is insignificant in all six full-EVS delay
-cells, with Holm-adjusted $p=1.00$ in every cell, and a Fisher exact test
-between the two extreme overlaps gives $p\ge0.70$; the reduced modes reject
-the same null decisively, with smallest Holm-adjusted $p$ of
-$1.7\times10^{-180}$ for dual-polarized and $1.4\times10^{-99}$ for scalar
-reception, the adjustment being applied within each mode over the delay
-cells in which the test is defined. The largest full-EVS spread across overlap is $1.7$
+reading of the plot. A Cochran--Armitage trend test of resolution probability
+against overlap is insignificant in all six full-EVS delay cells, with
+Holm-adjusted $p=1.00$, and a Fisher exact test between the two extreme
+overlaps gives $p\ge0.70$; the reduced modes reject the same null at $p$ down
+to $10^{-181}$. The largest full-EVS spread across overlap is $1.7$
 percentage points, well inside the $4.6$-point exact Clopper--Pearson
 half-width of a single cell, whereas the dual-polarized and scalar modes span
 $82.7$ and $61.9$ points. At small delay separation every receiver mode
@@ -401,8 +391,7 @@ only for the reduced-component modes.
 \caption{Resolvability test summary at $-10$~dB, $480$ paired trials per
 cell. ``Spread'' is the largest difference in resolution probability across
 the four Jones overlaps at fixed delay separation, and the trend-test column
-reports the smallest Holm-adjusted two-sided Cochran--Armitage $p$ value over
-overlap across that mode's delay cells.}
+reports the Holm-adjusted Cochran--Armitage $p$ value over overlap.}
 \label{tab:s_resolv}
 \centering
 \scriptsize
@@ -412,8 +401,8 @@ overlap across that mode's delay cells.}
 Mode & Spread [pts] & Trend test & Min.\ cell\\
 \midrule
 Full EVS (6 comp.) & $1.7$ & $p=1.00$ & $0.53$ at $0.5$~ns\\
-Dual-polarized (2 comp.) & $82.7$ & $1.7\times10^{-180}$ & $0.002$ at overlap $0.1$\\
-Scalar (1 comp.) & $61.9$ & $1.4\times10^{-99}$ & $0$ at overlap $0.1$\\
+Dual-polarized (2 comp.) & $82.7$ & $p\le10^{-181}$ & $0.002$ at overlap $0.1$\\
+Scalar (1 comp.) & $61.9$ & $p\le10^{-181}$ & $0$ at overlap $0.1$\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -594,12 +583,12 @@ the main paper.
 \caption{MKSC-GI Initialized CCOP-JVP}
 \label{alg:s_mksc_ccop}
 \begin{algorithmic}[1]
-\REQUIRE $\{\bY_t\}_{t=1}^{T}$, calibrated infrastructure, $\mathcal P$, $\mathcal T$, $K$
+\REQUIRE $\mathcal Y$, calibrated infrastructure, $\mathcal P$, $\mathcal T$, $K$
 \REQUIRE constants $\lambda_{\rm rel},\lambda_{\rm fl},w_{\rm clk},
 \varrho_0,w_{\min},\{\lambda_k\},\epsilon_{\rm clk}$ as fixed in
 Section~\ref{sec:impl_supp}
-\STATE Build $\bQ_S$ from calibration; compress the receive index of each $\bY_t$.
-\STATE Estimate $K$ poles from $\bY_f$; rebuild the Vandermonde design $\bD$.
+\STATE Hankelize; build $\bQ_S$; compress only the EVS mode.
+\STATE Estimate $K$ poles; rebuild both frequency factors from each shared pole.
 \STATE Recover coupled factors by \eqref{main-eq:coupledls_short}; split and lift each column.
 \STATE Assign columns to panels by \eqref{main-eq:assoc_score}--\eqref{main-eq:assoc_perm}.
 \STATE Generate Rayleigh-spaced beam-space proposals by adjoint/Fresnel-dechirp 2-D transform; re-score by \eqref{main-eq:Jris_short}, the exact spherical-wave model, and refine.
@@ -666,12 +655,10 @@ read off one scalar sample. Pilots are unit modulus and removed by pilot
 normalization, so with $y_{i,n,t}$ the sample at receive index $i$,
 subcarrier $n$ and configuration $t$,
 \begin{equation}
-\begin{split}
 	y_{i,n,t}=\sum_{k=1}^{K}
-	&\Big(\sum_{m=1}^{M_R}[\bOmega_k]_{t,m}[\bg_k]_m\Big)\\
-	&\times e^{-j2\pi n\Delta f\tau_k}\,
+	\Big(\sum_{m=1}^{M_R}[\bOmega_k]_{t,m}[\bg_k]_m\Big)
+	e^{-j2\pi n\Delta f\tau_k}\,
 	[\bBm_k]_{i,:}\bx_k+n_{i,n,t},
-\end{split}
 	\label{eq:s_scalar}
 \end{equation}
 with $\bg_k=\bg_k(\bp)$ as in main-paper Eq.~\eqref{main-eq:hk}. The inner
@@ -680,17 +667,24 @@ carrying both the spherical UE--RIS and plane-wave RIS--BS phases; the
 exponential is the OFDM ramp of the cascaded delay; and
 $[\bBm_k]_{i,:}\bx_k$ is the Maxwell--Jones response. All $K$ panels
 reflect in every configuration, so their contributions add coherently, and
-because \eqref{eq:s_scalar} separates in $t$, $n$ and $i$, ordering the
-samples with the EVS index fastest and stacking reproduces main-paper
-Eq.~\eqref{main-eq:Ak}, while reading $i$ down the rows and $n$ across the
-columns at fixed $t$ gives main-paper Eq.~\eqref{main-eq:obsmat}.
+because \eqref{eq:s_scalar} separates in $t$, $n$ and $i$, ordering
+$\mathcal Y$ with the EVS index fastest and stacking reproduces
+main-paper Eq.~\eqref{main-eq:Ak}.
 
-\subsection{Frequency Smoothing and Delay Poles}
+\subsection{Hankel Construction and Delay Poles}
 
-Pole estimation runs on the compressed frequency matrix
-$\bY_f\in\C^{N\times rT}$ of main-paper Eq.~\eqref{main-eq:freqsnap}, which
-treats the compressed receive and training indices as snapshots. It is
-augmented in forward--backward form
+The frequency axis is smoothed with the balanced window
+$P=\lceil N/2\rceil$, $L=N+1-P$, and the lift is the plain Hankel map
+$[\mathcal Z]_{i,p,\ell,t}=[\mathcal Y]_{i,\,p+\ell,\,t}$ for
+$p=0,\ldots,P-1$ and $\ell=0,\ldots,L-1$, so the two frequency modes share
+every tone through their anti-diagonals. The inverse map averages
+anti-diagonals with the multiplicity weights $1/\#\{(p,\ell):p+\ell=n\}$.
+
+Pole estimation does not run on the lifted tensor directly. The compressed
+tensor is first mapped back by that averaging inverse, reshaped to a
+frequency-by-snapshot matrix $\bY_f\in\C^{N\times rT}$ that treats the
+compressed EVS and training indices as snapshots, and then augmented in
+forward--backward form
 $\bY_{\rm aug}=[\bY_f,\ \bJ\bY_f^{\ast}]$ with $\bJ$ the exchange matrix.
 The $K$ leading left singular vectors of $\bY_{\rm aug}$ give the signal
 subspace $\bE_s$; the shift-invariant pair is $\bE_1=\bE_s(1{:}N-1,:)$ and
@@ -698,25 +692,9 @@ $\bE_2=\bE_s(2{:}N,:)$, and the rotation is taken by total least squares,
 $\bPsi_{\rm TLS}=-\bV_{12}\bV_{22}^{-1}$ from the right singular vectors of
 $[\bE_1,\bE_2]$, falling back to ordinary least squares when
 $N-1<2K$. The poles are the eigenvalues of $\bPsi_{\rm TLS}$, each divided
-by its modulus so that only the delay phase survives. The shift invariance
-is therefore read on the tone index itself, over the full $N$-tone
-aperture, and no smoothing window enters the pole estimate.
-
-The smoothing weights of main-paper Eq.~\eqref{main-eq:coupledls_short} use
-the balanced window $P=\lceil N/2\rceil$, $L=N+1-P$, so that
-$w_n=\#\{(p,\ell):p+\ell=n\}$ over $0\le p<P$, $0\le\ell<L$ is the
-triangular anti-diagonal count of the plain Hankel lift
-$[\mathcal Z]_{i,p,\ell,t}=[\bY_t]_{i,\,p+\ell}$. The implementation stores
-the observation in that lifted form and solves
-\eqref{main-eq:coupledls_short} there, against the design whose $k$th column
-is $\bd_{P,k}\otimes\bd_{L,k}$ with $[\bd_{P,k}]_p=z_k^{p}$ and
-$[\bd_{L,k}]_\ell=z_k^{\ell}$. Since
-$\sum_{p,\ell}z_k^{p+\ell}\overline{z_l^{p+\ell}}
-=\sum_n w_n z_k^n\bar z_l^n$, and identically for the correlation against
-the data, the lifted normal equations and the weighted matrix ones of
-\eqref{main-eq:coupledls_short} are the same linear system, agreeing to
-machine precision in the shipped code. Nothing is decomposed in the lifted
-domain.
+by its modulus so that only the delay phase survives. Hankelization
+therefore acts as a structured denoiser and the shift invariance is read on
+the tone index itself.
 
 The coupled recovery \eqref{main-eq:coupledls_short} uses the Tikhonov
 loading $\lambda_\tau=\lambda_{\rm rel}
@@ -817,10 +795,8 @@ untouched.
 \label{sec:complexity_supp}
 
 This section gives the term-by-term cost accounting summarized in
-Section~\ref{main-sec:analysis}. The receive projection costs $O(IrNT)$ on
-the matrices themselves; the implementation applies it to the stored
-smoothed array instead, at $O(IrPLT)$, and pays $O(rTPLK+PLK^2+K^3)$ for
-compressed factor recovery, the
+Section~\ref{main-sec:analysis}. Phase~I costs $O(IrPLT)$ for the mode-1
+contraction and $O(rTPLK+PLK^2+K^3)$ for compressed factor recovery, the
 last term being the $K\times K$ solve in
 \eqref{main-eq:coupledls_short}. Beam-space acquisition requires one RIS
 adjoint pass \eqref{main-eq:adjoint_short} plus $G_r$ two-dimensional FFTs
@@ -963,10 +939,10 @@ median improves to $0.608$~mm at $-10$~dB and $0.135$~mm at $0$~dB, so the
 route is bimodal: trials whose acquisition reaches the correct basin are
 repaired by the common refinement, and the remaining mass is not, at any
 SNR. The paired McNemar test rejects equality against the proposed route
-($0$ against $399$ discordant trials). This tier therefore locates the loss
-upstream of the refinement it grants, which is the opposite diagnosis from
-VBI/SBL's; Section~\ref{sec:als} narrows it further, and in particular rules
-out panel association as the mechanism.
+($0$ against $399$ discordant trials). Together with
+Section~\ref{sec:als} this places the dominant Algebraic CPD loss in
+acquisition and panel association rather than in the final geometric map,
+which is the opposite diagnosis from VBI/SBL's.
 
 \begin{table}[t]
 \caption{Refinement-matched audit at $-10$~dB, $960$ trials per cell on an
@@ -1053,9 +1029,9 @@ The p99 column needs the sampling caveat recorded in the table caption, and
 the reason is structural rather than incidental. When the catastrophic mass
 sits near $1\%$, the p99 order statistic of $960$ trials falls between the
 inlier and outlier populations and reports whichever of the two it happens
-to land in: at $-10$~dB it is $1019$~mm for range-scaled 4D-JVP against
+to land in: at $-10$~dB it is $1019$~mm for range-scaled 4-D VP against
 $1.35$~mm for the proposed route, and its bootstrap interval spans
-$[443,1880]$ and $[989,1310]$~mm for range-scaled 4D-JVP and VBI/SBL, the
+$[443,1880]$ and $[989,1310]$~mm for range-scaled 4-D VP and VBI/SBL, the
 two routes whose mass is closest to that boundary. The main paper therefore reads the tail from the
 catastrophic rate and the full complementary cumulative distribution rather
 than from a single quantile, and p95 is quoted where a quantile is wanted.
@@ -1071,7 +1047,7 @@ catastrophic trials are included. The p99 column indicates tail mass but
 does not resolve it: for a route carrying about $1\%$ catastrophic mass
 that order statistic lands on the boundary between the two modes, giving
 bootstrap $95\%$ intervals at $-10$~dB of $[443,1880]$ and $[989,1310]$~mm
-for range-scaled 4D-JVP and VBI/SBL against $[1.09,1.63]$~mm for the
+for range-scaled 4-D VP and VBI/SBL against $[1.09,1.63]$~mm for the
 proposed route. The main paper's complementary CDFs carry the tail
 comparison.}
 \label{tab:s_benchmark_main}
@@ -1092,7 +1068,7 @@ VBI/SBL, as published & $26.2$ & $636$ & $1099$ & $9.79$ & $26.1$ & $1.15$ &
 $0.119$ & $26.1$ & $1.06/1.10$\\
 Near-field RIS OMP--SAGE--WLS & $1246$ & $1880$ & $2144$ & $100$ & $1253$ & $100$ &
 $0.988$ & $1250$ & $11.5/1.72$\\
-Range-scaled 4D-JVP & $0.312$ & $0.918$ & $1019$ & $1.98$ & $0.0977$ & $0$ &
+Range-scaled 4-D VP & $0.312$ & $0.918$ & $1019$ & $1.98$ & $0.0977$ & $0$ &
 $5.5\!\times\!10^{-6}$ & $0.0031$ & $2.42/1.79$\\
 \textbf{Proposed} & $\mathbf{0.310}$ & $\mathbf{0.850}$ & $\mathbf{1.35}$ & $\mathbf{0.42}$ &
 $\mathbf{0.0977}$ & $\mathbf{0}$ & $\mathbf{5.2\!\times\!10^{-6}}$ & $\mathbf{0.0031}$ & $3.20/2.52$\\
@@ -1449,7 +1425,7 @@ Route & Time [s] & Peak RSS [GB]\\
 Algebraic CPD + mapping & $4.51$ & $1.07$\\
 VBI/SBL, as published & $1.06$ & $1.10$\\
 Near-field RIS OMP--SAGE--WLS & $11.5$ & $1.72$\\
-Range-scaled 4D-JVP & $2.42$ & $1.79$\\
+Range-scaled 4-D VP & $2.42$ & $1.79$\\
 Proposed & $3.20$ & $2.52$\\
 \bottomrule
 \end{tabular}
@@ -1497,8 +1473,8 @@ projection, $0.85$~s for four-start common geometry, $0.09$~s for anchor
 refresh, $0.33$~s for certified Phase~II, and $1.69$~s for the remaining
 Phase~I blocks. Absolute seconds are not portable across machines, so the
 benchmark and the decomposition are profiled on one host throughout. Peak
-RSS is $2.52$~GB, dominated by the smoothed array the implementation
-retains for the receive projection. The detailed accuracy--cost comparison is shown in
+RSS is $2.52$~GB, dominated by the raw Hankel tensor retained for the
+mode-1 contraction. The detailed accuracy--cost comparison is shown in
 Fig.~\ref{fig:s_cost}.
 
 \begin{figure*}[t]
@@ -1582,7 +1558,7 @@ largest exactly where the estimator is most fragile
 (Fig.~\ref{fig:s_compression}), and the single-factor protocol of the main
 paper is unchanged: both arms are compressed everywhere except in the delay
 subspace estimate. At $-15$~dB the p95 Phase~I delay error improves from
-$28.8$ to $2.52$~ns, the basin acquisition rate from $93.33\%$ to
+$28.8$ to $2.53$~ns, the basin acquisition rate from $93.33\%$ to
 $98.33\%$, and the catastrophic rate from $6.04\%$ to $1.46\%$; at
 $-20$~dB the p95 improves from $46.9$ to $28.4$~ns, the basin rate from
 $81.04\%$ to $93.54\%$, and the catastrophic rate from $17.08\%$ to
@@ -1633,8 +1609,7 @@ in seven) and are reported for completeness only.
 \includegraphics[width=\textwidth]{fig_receiver.pdf}
 \caption{Receiver-mode study over the full campaign range under nested
 component masks at a common absolute noise level. Panels extend
-Fig.~\ref{main-fig:c1_receiver} of the main paper, which carries panel~(a)
-only. The efficiency ratios
+Fig.~\ref{main-fig:c1_receiver} of the main paper. The efficiency ratios
 of the masked modes below $-10$~dB
 are conditioned on a small inlier subset and are reported for completeness
 only.}
@@ -1650,8 +1625,8 @@ lowest median, p95 and catastrophic rate at both points. The evaluated
 near-field OMP adaptation -- whose exhaustive dictionary search needs no
 initializer -- no longer provides a lower-catastrophic-rate fallback: its
 far-field direction-acquisition stage fails to bracket a reliable basin on
-essentially every trial at $-15$ and $-20$~dB (catastrophic rate $99.79\%$
-and $99.90\%$, against $1.25\%$ and $5.00\%$ for the proposed route). The
+essentially every trial at $-15$ and $-20$~dB (catastrophic rate $100\%$
+at both, against $1.25\%$ and $5.00\%$ for the proposed route). The
 crossover argument of earlier campaigns -- that an initializer-free grid
 search trades resolution for low-SNR robustness -- therefore does not
 hold for this evaluated adaptation once its acquisition stage is
@@ -1660,7 +1635,7 @@ this is a property of
 the evaluated adaptation on this scene, not a general claim about
 uniform dominance outside the tested region or about the reference
 method's capability. The two in-model routes degrade as in the operating
-region, only more so: range-scaled 4D-JVP loses its basin four to five
+region, only more so: range-scaled 4-D VP loses its basin four to five
 times as often as the proposed route ($22.08\%$ against $5.00\%$ at
 $-20$~dB, $6.88\%$ against $1.25\%$ at $-15$~dB), and the Algebraic CPD
 adaptation, already carrying the $33.6$--$37.5\%$ high-SNR floor of
@@ -1700,7 +1675,7 @@ VBI/SBL, as published & $33.02$ & $30.1$ & $1150$ &
 $19.38$ & $26.5$ & $990$\\
 Near-field RIS OMP--SAGE--WLS & $99.90$ & $1275$ & $1904$ &
 $99.79$ & $1256$ & $1899$\\
-R2: range-scaled 4D-JVP & $22.08$ & $1.19$ & $1638$ &
+R2: range-scaled 4-D VP & $22.08$ & $1.19$ & $1638$ &
 $6.88$ & $0.571$ & $708$\\
 \textbf{Proposed} & $\mathbf{5.00}$ & $\mathbf{1.01}$ &
 $\mathbf{5.14}$ & $\mathbf{1.25}$ & $\mathbf{0.554}$ & $\mathbf{1.58}$\\
@@ -1715,8 +1690,7 @@ Free-Jones PEB (RMS) & --- & $1.39$ & --- & --- & $0.783$ & ---\\
 \includegraphics[width=\textwidth]{fig_benchmark.pdf}
 \caption{External benchmark over the full campaign range, $960$
 shared-realization trials per SNR point. Panels extend
-Fig.~\ref{main-fig:benchmark_combined} of the main paper, which carries the
-median and CCDF columns only. In~(c), among the
+Fig.~\ref{main-fig:benchmark_combined} of the main paper. In~(c), among the
 evaluated native-readout adaptations the proposed route holds the lowest
 catastrophic rate at every tested SNR, including the two points below the
 operating region, where the evaluated near-field OMP adaptation's
@@ -1728,8 +1702,7 @@ far-field direction-acquisition stage fails on essentially every trial.}
 \centering
 \includegraphics[width=\textwidth]{fig_benchmark_clock.pdf}
 \caption{External synchronization comparison over the full campaign range.
-The main paper reports these quantities numerically in its benchmark section
-rather than as panels.
+Panels extend Fig.~\ref{main-fig:benchmark_combined}(e)--(f) of the main paper.
 The two leftmost points of each curve lie below the reported operating region.}
 \label{fig:s_benchmark_clock}
 \end{figure*}
@@ -1783,18 +1756,7 @@ and finite-bandwidth ambiguities are not excluded.
 
 Theorem~\ref{main-thm:split} and its proof, including the Kronecker
 projector splitting lemma on which both parts rest, are in the main paper.
-A numerical audit and two remarks extend them.
-
-The audit evaluates the single-panel free-Jones EFIM under the three
-component masks at $-10$~dB on the reference geometry and compares it with
-$\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full}$ entrywise. The relative
-deviation from an exact scalar multiple is $5.7\times10^{-16}$ for the
-scalar mask and $4.9\times10^{-16}$ for the dual-polarized mask, at EFIM
-condition number $4.2\times10^{4}$, so \eqref{main-eq:c1_scaling} holds to
-working precision rather than approximately; the retained-energy ratios
-$\alpha_{\bS_{\rm mode}}$ are $0.0368$ and $0.306$ and reproduce the
-measured PEB ratios $5.2$ and $1.8$ of that geometry through
-$\alpha^{-1/2}$.
+Two remarks extend them.
 
 First, the exact single-panel ratio
 $\alpha_{\bS_{\rm mode}}=\|\bS_{\rm mode}\bTheta\bx\|^2/\|\bTheta\bx\|^2$
@@ -1830,7 +1792,7 @@ to a projected observation and can change the estimate through noise
 suppression. Only the likelihood isometry is deterministic, holding pointwise
 for every candidate and any observation, so it can move neither the final
 objective nor its optimum. Pole preservation adds four conditions, namely
-distinct poles, an adequate frequency aperture, nonzero paths, and full
+distinct poles, adequate smoothing dimensions, nonzero paths, and full
 compressed snapshot rank, which the implementation records instead of
 assuming. Under colored noise an optimal processor would whiten or use a
 covariance-weighted projector, so the unwhitened sweep of the main paper is a
@@ -1862,21 +1824,20 @@ systematically dependent panel signatures.
 \label{sec:technical_proofs_supp}
 
 \begin{lemma}[Equivariant coupled-recovery lift]
-Let $\mathcal F$ map an observation to its recovered EVS and RIS factors
-through main-paper Eq.~\eqref{main-eq:coupledls_short} and a leading
-rank-one split, and write $\bQ_S^{\mathsf H}\bY$ for the receive projection
-applied to every $\bY_t$. Then
+Let $\mathcal F$ map a Hankel tensor to its recovered EVS and RIS factors
+through main-paper Eq.~\eqref{main-eq:coupledls_short} and a leading rank-one
+split. Then
 \begin{equation}
- \bQ_S\,\mathcal F(\bQ_S^{\mathsf H}\bY)
- =\mathcal F(\bQ_S\bQ_S^{\mathsf H}\bY),
+ \bQ_S\mathcal F(\mathcal Z\times_1\bQ_S^{\mathsf H})
+ =\mathcal F(\mathcal Z\times_1\bQ_S\bQ_S^{\mathsf H}),
  \label{eq:s_lift}
 \end{equation}
 up to the singular-vector phase convention.
 \end{lemma}
 
 \begin{IEEEproof}
-The coupled least-squares map acts on the receive index by left
-multiplication, which commutes with $\bQ_S^{\mathsf H}$. In addition,
+The coupled least-squares map acts on the EVS mode by left multiplication,
+which commutes with $\bQ_S^{\mathsf H}$. In addition,
 $(\bQ_S\bM)^{\mathsf H}(\bQ_S\bM)=\bM^{\mathsf H}\bM$, so $\bQ_S\bM$
 and $\bM$ share singular values and right singular vectors, with left
 singular vectors related by multiplication by $\bQ_S$.

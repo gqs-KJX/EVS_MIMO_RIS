@@ -307,15 +307,23 @@ each~\cite{fascista2022rissync,zhao2021timing}. Each panel contributes one
 dominant cascaded component, so the model order equals the known panel count
 $K$. The BS and RIS panels are fixed, calibrated infrastructure, whereas the
 UE position, a common UE--BS clock offset and the per-panel complex Jones
-coefficients are unknown. The UE transmits pilots on $N$ subcarriers spaced
-by $\Delta f$, giving an occupied bandwidth $B_{\rm occ}=(N-1)\Delta f$, over
-$T$ known RIS phase configurations that all lie within one coherence block.
-Following the one-sided near-field convention
-of~\cite{yang2024nfris,cui2022channel}, each electrically large panel is
-close enough to the UE and far enough from the BS that the UE--RIS hop is
-modeled by an exact spherical wave and the calibrated RIS--BS hop by a
-center-frequency plane wave; Section~\ref{sec:simulation} verifies both
-conditions for the reference geometry of Fig.~\ref{fig:geometry}.
+coefficients are unknown.
+
+Each electrically large panel forms a one-sided near-field cascade: the
+UE--RIS hop retains the exact spherical-wave phase, whereas the calibrated
+RIS--BS hop is a center-frequency plane wave. For the reference geometry the
+panel diagonal is $D\simeq0.226$~m and its Fraunhofer distance at
+$f_c=60$~GHz is $R_{\rm F}=2D^2/\lambda_c=20.5$~m, so the $3.6$--$4.2$~m
+UE--RIS links lie in the
+radiative near field whereas the $28.6$--$31.2$~m RIS--BS links lie beyond
+it~\cite{yang2024nfris,cui2022channel}.
+
+The UE transmits pilots on $N$ subcarriers spaced by $\Delta f$, giving an
+occupied bandwidth $B_{\rm occ}=(N-1)\Delta f$, and retaining $d_{\rm evs}$
+of the six Maxwell components gives the receive dimension
+$I=d_{\rm evs}M_A$. Over $T$ known RIS phase configurations, all within one
+coherence block, the samples form $\bY_t\in\C^{I\times N}$, $t=1,\ldots,T$,
+whose columns index subcarriers. Fig.~\ref{fig:geometry} shows the reference geometry.
 
 \begin{figure}[!tb]
 \centering
@@ -327,16 +335,18 @@ a $16$-element EVS ULA. (b)~Local coordinates of the $k$th cascaded path
 \label{fig:geometry}
 \end{figure}
 
-\subsection{Calibrated RIS--BS Maxwell Factor}
+\subsection{Calibrated Infrastructure Factor}
 \label{subsec:calibrated}
 
 Deployment calibration fixes every quantity entering the UE-independent
 receive factor of panel $k$: the BS phase center $\bp_B$, the RIS panel
 centers $\br_k$ and rotations $\bR_k\in{\rm SO}(3)$, the element coordinates
 $\brho_{k,m}\in\R^3$ in the $k$th panel frame, and the BS array geometry and
-EVS Maxwell response. The BS ULA lies along the global $x$ axis of the
-orthonormal frame $\{\bm u_x,\bm u_y,\bm u_z\}$ and
-$\kappa=2\pi/\lambda_c$ is the center-frequency wavenumber.
+EVS Maxwell response. Elements are centered on an $M_{Rx}\times M_{Ry}$ grid of
+spacings $(d_x,d_y)$, the BS ULA lies along the global $x$ axis of the
+orthonormal frame $\{\bm u_x,\bm u_y,\bm u_z\}$, and
+$\kappa=2\pi/\lambda_c$ is the center-frequency wavenumber; explicit
+coordinate and gauge conventions are in the supplement.
 
 The calibrated locations give the RIS--BS distance and propagation direction
 of panel $k$,
@@ -355,21 +365,20 @@ response and a BS steering vector,
 	&=e^{j\kappa x_i\,\bm u_x^{\mathsf T}\bs_{{\rm RB},k}},
 	\label{eq:arb_vb}
 \end{align}
-with $x_i$ the $x$ coordinate of the $i$th BS element,
-$\ba_{{\rm RB},k}\in\C^{M_R}$ and $\bv_{{\rm B},k}\in\C^{M_A}$.
+with $x_i$ the $x$ coordinate of the $i$th BS element.
 
 The same direction fixes the polarization manifold seen by the EVS array. A
 transverse plane wave along $\bs_{{\rm RB},k}$ has Maxwell pair
 $(\bE,\bH)=(\bq,\bs_{{\rm RB},k}\times\bq)$ in impedance-normalized units, so
-with any transverse basis
+with the transverse basis
 \begin{equation}
-	\bq_{k,1}\in\bs_{{\rm RB},k}^{\perp},
-	\quad \|\bq_{k,1}\|_2=1,
+	\bq_{k,1}=\frac{\bs_{{\rm RB},k}\times\bm u_z}
+	{\|\bs_{{\rm RB},k}\times\bm u_z\|_2},
 	\qquad
 	\bq_{k,2}=\bs_{{\rm RB},k}\times\bq_{k,1},
 	\label{eq:qbasis}
 \end{equation}
-the six-component
+and a fallback axis near the pole (supplement), the six-component
 vector-sensor manifold~\cite{nehorai1994vector,khan2020sixcomponent}
 specializes to the calibrated Maxwell--Jones block
 \begin{equation}
@@ -385,7 +394,7 @@ receiver selection $\bS_{\rm mode}\in\R^{d_{\rm evs}\times6}$ -- retaining
 the first electric component ($d_{\rm evs}=1$, scalar), the first two
 ($d_{\rm evs}=2$, dual-polarized) or all six ($d_{\rm evs}=6$, full EVS) --
 gives $\bTheta_k^{({\rm mode})}\triangleq\bS_{\rm mode}\bTheta_k^{(6)}
-\in\C^{d_{\rm evs}\times2}$ and the receive dimension $I=d_{\rm evs}M_A$.
+\in\C^{d_{\rm evs}\times2}$.
 
 The calibrated receive block
 $\bBm_k\triangleq\bv_{{\rm B},k}\otimes\bTheta_k^{({\rm mode})}\in\C^{I\times2}$
@@ -394,7 +403,7 @@ $\partial\bBm_k/\partial\bchi=\mathbf0$; only the Jones-domain coefficients
 $\bx_k$ remain unknown. All UE dependence enters through the near-field
 wavefront and the OFDM delay developed next.
 
-\subsection{UE--RIS Near-Field and Common-Clock Factor}
+\subsection{UE Geometry and Common-Clock Factor}
 \label{subsec:defchain}
 
 The unknown nonlinear parameter collects the UE position and the single
@@ -414,24 +423,23 @@ from which
 	\label{eq:urgeom}
 \end{equation}
 with $d_{{\rm UR},k}=\|\bp-\br_k\|_2$ because $\bR_k$ is a rotation. Panel
-phase shifts are modeled as scalar and identical for the two polarizations,
-so a panel redirects a wave without mixing its Jones components; with
-prescribed
+phase shifts are scalar and identical for the two polarizations, so a panel
+redirects a wave without mixing its Jones components, an RIS model rather
+than a general property; with prescribed
 constant-modulus training
 $[\bOmega_k]_{t,m}=e^{j\omega_{k,t,m}}/\sqrt{M_R}$,
 $\bOmega_k\in\C^{T\times M_R}$~\cite{lin2021tensor}, the near-field
 dependence is captured by the RIS response
-\begin{align}
-	\bg_k(\bp) &= \ba_{{\rm RB},k}\odot\ba^{\rm NF}_{{\rm UR},k}(\bp)
-	\in\C^{M_R},\nonumber\\
-	\bh_k(\bp) &= \bOmega_k\,\bg_k(\bp)\in\C^{T},
+\begin{equation}
+	\bh_k(\bp) = \bOmega_k\,\bg_k(\bp),
+	\qquad
+	\bg_k(\bp) = \ba_{{\rm RB},k}\odot\ba^{\rm NF}_{{\rm UR},k}(\bp),
 	\label{eq:hk}
-\end{align}
+\end{equation}
 where
 \begin{align}
 	\big[\ba^{\rm NF}_{{\rm UR},k}(\bp)\big]_m
-	&= e^{-j\frac{2\pi}{\lambda_c}\delta_{k,m}(\bp)},
-	\quad \ba^{\rm NF}_{{\rm UR},k}\in\C^{M_R},\nonumber\\
+	&= e^{-j\frac{2\pi}{\lambda_c}\delta_{k,m}(\bp)},\nonumber\\
 	\delta_{k,m}(\bp)
 	&= \big\|\bxi_k(\bp)-\brho_{k,m}\big\|_2
 	- d_{{\rm UR},k}(\bp),
@@ -455,32 +463,32 @@ its OFDM phase ramp are
 \end{align}
 with $c_0$ the speed of light. The per-subcarrier form of \eqref{eq:dk}
 assumes the cyclic prefix covers the cascaded delay spread and neglects
-residual carrier-frequency offset and phase noise. Unlike the
-frequency-dependent spatial manifold of~\cite{yang2024nfris}, spatial
-manifolds are evaluated here at the carrier $f_c$ and the wideband dependence
-is carried by the delay phase on every subcarrier. Once the common
-center-frequency phase is absorbed into the path gain the tones are symmetric
-about $f_c$, so with $\Delta L$ an inter-element path difference of a spatial
-response the neglected spatial-wideband phase
-$\epsilon_{\rm sq}=\pi B_{\rm occ}\max|\Delta L|/c_0$ peaks at $0.102$~rad
-over the three spatial responses of the reference configuration (design
-condition and per-panel audit in the supplement).
+residual carrier-frequency offset and phase noise. Spatial manifolds are
+evaluated at the carrier $f_c$ while this delay phase is retained on every
+subcarrier. Once the common center-frequency phase is absorbed into the path
+gain the tones are symmetric about $f_c$, so with $\Delta L$ an inter-element
+path difference of a spatial response the neglected spatial-wideband phase is
+\begin{equation}
+	\epsilon_{\rm sq}=\frac{\pi B_{\rm occ}}{c_0}\max|\Delta L|,
+	\label{eq:squint}
+\end{equation}
+which peaks at $0.102$~rad over the three spatial responses of the reference
+configuration (design condition and per-panel audit in the supplement).
 
 The Kronecker product of the RIS training/near-field response, the OFDM
 delay ramp and the calibrated receive block is the
 premise~\eqref{eq:premise}:
-\begin{align}
+\begin{equation}
 	\bA_k(\bchi)
-	&= \bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes\bBm_k\nonumber\\
-	&= \bc_k(\bchi)\otimes\bTheta_k^{({\rm mode})}\in\C^{M\times2},
+	= \bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes\bBm_k
+	= \bc_k(\bchi)\otimes\bTheta_k^{({\rm mode})},
 	\label{eq:Ak}
-\end{align}
+\end{equation}
 where, by associativity of the Kronecker product,
 $\bc_k(\bchi)=\bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes
-\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor. Entry
-$(t-1)NI+(n-1)I+i$ of a stacked observation carries receive channel $i$ and
-subcarrier $n$ at configuration $t$; the scalar sample expansion and pilot
-normalization are in the supplement.
+\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor. The scalar
+sample expansion and the stacking convention that reproduces \eqref{eq:Ak},
+including pilot normalization, are in the supplement.
 
 Equation~\eqref{eq:Ak} admits two useful groupings. The first,
 $\bh_k\otimes\bd_k\otimes\bBm_k$, exposes the calibrated receive subspace:
@@ -493,17 +501,17 @@ samples as
 	\bd_k(\bp,\Delta t)^{\mathsf T}+\bN_t,
 	\label{eq:obsmat}
 \end{equation}
-$t=1,\ldots,T$, with $\bY_t\in\C^{I\times N}$ and $\bN_t$ the noise block. Each panel is therefore rank
+$t=1,\ldots,T$, with $\bN_t$ the noise block. Each panel is therefore rank
 one across receive and frequency at fixed $t$, its receive factor confined to
-the $\bchi$-independent $\coll(\bBm_k)$ of dimension at most two. The second
-grouping,
+the $\bchi$-independent $\coll(\bBm_k)$ of dimension at most two; this is the
+arrangement Section~\ref{sec:algorithm} works in. The second grouping,
 $\bc_k\otimes\bTheta_k^{({\rm mode})}$, confines all dependence on
 $\bS_{\rm mode}$ to $\bTheta_k^{({\rm mode})}$ and all position--clock
 dependence to the mode-independent $\bc_k(\bchi)$, with $\Delta t$ entering
-only through $\bd_k$. Section~\ref{sec:algorithm} works in the first
-arrangement and Section~\ref{sec:analysis} in the second.
+only through $\bd_k$; this is the arrangement Section~\ref{sec:analysis}
+works in.
 
-\subsection{Observation and Estimation Problem}
+\subsection{Structured Observation Model and Estimation Problem}
 \label{subsec:obsmodel}
 
 Stacking the panels as
@@ -523,13 +531,20 @@ $\bx=[\bx_1^{\mathsf T},\ldots,\bx_K^{\mathsf T}]^{\mathsf T}\in\C^{2K}$,
 where the complex gain $\beta_k$ absorbs path loss, RIS efficiency and the
 center-frequency phase of the cascade and $\be_k$ is a unit Jones state
 (angular parameterization in the supplement). Both factors are flat over the
-occupied band and only their product is identifiable, so the estimator
-treats $\bx_k$ as a free $\C^2$ nuisance.
+occupied band and only their product is identifiable, since $(\beta_k,\be_k)$
+and $(\beta_ke^{j\phi},e^{-j\phi}\be_k)$ give the same $\bx_k$, so the
+estimator treats $\bx_k$ as a free $\C^2$ nuisance.
 
 Profiling the unknown $\sigma^2$ out of the white-Gaussian log-likelihood
-leaves a criterion strictly decreasing in the residual energy, so
-maximum-likelihood (ML) estimation of $(\bchi,\bx)$ is the least-squares
-problem
+gives
+\begin{equation}
+	\hat\sigma^2(\bchi,\bx)=\tfrac{1}{M}\|\by-\bA(\bchi)\bx\|_2^2,
+	\quad
+	\ln p\big|_{\hat\sigma^2}=-M\big[\ln(\pi\hat\sigma^2)+1\big],
+	\label{eq:sigmaprofile}
+\end{equation}
+strictly decreasing in the residual energy, so maximum-likelihood
+(ML) estimation of $(\bchi,\bx)$ is the least-squares problem
 \begin{equation}
 	\min_{\bp\in\mathcal P,\ \Delta t\in\mathcal T,\ \bx\in\C^{2K}}
 	\big\|\by-\bA(\bp,\Delta t)\,\bx\big\|_2^2.
@@ -1296,11 +1311,7 @@ Unless varied, the matched scene uses $f_c=60$~GHz, $K=3$ oriented
 $64\times64$ half-wavelength RISs, an $M_A=16$ EVS ULA, $N=63$
 subcarriers at $\Delta f=5$~MHz, and $T=256$ training blocks, with the UE at
 $(1.25,0.55,0.75)$~m and a true clock of $5$~ns in a $[0,10]$-ns search
-interval; complete geometry and signal parameters are supplementary. The
-panel diagonal is $D\simeq0.226$~m, so the Fraunhofer distance
-$R_{\rm F}=2D^2/\lambda_c=20.5$~m places the $3.6$--$4.2$~m UE--RIS links in
-the radiative near field and the $28.6$--$31.2$~m RIS--BS links beyond it, as
-the one-sided model of Section~\ref{sec:system_model} assumes. Path
+interval; complete geometry and signal parameters are supplementary. Path
 gains and Jones states are drawn independently per trial, and the signal-to-noise
 ratio (SNR) is the average pre-noise sample SNR on the active receive
 entries,

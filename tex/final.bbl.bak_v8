@@ -32,6 +32,12 @@ M.~Cui, Z.~Wu, Y.~Lu, X.~Wei, and L.~Dai, ``Near-field {MIMO} communications
   for {6G}: Fundamentals, challenges, potentials, and future directions,''
   \emph{IEEE Commun. Mag.}, vol.~61, no.~1, pp. 40--46, 2023.
 
+\bibitem{chen2024nearfieldloc}
+H.~Chen, M.~F. Keskin, A.~Sakhnini, N.~Decarli, S.~Pollin, D.~Dardari, and
+  H.~Wymeersch, ``{6G} localization and sensing in the near field: Features,
+  opportunities, and challenges,'' \emph{IEEE Wireless Commun.}, vol.~31,
+  no.~4, pp. 260--267, 2024.
+
 \bibitem{elzanaty2021bounds}
 A.~Elzanaty, A.~Guerra, F.~Guidi, and M.-S. Alouini, ``Reconfigurable
   intelligent surfaces for localization: Position and orientation error
@@ -41,6 +47,11 @@ A.~Elzanaty, A.~Guerra, F.~Guidi, and M.-S. Alouini, ``Reconfigurable
 T.~Ma, Y.~Xiao, X.~Lei, W.~Xiong, and M.~Xiao, ``Distributed reconfigurable
   intelligent surfaces assisted indoor positioning,'' \emph{IEEE Trans.
   Wireless Commun.}, vol.~22, no.~1, pp. 47--58, 2023.
+
+\bibitem{fadakar2024multiris}
+A.~Fadakar, M.~Sabbaghian, and H.~Wymeersch, ``Multi-{RIS}-assisted {3D}
+  localization and synchronization via deep learning,'' \emph{IEEE Open J.
+  Commun. Soc.}, vol.~5, pp. 3299--3314, 2024.
 
 \bibitem{liu2025multiris}
 H.~Liu, Y.~Lin, Y.~Hu, X.~Li, H.~Xu, and S.~Jin, ``Channel estimation, blockage
@@ -98,10 +109,20 @@ T.~Zheng, M.~Cui, Z.~Wu, and L.~Dai, ``Near-field wideband beam training based
   on distance-dependent beam split,'' \emph{IEEE Trans. Wireless Commun.},
   vol.~24, no.~2, pp. 1278--1292, 2025.
 
+\bibitem{bayraktar2024risloc}
+M.~Bayraktar, N.~González-Prelcic, G.~C. Alexandropoulos, and H.~Chen,
+  ``{RIS}-aided joint channel estimation and localization at {mmWave} under
+  hardware impairments: A dictionary learning-based approach,'' \emph{IEEE
+  Trans. Wireless Commun.}, vol.~23, no.~12, pp. 19\,696--19\,712, 2024.
+
 \bibitem{han2022dual}
 Y.~Han, X.~Li, W.~Tang, S.~Jin, Q.~Cheng, and T.~J. Cui, ``Dual-polarized
   {RIS}-assisted mobile communications,'' \emph{IEEE Trans. Wireless Commun.},
   vol.~21, no.~1, pp. 591--606, 2022.
+
+\bibitem{munawar2024dual}
+M.~Munawar and K.~Lee, ``Dual-polarized {IRS}-assisted {MIMO} network,''
+  \emph{IEEE Trans. Wireless Commun.}, vol.~23, no.~4, pp. 2519--2532, 2024.
 
 \bibitem{nehorai1994vector}
 A.~Nehorai and E.~Paldi, ``Vector-sensor array processing for electromagnetic
@@ -144,6 +165,10 @@ R.~H. Byrd, P.~Lu, J.~Nocedal, and C.~Zhu, ``A limited memory algorithm for
 M.~J.~D. Powell, ``An efficient method for finding the minimum of a function of
   several variables without calculating derivatives,'' \emph{Comput. J.},
   vol.~7, no.~2, pp. 155--162, 1964.
+
+\bibitem{kolda2009tensor}
+T.~G. Kolda and B.~W. Bader, ``Tensor decompositions and applications,''
+  \emph{SIAM Rev.}, vol.~51, no.~3, pp. 455--500, 2009.
 
 \bibitem{sidiropoulos2017tensor}
 N.~D. Sidiropoulos, L.~De~Lathauwer, X.~Fu, K.~Huang, E.~E. Papalexakis, and

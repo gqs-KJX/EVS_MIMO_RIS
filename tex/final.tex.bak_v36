@@ -355,8 +355,7 @@ response and a BS steering vector,
 	&=e^{j\kappa x_i\,\bm u_x^{\mathsf T}\bs_{{\rm RB},k}},
 	\label{eq:arb_vb}
 \end{align}
-with $x_i$ the $x$ coordinate of the $i$th BS element,
-$\ba_{{\rm RB},k}\in\C^{M_R}$ and $\bv_{{\rm B},k}\in\C^{M_A}$.
+with $x_i$ the $x$ coordinate of the $i$th BS element.
 
 The same direction fixes the polarization manifold seen by the EVS array. A
 transverse plane wave along $\bs_{{\rm RB},k}$ has Maxwell pair
@@ -414,24 +413,23 @@ from which
 	\label{eq:urgeom}
 \end{equation}
 with $d_{{\rm UR},k}=\|\bp-\br_k\|_2$ because $\bR_k$ is a rotation. Panel
-phase shifts are modeled as scalar and identical for the two polarizations,
-so a panel redirects a wave without mixing its Jones components; with
-prescribed
+phase shifts are scalar and identical for the two polarizations, so a panel
+redirects a wave without mixing its Jones components, an RIS model rather
+than a general property; with prescribed
 constant-modulus training
 $[\bOmega_k]_{t,m}=e^{j\omega_{k,t,m}}/\sqrt{M_R}$,
 $\bOmega_k\in\C^{T\times M_R}$~\cite{lin2021tensor}, the near-field
 dependence is captured by the RIS response
-\begin{align}
-	\bg_k(\bp) &= \ba_{{\rm RB},k}\odot\ba^{\rm NF}_{{\rm UR},k}(\bp)
-	\in\C^{M_R},\nonumber\\
-	\bh_k(\bp) &= \bOmega_k\,\bg_k(\bp)\in\C^{T},
+\begin{equation}
+	\bh_k(\bp) = \bOmega_k\,\bg_k(\bp),
+	\qquad
+	\bg_k(\bp) = \ba_{{\rm RB},k}\odot\ba^{\rm NF}_{{\rm UR},k}(\bp),
 	\label{eq:hk}
-\end{align}
+\end{equation}
 where
 \begin{align}
 	\big[\ba^{\rm NF}_{{\rm UR},k}(\bp)\big]_m
-	&= e^{-j\frac{2\pi}{\lambda_c}\delta_{k,m}(\bp)},
-	\quad \ba^{\rm NF}_{{\rm UR},k}\in\C^{M_R},\nonumber\\
+	&= e^{-j\frac{2\pi}{\lambda_c}\delta_{k,m}(\bp)},\nonumber\\
 	\delta_{k,m}(\bp)
 	&= \big\|\bxi_k(\bp)-\brho_{k,m}\big\|_2
 	- d_{{\rm UR},k}(\bp),
@@ -469,18 +467,17 @@ condition and per-panel audit in the supplement).
 The Kronecker product of the RIS training/near-field response, the OFDM
 delay ramp and the calibrated receive block is the
 premise~\eqref{eq:premise}:
-\begin{align}
+\begin{equation}
 	\bA_k(\bchi)
-	&= \bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes\bBm_k\nonumber\\
-	&= \bc_k(\bchi)\otimes\bTheta_k^{({\rm mode})}\in\C^{M\times2},
+	= \bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes\bBm_k
+	= \bc_k(\bchi)\otimes\bTheta_k^{({\rm mode})},
 	\label{eq:Ak}
-\end{align}
+\end{equation}
 where, by associativity of the Kronecker product,
 $\bc_k(\bchi)=\bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes
-\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor. Entry
-$(t-1)NI+(n-1)I+i$ of a stacked observation carries receive channel $i$ and
-subcarrier $n$ at configuration $t$; the scalar sample expansion and pilot
-normalization are in the supplement.
+\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor. The scalar
+sample expansion and the stacking convention that reproduces \eqref{eq:Ak},
+including pilot normalization, are in the supplement.
 
 Equation~\eqref{eq:Ak} admits two useful groupings. The first,
 $\bh_k\otimes\bd_k\otimes\bBm_k$, exposes the calibrated receive subspace:
