@@ -71,6 +71,11 @@ H.~Yan, H.~Chen, W.~Liu, S.~Yang, G.~Wang, and C.~Yuen, ``{RIS}-enabled joint
   environments,'' \emph{IEEE Trans. Green Commun. Netw.}, vol.~9, no.~1, pp.
   367--379, 2025.
 
+\bibitem{fadakar2024multiris}
+A.~Fadakar, M.~Sabbaghian, and H.~Wymeersch, ``Multi-{RIS}-assisted {3D}
+  localization and synchronization via deep learning,'' \emph{IEEE Open J.
+  Commun. Soc.}, vol.~5, pp. 3299--3314, 2024.
+
 \bibitem{lin2021tensor}
 Y.~Lin, S.~Jin, M.~Matthaiou, and X.~You, ``Tensor-based algebraic channel
   estimation for hybrid {IRS}-assisted {MIMO-OFDM},'' \emph{IEEE Trans.
@@ -130,6 +135,12 @@ Y.~Zhao, W.~Xu, H.~Sun, D.~W.~K. Ng, and X.~You, ``Cooperative reflection
   design with timing offsets in distributed multi-{RIS} communications,''
   \emph{IEEE Wireless Commun. Lett.}, vol.~10, no.~11, pp. 2379--2383, 2021.
 
+\bibitem{bayraktar2024risloc}
+M.~Bayraktar, N.~González-Prelcic, G.~C. Alexandropoulos, and H.~Chen,
+  ``{RIS}-aided joint channel estimation and localization at {mmWave} under
+  hardware impairments: A dictionary learning-based approach,'' \emph{IEEE
+  Trans. Wireless Commun.}, vol.~23, no.~12, pp. 19\,696--19\,712, 2024.
+
 \bibitem{roy1989esprit}
 R.~Roy and T.~Kailath, ``{ESPRIT}-estimation of signal parameters via
   rotational invariance techniques,'' \emph{IEEE Trans. Acoust., Speech, Signal
@@ -144,6 +155,13 @@ R.~H. Byrd, P.~Lu, J.~Nocedal, and C.~Zhu, ``A limited memory algorithm for
 M.~J.~D. Powell, ``An efficient method for finding the minimum of a function of
   several variables without calculating derivatives,'' \emph{Comput. J.},
   vol.~7, no.~2, pp. 155--162, 1964.
+
+\bibitem{tipping2001sbl}
+\BIBentryALTinterwordspacing
+M.~E. Tipping, ``Sparse {Bayesian} learning and the relevance vector machine,''
+  \emph{J. Mach. Learn. Res.}, vol.~1, pp. 211--244, Jun. 2001. [Online].
+  Available: \url{https://www.jmlr.org/papers/v1/tipping01a.html}
+\BIBentrySTDinterwordspacing
 
 \bibitem{sidiropoulos2017tensor}
 N.~D. Sidiropoulos, L.~De~Lathauwer, X.~Fu, K.~Huang, E.~E. Papalexakis, and
@@ -162,12 +180,5 @@ B.~Fleury, M.~Tschudin, R.~Heddergott, D.~Dahlhaus, and K.~Ingeman~Pedersen,
   ``Channel parameter estimation in mobile radio environments using the {SAGE}
   algorithm,'' \emph{IEEE J. Sel. Areas Commun.}, vol.~17, no.~3, pp. 434--450,
   1999.
-
-\bibitem{tipping2001sbl}
-\BIBentryALTinterwordspacing
-M.~E. Tipping, ``Sparse {Bayesian} learning and the relevance vector machine,''
-  \emph{J. Mach. Learn. Res.}, vol.~1, pp. 211--244, Jun. 2001. [Online].
-  Available: \url{https://www.jmlr.org/papers/v1/tipping01a.html}
-\BIBentrySTDinterwordspacing
 
 \end{thebibliography}

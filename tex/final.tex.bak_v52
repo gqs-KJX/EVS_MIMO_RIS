@@ -124,34 +124,27 @@ Distributed Near-Field RIS-Aided OFDM}
 \maketitle
 
 \begin{abstract}
-Near-field propagation offers new localization opportunities, however,
-spherical wavefronts, field polarization and unsynchronized clocks make
-near-field signal processing challenging. In this context, this paper studies
-joint 3-D localization and synchronization of a single-antenna user, seen by
-one electromagnetic vector-sensor (EVS) array only through distributed
-near-field reconfigurable intelligent surfaces (RISs) in a wideband
-orthogonal frequency-division multiplexing (OFDM) uplink with unknown gains,
-Jones coefficients and panel labels. Building on a per-panel
-space--frequency/Maxwell--Jones factorization, Phase~I applies a calibrated
-sufficient Maxwell--Kronecker compression to at most $2K$ receive dimensions
-($96\to6$ here), recovers and associates the delay factors and fuses them
-into one position initializer; Phase~II eliminates the Jones coefficients by
-variable projection and profiles the clock orbit by certified
-branch-and-bound, leaving a 3-D refinement. The factorization also yields
-three structural results: receiver selection rescales single-panel free-Jones
-information only by the retained polarization energy, yet two or fewer
-components can void panel separability; the compression preserves the
-profiled optimizer and that information; and the clock profile is a
-trigonometric polynomial. At $-10$~dB SNR it attains $0.31$-mm median
-position error at $0.42\%$ and $0.21\%$ position and clock catastrophic
-rates, against $1.98\%$ for the closest in-model 4-D control of matched
-median accuracy.
+We study joint 3-D localization and synchronization of a single-antenna user 
+in a wideband orthogonal frequency-division multiplexing (OFDM) uplink in 
+which the direct path is blocked and a single electromagnetic vector-sensor (EVS) 
+array observes the user only through distributed near-field reconfigurable intelligent surfaces (RISs). 
+All cascaded paths share an unknown clock offset, with unknown gains, Jones coefficients 
+and panel associations. We propose a two-phase estimator built on a per-panel 
+space--frequency/Maxwell--Jones factorization. Phase~I (MKSC-GI) applies a calibrated sufficient Maxwell--Kronecker compression that reduces the receive dimension from $96$ to $6$, recovers the delay factors and their 
+panel associations, and fuses the panel-local near-field estimates into a common position initializer. 
+Phase~II (CCOP-JVP) eliminates the Jones coefficients by variable projection and profiles the 
+one-dimensional clock orbit by certified branch-and-bound, leaving a three-dimensional position refinement. 
+The same factorization yields three structural results: receiver selection rescales single-panel free-Jones 
+information only through the retained polarization energy, though two or fewer retained components can void 
+panel separability; the compression preserves the profiled optimizer and the free-Jones information; 
+and the clock profile is a finite trigonometric polynomial. At $-10$~dB SNR the estimator achieves 
+a $0.31$-mm median position error with $0.42\%$ position and $0.21$ clock catastrophic-event rates, 
+while the closest in-model 4-D control has comparable median accuracy but has a $1.98\%$ position catastrophic rate.
 \end{abstract}
 
 \begin{IEEEkeywords}
-Clock synchronization, electromagnetic vector sensor (EVS), near-field
-localization, orthogonal frequency-division multiplexing (OFDM),
-reconfigurable intelligent surface (RIS), variable projection.
+RIS, EVS, near-field localization, clock synchronization, OFDM, polarimetric
+sensing, variable projection, branch-and-bound, sufficient statistics, Fisher information.
 \end{IEEEkeywords}
 
 
@@ -183,7 +176,7 @@ The first line, RIS-aided localization and synchronization, has moved from
 single-panel geometry to distributed
 deployments~\cite{ma2023distributed,liu2025multiris} and to formulations
 that carry an unknown clock
-explicitly~\cite{fascista2022rissync,gong2024async,peng2025sdp,yan2025ris,fadakar2024multiris}.
+explicitly~\cite{fascista2022rissync,gong2024async,peng2025sdp,yan2025ris}.
 The second line is near-field and
 extremely-large-aperture estimation, which supplies both the spherical-wave
 models this regime needs and the acquisition front ends that make them
@@ -201,8 +194,8 @@ the polarization state of an incident wave alongside its
 direction~\cite{nehorai1994vector,khan2020sixcomponent}. Our own EVS-OFDM
 (orthogonal frequency-division multiplexing)
 estimator~\cite{gong2026aimdf} applies such an array to a direct multipath
-channel, without the distributed geometry, panel labeling, compression or
-shared clock at issue here.
+channel, with none of the distributed cascaded geometry, panel labeling,
+compression or shared-clock structure at issue here.
 
 Despite these advances, the resulting estimation problem remains unresolved
 because the limitations of the three lines compound in this architecture.
@@ -338,12 +331,16 @@ factors are derived next.
 \begin{figure*}[!t]
 \centering
 \includegraphics[width=\textwidth]{EVS_RIS_system_model-crop.pdf}
-\caption{Reference geometry and cascaded-path parameterization. (a)~Blocked-LoS
-    deployment: $K=3$ oriented $64\times64$ RIS panels relay the UE signal to a
-    $16$-element EVS ULA. (b)~Local frame of the $k$th panel: element offset
-    $\brho_{k,m}$, wavefront difference $\delta_{k,m}$, and the transverse pair
-    $(\bq_{k,1},\bq_{k,2})$ of \eqref{eq:qbasis}. (c)~Six-component EVS element
-    and the receiver selections $\bS_1,\bS_2,\bS_6$ of \eqref{eq:smode}.}
+\caption{Reference geometry and cascaded-path parameterization.
+(a)~Blocked-LoS deployment: $K=3$ oriented $64\times64$ RIS panels relay the
+UE signal to a $16$-element EVS ULA, with a spherical UE--RIS wavefront, a
+center-frequency plane wave on RIS--BS, and the single clock offset
+$\Delta t$ shared by all $K$ paths. (b)~Local frame of the $k$th panel:
+$\bxi_k=\bR_k(\bp-\br_k)$, the element offset $\brho_{k,m}$, the exact
+wavefront difference $\delta_{k,m}$ of \eqref{eq:delta}, and the transverse
+pair $(\bq_{k,1},\bq_{k,2})$ of \eqref{eq:qbasis} carrying the Maxwell--Jones
+block. (c)~Six-component EVS element and the receiver selections
+$\bS_1,\bS_2,\bS_6$ of \eqref{eq:smode}.}
 \label{fig:geometry}
 \end{figure*}
 
@@ -405,8 +402,7 @@ $\bU\in{\rm SO}(2)$ of the transverse basis sends
 $\bTheta_k^{(6)}\mapsto\bTheta_k^{(6)}\bU$ and is absorbed by
 $\bx_k\mapsto\bU^{\mathsf T}\bx_k$. Deployment
 calibration is assumed to equalize per-component gains and cross-channel
-coupling~\cite{bayraktar2024risloc}, so \eqref{eq:Theta} is the
-post-calibration EVS response. A fixed
+coupling, so \eqref{eq:Theta} is the post-calibration EVS response. A fixed
 receiver selection $\bS_{\rm mode}\in\R^{d_{\rm evs}\times6}$,
 \begin{equation}
 	\bS_1=\begin{bmatrix}1 & \mathbf 0\end{bmatrix},
@@ -584,49 +580,6 @@ estimates into one common position initializer. Phase~II,
 \emph{common-clock orbit-profiled Jones variable projection} (CCOP-JVP),
 eliminates the Jones coefficients analytically and refines position and
 clock by certified profiling along the exact clock orbit.
-Algorithm~\ref{alg:mksc_ccop} collects both phases; the equation number on
-each step anchors it to the derivation below.
-
-\begin{algorithm}[!t]
-\footnotesize
-\caption{MKSC-GI Initialized CCOP-JVP}
-\label{alg:mksc_ccop}
-\begin{algorithmic}[1]
-\REQUIRE $\{\bY_t\}_{t=1}^{T}$, calibrated infrastructure, $K$,
-$\mathcal P$, $\mathcal T$
-\STATE \textbf{Phase~I: MKSC-GI}
-\STATE Compress receive index: $\bY_{{\rm d},t}=\bQ_S^{\mathsf H}\bY_t$,
-$I\!\to\!r\le2K$ \hfill\eqref{eq:calibsub}
-\STATE Delay poles $\{\hat z_k\}$ by ESPRIT on the tone axis
-\hfill\eqref{eq:shift}
-\STATE Coupled factors $\hat\bF$ by one loaded WLS solve
-\hfill\eqref{eq:coupledls_short}
-\STATE Rank-one split $\to(\tilde\ba_j,\tilde\bt_j,\varrho_j)$
-\hfill\eqref{eq:split_rank1}
-\STATE Panel labels $\hat\pi$ by two-tier permutation search
-\hfill\eqref{eq:assoc_perm}
-\FOR{$k=1,\ldots,K$}
-\STATE Dechirped 2-D DFT proposals, re-scored by $J_{\rm RIS}$
-\hfill\eqref{eq:Jris_short}
-\ENDFOR
-\STATE Fuse: $\hat\bp_{\rm GI}=\arg\min_{\bp}J_{\rm geom}(\bp)$
-\hfill\eqref{eq:Jgeom_short}
-\STATE Jones anchors $\{\hat\be_k\}$ refreshed at $\hat\bp_{\rm GI}$
-\hfill\eqref{eq:refresh_short}
-\STATE \textbf{Phase~II: CCOP-JVP}
-\REPEAT
-\STATE Clock-profile coefficients $\{\gamma_\ell(\bp)\}$ by one FFT
-\hfill\eqref{eq:trig_short}
-\STATE Branch and bound on $\Delta t$:
-$g_{\rm cert}\!\le\!\epsilon_{\rm clk}$ or cap \hfill\eqref{eq:bound_short}
-\STATE Update $\bp$ by envelope gradient, safeguard otherwise
-\hfill\eqref{eq:envelope}
-\UNTIL{convergence}
-\STATE Profiled Jones coefficients $\hat\bx=\bG_\lambda^{-1}\bb$
-\hfill\eqref{eq:vp_short}
-\RETURN $(\hat\bp,\widehat{\Delta t},\hat\bx)$ and $g_{\rm cert}$
-\end{algorithmic}
-\end{algorithm}
 
 \subsection{Maxwell--Kronecker Factor Recovery}
 
@@ -894,10 +847,10 @@ peak receives an exact spherical range scan and is re-scored by the full
 \eqref{eq:Jris_short} before local refinement, so the approximation never
 replaces the spherical model.
 
-Every candidate is scored by the same exact criterion
-\eqref{eq:Jris_short}, so the candidate set changes acquisition coverage and
-cost but not the forward model; each experiment's set is stated in
-Section~\ref{sec:simulation}.
+Whatever the candidate set, every candidate is scored by the same exact
+criterion \eqref{eq:Jris_short}, so the candidate set changes acquisition
+coverage and cost but not the forward model; the set used by each experiment
+is stated in Section~\ref{subsec:res_setup}.
 
 \textit{2) Common-geometry fusion:}
 Each panel-local fix $\hat{\boldsymbol\eta}_k$ maps through the calibrated
@@ -960,12 +913,11 @@ coordinate along which the likelihood admits an exact unitary symmetry. Let
 $\bA_0(\bp)\triangleq\bA(\bp,0)$ and
 $\bD_{\rm clk}(\Delta t)=\diag([e^{-j2\pi(n-\frac{N-1}{2})\Delta f\Delta t}]_{n=0}^{N-1})$.
 Then
-\begin{align}
- \bU_{\rm clk}(\Delta t)&=\bI_T\otimes\bD_{\rm clk}(\Delta t)\otimes\bI_I,
- \nonumber\\
- \bA(\bp,\Delta t)&=\bU_{\rm clk}(\Delta t)\bA_0(\bp),
+\begin{equation}
+ \bU_{\rm clk}(\Delta t)=\bI_T\otimes\bD_{\rm clk}(\Delta t)\otimes\bI_I,
+ \quad \bA(\bp,\Delta t)=\bU_{\rm clk}(\Delta t)\bA_0(\bp),
  \label{eq:orbit_short}
-\end{align}
+\end{equation}
 and unitarity makes the Jones Gram clock invariant,
 $\bA^{\mathsf H}\bA=\bA_0^{\mathsf H}\bA_0\triangleq\bG_0(\bp)$.
 Phase~II uses a Gram-scaled block-diagonal penalty
@@ -999,7 +951,7 @@ $\bG_\lambda\succ\mathbf0$ hypothesis of Theorem~\ref{thm:clock}. The
 dimensionless weight is $\lambda_k=1$ throughout, so the penalty enters at
 the scale of the per-path data Gram (Remark~\ref{rem:peb_reading}); how far
 it is from active at the returned solution is measured in
-Section~\ref{sec:simulation}.
+Section~\ref{subsec:res_c1}.
 
 \textit{2) Jones variable projection and the trigonometric clock profile:}
 Phase~II accordingly minimizes the penalized exact-forward-model criterion
@@ -1011,7 +963,7 @@ Phase~II accordingly minimizes the penalized exact-forward-model criterion
 whose first term is the nominal criterion \eqref{eq:ml_problem}. It is
 \eqref{eq:penalized_short}, not \eqref{eq:ml_problem}, that
 Theorem~\ref{thm:clock} nests and certifies; the two coincide at
-$\lambda_k=0$, and Section~\ref{sec:simulation} reports the $\lambda$ sweep.
+$\lambda_k=0$, and Section~\ref{subsec:res_c1} reports the $\lambda$ sweep.
 Substituting \eqref{eq:orbit_short} into \eqref{eq:penalized_short} and using
 $\bU_{\rm clk}^{\mathsf H}\bU_{\rm clk}=\bI$ makes $J$ a quadratic in $\bx$
 whose Hessian carries no clock dependence,
@@ -1082,8 +1034,8 @@ maximizing branch is unique and interior, uses the envelope-theorem gradient
 \end{equation}
 with a derivative-free safeguard~\cite{powell1964direct} otherwise. Phase~II outputs
 $(\hat\bp,\widehat{\Delta t},\hat\bx)$ together with the certificate attached
-to every conditional clock solve it evaluated. Tolerances and the safeguard
-trigger are supplementary.
+to every conditional clock solve it evaluated. Tolerances, the safeguard
+trigger and pseudocode for both phases are supplementary.
 
 
 \section{Structural Analysis and Guarantees}
@@ -1217,8 +1169,8 @@ If the retained competitor block
 $\bS_{\rm mode}\bTheta_{k'}^{(6)}\in\C^{d_{\rm evs}\times2}$ has full row rank
 for $d_{\rm evs}\le2$, this residual is zero. With all six components it is at least
 $\|\bc_k\|\|\bTheta_k^{(6)}\bx_k\|\sin\theta_{\min}$, where
-$\theta_{\min}>0$ is the minimum principal angle between the two panel
-Maxwell subspaces, positive whenever they are distinct.
+$\theta_{\min}$ is the minimum principal angle between the two panel
+Maxwell subspaces.
 \end{theorem}
 
 \begin{IEEEproof}
@@ -1268,7 +1220,7 @@ bound.
 The frozen weight $\lambda_k=1$ does not taper with $\sigma$, so the
 free-Jones PEB is a reference for the unpenalized data model and is not
 claimed as a proven bound for the penalized estimator; the $\lambda$-sweep of
-Section~\ref{sec:simulation} measures the gap directly.
+Section~\ref{subsec:res_c1} measures the gap directly.
 \end{remark}
 
 \textit{C. C2---Sufficient Maxwell--Kronecker compression:}
@@ -1327,11 +1279,11 @@ materially improve its finite-sample recovery without contradicting the
 isometry. Pole preservation additionally requires
 Theorem~\ref{thm:compress}(iv). That condition holds generically once
 $rT\ge K$ under nondegenerate panel responses and training, but genericity
-bounds the measure of the failure set, not its membership: the rank can
-still fail under degeneracies such as an annihilated path, a zero
+is a measure-zero statement rather than an exhaustive classification: the
+rank can still fail under degeneracies such as an annihilated path, a zero
 gain, or systematically dependent panel signatures. The delay-subspace
 separation is therefore reported as a measured per-trial diagnostic in
-Section~\ref{sec:simulation} rather than assumed.
+Section~\ref{subsec:res_c2} rather than assumed.
 
 \textit{D. C3---Certified common-clock profiling:}
 \begin{theorem}[C3: Certified common-clock profiling]
@@ -1395,7 +1347,7 @@ Theorem~\ref{thm:clock} globalizes only the conditional one-dimensional
 clock solve and removes its outer coordinate; it does not certify the outer
 three-dimensional position search, which remains local. The corresponding
 clock-unit and certificate controls are reported in
-Table~\ref{tab:c3_control}.
+Section~\ref{subsec:res_c3}.
 
 \textit{E. Complexity:}
 Phase~I is dominated by the $N\times rT$ delay-subspace step and the
@@ -1411,11 +1363,13 @@ Because the Kronecker structure of \eqref{eq:Ak} makes each Gram block a
 cached position-independent Maxwell--Jones factor times one length-$N$ and
 one length-$T$ inner product, the Gram update costs $O(q^2(N+T))$ rather
 than $O(q^2M_r)$. Measured runtime and memory are reported in
-Section~\ref{sec:simulation}.
+Section~\ref{subsec:res_cost}.
 \section{Numerical Results}
 \label{sec:simulation}
 
+\subsection{Protocol and Reference Bounds}
 \label{subsec:res_setup}
+
 Unless varied, the matched scene is
 \begin{equation}
 	\begin{aligned}
@@ -1476,20 +1430,26 @@ union them with the fixed-count dictionary and include panels down to
 $16\times16$ elements (Section~\ref{subsec:beamspace}).
 
 At $-10$~dB, over $20$ Jones/gain realizations at the default position, the
-median free-Jones PEB and CEB are $0.404$~mm and $3.35$~ps; oracle- and
-free-Jones PEBs differ by under $0.005\%$, so the data-only bound is the sole
-reference, and since the EFIM scales as $2/\sigma^2$ a bound at another SNR
-is this median scaled by $\sigma$.
+median free-Jones PEB and CEB are $0.404$~mm and $3.35$~ps. Oracle- and
+free-Jones PEBs differ by under $0.005\%$, so the data-only bound is the
+sole reference, and since the EFIM scales as $2/\sigma^2$ any bound quoted
+at another SNR is this median scaled by $\sigma$.
 
+\subsection{External Benchmark}
 \label{subsec:res_benchmark}
+
 \begin{figure}[!tb]
     \centering
     \includegraphics[width=\columnwidth]{fig_benchmark_main.pdf}
-    \caption{External benchmark at the native read-outs, $960$ shared-realization
-    trials per SNR. (a),~(c)~In-basin position and clock precision against the
-    free-Jones PEB and the $\sigma$-scaled CEB. (b),~(d)~Complementary error
-    CDFs at $-10$~dB; dashed lines mark the $0.1$-m and $1$-ns catastrophic
-    thresholds.}
+    \caption{External benchmark at the native read-outs, $960$
+    shared-realization trials per SNR: the proposed MKSC-GI+CCOP-JVP, 4-D Jones-VP (4D-JVP) in range
+    units, Algebraic CPD with joint mapping, VBI/SBL at its own closed-form
+    fusion, and near-field OMP--SAGE--WLS. (a),~(c)~In-basin precision against the
+    free-Jones PEB and the $\sigma$-scaled CEB reference of
+    Section~\ref{subsec:res_setup}. (b),~(d)~Complementary CDFs at $-10$~dB; the
+    dashed lines mark the $0.1$-m and $1$-ns catastrophic thresholds, so each
+    crossing is that method's catastrophic rate. Catastrophic rates against SNR
+    and the full campaign range are supplementary.}
     \label{fig:benchmark_combined}
 \end{figure}
 
@@ -1503,60 +1463,67 @@ $0.42\%$, and from $-5$~dB upward the proposed route has no catastrophic
 trial while 4D-JVP needs $0$~dB. The two also differ in Phase~II, so the
 attribution rests on evidence rather than construction: given one common
 initializer the two Phase~II routes carry identical catastrophic rates at
-every SNR (Table~\ref{tab:c3_control}), which leaves acquisition as the
+every SNR (Section~\ref{subsec:res_c3}), which leaves acquisition as the
 stage that separates them. Matched precision with a suppressed tail is
 exactly what Phase~I and C2 are built to deliver.
 
-The three external routes are limited earlier and none improves from $-5$ to
-$30$~dB. A shared exact-model refinement attributes the dominant loss of each
-to a different stage. Variational Bayesian inference with sparse Bayesian
-learning (VBI/SBL)~\cite{tipping2001sbl,li2024vbi} leaves a $26.2$-mm floor
-at its native fusion that the refinement almost removes ($0.315$~mm).
-Algebraic canonical polyadic decomposition
+The three external routes are limited earlier, each at a different stage,
+and none improves from $-5$ to $30$~dB. Variational Bayesian inference with
+sparse Bayesian learning (VBI/SBL)~\cite{tipping2001sbl,li2024vbi} leaves a
+$26.2$-mm floor at its native fusion that a common exact-model refinement
+almost removes ($0.315$~mm), so its loss is in that fusion and not in the
+sparse Bayesian acquisition. Algebraic canonical polyadic decomposition
 (CPD)~\cite{lin2021tensor,sidiropoulos2017tensor} keeps a $41.9\%$
-catastrophic rate after the same refinement although its tensor fit and panel
-association are correct on the failing trials, pointing to the map from
-converged CP factors to position. Near-field orthogonal matching pursuit
-through space-alternating generalized expectation--maximization and a
-weighted least-squares read-out~\cite{pati1993omp,fleury1999sage,yan2025ris}
-already runs that refinement as its own SAGE stage and is catastrophic
-throughout, its far-field direction acquisition never bracketing a basin
-here. Synchronization shows the same ordering, with clock-catastrophic rates
-of $0.21\%$ for the proposed route against $1.56\%$ for 4D-JVP and
-$7.29\%$--$89.7\%$ externally.
+catastrophic rate even after the same refinement, although its tensor fit
+and panel association are correct on the failing trials, which places its
+loss in the map from converged CP factors to position. Near-field
+orthogonal matching pursuit through space-alternating generalized
+expectation--maximization and a weighted least-squares
+read-out~\cite{pati1993omp,fleury1999sage,yan2025ris} already runs that
+refinement as its own SAGE stage and is catastrophic throughout, its
+far-field direction acquisition failing to bracket a basin in this
+blocked-LoS deep-near-field scene. Synchronization shows the same ordering,
+with clock-catastrophic rates of $0.21\%$ for the proposed route against
+$1.56\%$ for 4D-JVP and $7.29\%$--$89.7\%$ for the three external routes,
+and the ordering persists below the declared operating region.
 
 These numbers characterize the evaluated adaptations rather than the cited
-methods: each external route is stopped at the read-out its own formulation
-prescribes, no comparator receives the proposed route's Phase~II polish, and
-the refinement above belongs to none of the cited pipelines. McNemar's exact
-test rejects equality of the paired catastrophic indicator against all four
-comparators ($p\le1.5\times10^{-3}$). Adaptation details and the campaign
-below the operating region are supplementary.
+methods: in Fig.~\ref{fig:benchmark_combined} each external route is stopped
+at the read-out its own formulation prescribes and no comparator receives
+the proposed route's Phase~II polish, while the refinement above is a
+separate diagnostic map belonging to none of the cited pipelines, rates
+being paired only within one protocol. On the benchmark McNemar's exact test
+rejects equality of the paired catastrophic indicator against all four
+comparators ($p\le1.5\times10^{-3}$). Adaptation details, the refinement
+diagnostic and the campaign below the operating region are supplementary,
+where this benchmark is the as-published tier.
 
 \begin{figure}[!tb]
 \centering
 \includegraphics[width=\columnwidth]{fig_receiver_main.pdf}
-\caption{C1 information: conditional position RMSE (solid) against the free-Jones
-PEB (dashed) for the three receiver modes, $480$ paired trials per cell at a
-common absolute noise level.}
+\caption{C1 information, $480$ paired trials per cell at a common absolute
+noise level: matched conditional accuracy (solid) against the free-Jones PEB
+(dashed), the modes ordering as Theorem~\ref{thm:split}(i) predicts. The
+paired efficiency ratio and its bootstrap intervals are supplementary.}
 \label{fig:c1_receiver}
 \end{figure}
 
+\subsection{C1: EVS Information and Panel Separability}
 \label{subsec:res_c1}
+
+\textit{Information.} Theorem~\ref{thm:split}(i) is an identity, so what
+the receiver-mode experiment measures is the price of its scalar weight.
 Fig.~\ref{fig:c1_receiver} plots conditional accuracy against the free-Jones
-PEB for the three receiver modes. Theorem~\ref{thm:split}(i) is an identity,
-so what the figure measures is the price of its scalar weight: at $0$~dB the scalar, dual and full modes reach $0.815$, $0.330$ and
+PEB: at $0$~dB the scalar, dual and full modes reach $0.815$, $0.330$ and
 $0.133$~mm, ordering exactly as the matched PEB predicts, and inside the
 operating region the full-EVS and dual-polarized RMSE/PEB ratios are both
-consistent with efficiency. In the single-panel information a reduced receiver
-costs the scalar weight $\alpha_{\bS_{\rm mode}}$ and nothing else.
+consistent with efficiency. A reduced receiver costs the scalar weight
+$\alpha_{\bS_{\rm mode}}$ and nothing else.
 
-The consequential loss is elsewhere, and it is the
+\textit{Separability.} The consequential loss is elsewhere, and it is the
 one a local bound cannot see. Fig.~\ref{fig:c1_separability} varies the
 Jones overlap of the closest-delay panel pair at fixed cascaded-delay
-separation and scores resolution probability -- the fraction of trials
-returning $K$ correctly paired components with Phase-I delay error at most
-$0.5$~ns and no pole collapse -- rather than position accuracy.
+separation, scoring component separation rather than position accuracy.
 Full-EVS resolution is flat across the four overlaps, varying by less than
 the Clopper--Pearson half-width of a single cell, whereas the
 dual-polarized and scalar modes collapse toward zero as the overlap grows,
@@ -1567,11 +1534,11 @@ residual separating two panels can vanish outright, whereas six components
 hold it above $\sin\theta_{\min}$. The end-to-end cost follows: at $-10$~dB
 the three modes carry catastrophic rates of $14.17\%$, $2.29\%$ and
 $1.04\%$, a $13.6\times$ scalar/full ratio against a $5.7\times$
-matched-PEB ratio, the excess consistent with this panel-label loss. Full EVS
+matched-PEB ratio, the excess being exactly this panel-label loss. Full EVS
 therefore buys more than information; it preserves a discrimination that
 reduced receivers can void outright.
 
-A sweep over $\lambda_k\in\{0,0.1,1,10\}$ in all
+\textit{Penalty scope.} A sweep over $\lambda_k\in\{0,0.1,1,10\}$ in all
 three modes exchanges no catastrophic trial and leaves the attained residual
 identical to machine precision, as the rank accounting of
 Section~\ref{subsec:ccop} leads one to expect: the scalar mask drops
@@ -1581,14 +1548,21 @@ directions that deficiency makes invisible.
 \begin{figure*}[!tb]
 \centering
 \includegraphics[width=0.80\textwidth]{fig_resolvability.pdf}
-\caption{Polarimetric panel separability at $-10$~dB: resolution probability
-against cascaded-delay separation at four Jones overlaps, with exact
-Clopper--Pearson bands over $480$ trials per cell, for (a)~scalar,
-(b)~dual-polarized and (c)~full-EVS reception.}
+\caption{Polarimetric panel separability at $-10$~dB, the mechanism of
+Theorem~\ref{thm:split}(ii): resolution probability -- the fraction of
+trials returning $K$ correctly paired components with Phase-I delay error at
+most $0.5$~ns and no pole collapse -- against cascaded-delay
+separation at four Jones overlaps with exact Clopper--Pearson bands, for
+(a)~scalar, (b)~dual-polarized and (c)~full-EVS reception. The dashed
+vertical line marks the reference scene's minimum separation and the boxed
+number the largest spread over overlap.}
 \label{fig:c1_separability}
 \end{figure*}
 
+\subsection{C2: Sufficient Compression and Reliable Acquisition}
 \label{subsec:res_c2}
+
+\textit{Effect of sufficient compression on acquisition reliability.}
 Theorem~\ref{thm:compress} establishes that the projection preserves the
 profiled maximizer and the free-Jones information, so what the experiment
 asks is what an exactly sufficient projection does to the finite-sample
@@ -1601,7 +1575,7 @@ saturated. Exact-model accuracy is unaltered throughout: what the identity
 permits is discarding $90$ of $96$ receive dimensions before a subspace
 method sees the remainder.
 
-Table~\ref{tab:c2_ladder}
+\textit{Contribution of the individual Phase~I mechanisms.} Table~\ref{tab:c2_ladder}
 separates the three Phase~I mechanisms on a nested ladder at $-20$~dB,
 where the tail is large enough to resolve them. Compression alone removes
 three quarters of the catastrophic mass by denoising the delay poles;
@@ -1612,7 +1586,7 @@ while lowering the p95 reconstruction NMSE $27$-fold. A matched seven-start
 pool lands within one trial of the proposed rung, so the gain is not
 explained by restart diversity.
 
-Growing the panel
+\textit{Aperture scaling.} Growing the panel
 from $16^2$ to $64^2$ elements lowers conditional RMSE from $1.66$ to
 $0.42$~mm while holding the catastrophic rate in $[0.21,0.62]\%$, so the
 estimator realizes the aperture gain that motivates near-field operation.
@@ -1623,8 +1597,10 @@ reaches it. Accuracy improves monotonically with $M_A$, $T$ and bandwidth,
 and the ordering persists at $K=4$ ($1.88\%$ against $12.92\%$).
 
 \begin{table}[!t]
-\caption{Phase-I mechanism ladder at $-20$~dB over $480$ paired trials; each rung
-adds one mechanism ahead of a common Phase~II. Bold: the proposed Phase~I.}
+\caption{Phase-I mechanism ladder at $-20$~dB over $480$ paired trials. Each
+rung adds one mechanism ahead of the same Phase~II route; the bold rung is
+the proposed Phase~I, and ``p95 NMSE'' the channel reconstruction error.
+The operating-region block is supplementary.}
 \label{tab:c2_ladder}
 \centering
 \scriptsize
@@ -1650,7 +1626,9 @@ $2.98\!\times\!10^{-3}$ & $9.4\!\times\!10^{-4}$\\
 \end{tabular}
 \end{table}
 
+\subsection{C3: Clock Profiling and Certification}
 \label{subsec:res_c3}
+
 Table~\ref{tab:c3_control} isolates Phase~II by giving four configurations
 the same initializers. CCOP-JVP matches the precision of 4D-JVP while
 removing one nonlinear coordinate and cutting the median outer evaluation
@@ -1668,11 +1646,14 @@ tolerance, so the subdivision cap was never reached.
 The certificate covers the inner solve only, and indeed 4D-JVP and CCOP-JVP
 sharing one Phase~I
 initializer have identical catastrophic rates at every SNR of the
-independent suite, which is why the tail suppression above is attributed to C2 and not to C3.
+independent suite, which is why the tail suppression of
+Section~\ref{subsec:res_c2} is attributed to C2 and not to C3.
 
 \begin{table}[!t]
 \caption{Phase-II refinement control at $-10$~dB over $100$ shared MKSC-GI
-initializers; the three 4D-JVP rows differ only in clock parameterization.}
+initializers. The three 4D-JVP rows differ only in clock parameterization.
+``Inv.'' is unit invariance, ``Cert.'' a certified inner clock solve, and
+RMSEs are conditional on each row's inliers.}
 \label{tab:c3_control}
 \centering
 \scriptsize
@@ -1688,30 +1669,30 @@ Inv. & Cert.\\
 \textbf{CCOP-JVP} & $\mathbf{0.5088}$ & $\mathbf{3.4438}$ &
 $\mathbf{0}$ & $\mathbf{9}$ & yes & yes\\
 \bottomrule
-\multicolumn{7}{p{0.96\columnwidth}}{\scriptsize ``Inv.'': unit invariance.
-``Cert.'': certified inner clock solve. RMSEs are conditional on each row's
-inliers.}
 \end{tabular}
 \end{table}
 
 \begin{figure*}[!tb]
 \centering
-\includegraphics[width=0.8\textwidth]{fig_boundaries.pdf}
-\caption{Operating boundaries at $-10$~dB, $480$ trials per cell.
-(a)--(b)~RIS--BS angular-calibration error. (c)~Per-position catastrophic
-rate against the minimum cascaded-delay separation over the
-$5\times5\times2$ grid; marker color is the median free-Jones EFIM condition
-number and the shaded strip the coincidence region.}
+\includegraphics[width=\textwidth]{fig_boundaries.pdf}
+\caption{Operating boundaries at $-10$~dB
+(Section~\ref{subsec:res_robustness}). (a)--(b)~RIS--BS angular-calibration
+error: accuracy floor and capture boundary. (c)~Per-position catastrophic
+rate against the minimum true cascaded-delay separation over the
+$5\times5\times2$ grid, marker color being the median free-Jones EFIM
+condition number; the shaded strip marks the coincidence region and the
+dash-dotted line the reference scene.}
 \label{fig:boundaries}
 \end{figure*}
 
+\subsection{Deployment Boundaries and Spatial Generalization}
 \label{subsec:res_robustness}
+
 Three sensitivities set the deployment envelope, two of them in
 Fig.~\ref{fig:boundaries}; the model-order panel, the remaining mismatch and
 generalization sweeps and the audit of the frozen Phase~I constants are
 supplementary.
-
-Calibration is the binding one
+\textit{Calibration} is the binding one
 (Fig.~\ref{fig:boundaries}(a)--(b)): RIS--BS angular error degrades
 precision long before capture,
 raising conditional RMSE from $0.447$ to $31.2$~mm at $0.25^\circ$ while
@@ -1720,13 +1701,13 @@ $1^\circ$ ($59.58\%$). Receiver gain, phase and sensor-position mismatch,
 RIS element-phase error and first-order colored noise are all milder over
 their tested ranges.
 
-Model order is a material assumption rather than a tuning
+\textit{Model order} is a material assumption rather than a tuning
 parameter. In the dedicated $0$-dB sweep, $\widehat K=2$ is structurally
 destructive ($0.710$-m median, $P_{\rm cat}=65.4\%$), and $\widehat K=4$
 and $5$ keep submillimeter medians while carrying $35.4\%$ and $49.0\%$
 catastrophic rates.
 
-Delay coincidence bounds acquisition where information does not
+\textit{Delay coincidence} bounds acquisition where information does not
 (Fig.~\ref{fig:boundaries}(c)). Across a $5\times5\times2$ position grid the proposed median per-position
 catastrophic rate is $0.62\%$ against $2.92\%$ for 4D-JVP, and both hard
 corners lie near a cascaded-delay coincidence surface, the worst reaching
@@ -1737,32 +1718,34 @@ reliability: deployment screening needs a delay-coincidence check and a
 coarse global fallback, not a PEB map alone. Every sweep here holds one
 infrastructure layout and samples no panel-placement diversity.
 
+\subsection{Cost, Training Budget, and Failure Diagnostics}
 \label{subsec:res_cost}
-In the serialized single-thread benchmark at $-10$~dB the
+
+\textit{Cost.} In the serialized single-thread benchmark at $-10$~dB the
 proposed route requires $3.20$~s and $2.52$~GB peak resident set size on
 the $96$ receive chains a full EVS costs, between 4D-JVP ($2.42$~s) and
 Algebraic CPD ($4.51$~s) and slower only than VBI/SBL's native read-out,
 which is the route that pays the floor of
-Fig.~\ref{fig:benchmark_combined}; all timings share one host. An
+Section~\ref{subsec:res_benchmark}; all timings share one host. An
 independently seeded decomposition places $2.86$~s of that total in Phase~I
 against $0.33$~s in certified clock profiling, so acquisition and not
 refinement dominates the budget -- the same stage the reliability gain comes
 from. Per-block and per-method breakdowns are supplementary.
 
-A $25\%$ cyclic prefix at $\Delta f=5$~MHz
-is $50$~ns, covering the $19.1$-ns cascaded-delay spread plus clock-search
-interval, so one configuration per symbol gives
-$T_{\rm train}\simeq64~\mu$s at $T=256$. At $1$~m/s the UE moves
-$64~\mu$m per sweep, $16\%$ of the median PEB and equal to it near $6$~m/s:
-a displacement check against a static bound, not a time-varying channel
-experiment.
+\textit{Training and mobility.} A $25\%$ cyclic prefix at $\Delta f=5$~MHz
+is $50$~ns, covering the $19.1$-ns sum of cascaded-delay spread and
+clock-search interval, so one configuration per symbol gives
+$T_{\rm train}\simeq64~\mu$s at $T=256$, excluding reconfiguration latency.
+At $1$~m/s the UE then moves $64~\mu$m per sweep, $16\%$ of the median PEB,
+the two becoming equal near $6$~m/s: a displacement check against a static
+bound, not a time-varying channel experiment.
 
-Across the $4\,320$ operating-region trials,
-exactly five proposed-route trials are catastrophic and exactly those five
+\textit{Failure localization.} Across the $4\,320$ operating-region trials,
+exactly five proposed-route trials are catastrophic, and exactly those five
 fail the basin diagnostic, each with a Phase~I delay RMSE above $0.5$~ns;
-panel association is correct in $99.93\%$ of trials and in every trial at and
-above $0$~dB. Every failure therefore originates in acquisition, not
-refinement.
+panel association is correct in $99.93\%$ of trials overall and in every
+trial at and above $0$~dB. Every failure in the tested region therefore
+originates in acquisition rather than in refinement.
 \section{Conclusion}
 \label{sec:conclusion}
 

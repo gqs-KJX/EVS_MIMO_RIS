@@ -202,14 +202,14 @@ def grid(ax, which="major") -> None:
     ax.set_axisbelow(True)
 
 
-def fig_legend(fig, ax, ncol=3, y=-0.02, extra=()) -> None:
+def fig_legend(fig, ax, ncol=3, y=-0.02, extra=(), fontsize=7.2) -> None:
     """Place one shared legend under the whole figure."""
     h, l = ax.get_legend_handles_labels()
     for hh, ll in extra:
         h.append(hh)
         l.append(ll)
     fig.legend(h, l, loc="upper center", bbox_to_anchor=(0.5, y), ncol=ncol,
-               frameon=False, fontsize=7.2, columnspacing=1.2)
+               frameon=False, fontsize=fontsize, columnspacing=1.2)
 
 
 # ------------------------------------------------------------------ data ----
@@ -1418,53 +1418,63 @@ def fig_benchmark(out: pathlib.Path) -> None:
     # is the same rate at this SNR -- while the running text quotes how that
     # rate moves with SNR.  The clock row stays: the paper is a localization
     # *and synchronization* paper, so the main benchmark has to show both.
-    figm, ((am, bm), (dm, em)) = plt.subplots(2, 2, figsize=(DBL_W, 4.05))
+    # Single-column cut.  The float is included at \columnwidth, so the export
+    # width must be COL_W: at DBL_W every label was down-scaled by 0.49 in the
+    # typeset PDF.  A 2x2 grid at COL_W needs its own type scale; nothing
+    # plotted changes.
+    with plt.rc_context({
+        "axes.labelsize": 7.0,
+        "axes.titlesize": 7.5,
+        "xtick.labelsize": 6.5,
+        "ytick.labelsize": 6.5,
+        "lines.linewidth": 1.0,
+        "lines.markersize": 3.0,
+    }):
+     figm, ((am, bm), (dm, em)) = plt.subplots(2, 2, figsize=(COL_W, 4.15))
 
-    for v, lab, col, mk, ls in series:
-        x, y = curve(B, "snr_db", "position_error_m_median", "baseline", v)
-        draw_benchmark_curve(am, x, 1e3 * y, method=v, label=lab, color=col,
-                             marker=mk, linestyle=ls)
-    x, y = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
-    am.semilogy(x, 1e3 * y, color="k", ls=(0, (4, 2)), lw=1.0,
-                label="Free-Jones PEB")
-    am.set_xlabel("SNR [dB]")
-    am.set_ylabel("Error [mm]")
-    am.set_title("(a) Position, median", pad=3)
-    grid(am)
+     for v, lab, col, mk, ls in series:
+         x, y = curve(B, "snr_db", "position_error_m_median", "baseline", v)
+         draw_benchmark_curve(am, x, 1e3 * y, method=v, label=lab, color=col,
+                              marker=mk, linestyle=ls)
+     x, y = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
+     am.semilogy(x, 1e3 * y, color="k", ls=(0, (4, 2)), lw=1.0,
+                 label="Free-Jones PEB")
+     am.set_xlabel("SNR [dB]")
+     am.set_ylabel("Error [mm]")
+     am.set_title("(a) Position, median", pad=3)
+     grid(am)
 
-    draw_ccdf(bm, "position_error_m", 1e-7, 0.1, "Position error $x$ [m]",
-              rf"(b) Position CCDF at ${CCDF_SNR:.0f}$ dB")
-    bm.axvspan(1e-7, 0.1, color=C["proposed"], alpha=0.055, lw=0, zorder=0.4)
-    bm.text(0.035, 0.06, r"inlier region ($\leq 0.1$ m)", transform=bm.transAxes,
-            ha="left", fontsize=6.0, color="0.35")
+     draw_ccdf(bm, "position_error_m", 1e-7, 0.1, "Position error $x$ [m]",
+               rf"(b) Position CCDF at ${CCDF_SNR:.0f}$ dB")
+     bm.axvspan(1e-7, 0.1, color=C["proposed"], alpha=0.055, lw=0, zorder=0.4)
+     bm.text(0.035, 0.06, r"$\leq 0.1$ m", transform=bm.transAxes,
+             ha="left", fontsize=5.6, color="0.35")
 
-    for v, lab, col, mk, ls in series:
-        med_col = ("clock_error_ns_median"
-                   if v in ("mksc_ccop", "scaled_4d")
-                   else "clock_median_abs_error_ns")
-        x, y = curve(B, "snr_db", med_col, "baseline", v)
-        draw_benchmark_curve(dm, x, 1e3 * y, method=v, label=lab, color=col,
-                             marker=mk, linestyle=ls)
-    xp, yp = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
-    if xp.size:
-        anchor = yp[np.argmin(np.abs(xp + 10.0))]
-        dm.semilogy(xp, CEB_REF_PS_AT_MINUS10 * yp / anchor, color="k",
-                    ls=(0, (4, 1.4, 1, 1.4)), lw=1.0,
-                    label=r"CEB ($\sigma$-scaled)")
-    dm.set_xlabel("SNR [dB]")
-    dm.set_ylabel("Error [ps]")
-    dm.set_title("(c) Clock, median", pad=3)
-    grid(dm)
+     for v, lab, col, mk, ls in series:
+         med_col = ("clock_error_ns_median"
+                    if v in ("mksc_ccop", "scaled_4d")
+                    else "clock_median_abs_error_ns")
+         x, y = curve(B, "snr_db", med_col, "baseline", v)
+         draw_benchmark_curve(dm, x, 1e3 * y, method=v, label=lab, color=col,
+                              marker=mk, linestyle=ls)
+     xp, yp = curve(B, "snr_db", "peb_position_m_rms", "baseline", "peb")
+     if xp.size:
+         anchor = yp[np.argmin(np.abs(xp + 10.0))]
+         dm.semilogy(xp, CEB_REF_PS_AT_MINUS10 * yp / anchor, color="k",
+                     ls=(0, (4, 1.4, 1, 1.4)), lw=1.0,
+                     label=r"CEB ($\sigma$-scaled)")
+     dm.set_xlabel("SNR [dB]")
+     dm.set_ylabel("Error [ps]")
+     dm.set_title("(c) Clock, median", pad=3)
+     grid(dm)
 
-    draw_ccdf(em, "clock_error_ns", 1e-7, 1.0, r"$|$Clock error$|$ $x$ [ns]",
-              rf"(d) Clock CCDF at ${CCDF_SNR:.0f}$ dB")
-    em.text(0.965, 0.90, r"$>1$ ns", transform=em.transAxes, ha="right",
-            va="top", fontsize=6.0, color="0.35")
+     draw_ccdf(em, "clock_error_ns", 1e-7, 1.0, r"$|$Clock error$|$ $x$ [ns]",
+               rf"(d) Clock CCDF at ${CCDF_SNR:.0f}$ dB")
 
-    figm.subplots_adjust(left=0.075, right=0.995, top=0.935, bottom=0.175,
-                         wspace=0.30, hspace=0.60)
-    fig_legend(figm, am, ncol=3, y=0.030, extra=ceb_handle)
-    figm.savefig(out / "fig_benchmark_main.pdf")
+     figm.subplots_adjust(left=0.155, right=0.985, top=0.950, bottom=0.265,
+                          wspace=0.44, hspace=0.55)
+     fig_legend(figm, am, ncol=2, y=0.185, extra=ceb_handle, fontsize=6.4)
+     figm.savefig(out / "fig_benchmark_main.pdf")
     plt.close(figm)
 
 
@@ -1820,8 +1830,11 @@ def fig_boundaries(out: pathlib.Path) -> None:
     a.semilogy(x, 1e3 * y, color=C["r2"], marker="s", mfc="white", ls="--",
                label="p95 (all trials)")
     a.axvspan(0.1, 0.25, color=C["r3"], alpha=0.08, lw=0)
-    a.text(0.028, 260.0, "capture retained,\nprecision lost", ha="left",
-           va="top", fontsize=6.8, color="0.35", linespacing=0.95)
+    # Headroom so the band label clears the p95 marker at 0.5 deg.
+    a.set_ylim(top=a.get_ylim()[1] * 2.4)
+    a.text(0.03, 0.97, "capture retained,\nprecision lost", ha="left",
+           va="top", fontsize=6.8, color="0.35", linespacing=0.95,
+           transform=a.transAxes)
     a.set_xlabel("RIS--BS angle error [deg]")
     a.set_ylabel("Error [mm]")
     a.set_title("(a) Calibration accuracy floor", pad=3)
@@ -1886,7 +1899,10 @@ def fig_boundaries(out: pathlib.Path) -> None:
     d.scatter(xr, yr, facecolors="none", edgecolors=C["r2"], marker="s",
               s=25, linewidth=0.9, label="4D-JVP", zorder=2)
     d.axvline(1.2, color=C["r2"], lw=0.8, ls="--")
-    d.text(0.99, 0.60, f"free-Jones EFIM full rank\nin {len(Tp) - defic}/{len(Tp)} trials",
+    # Placed below the "reference scene" tick label, which reaches down to
+    # about y = 0.55; the panel is empty here because every off-corner point
+    # sits under 7 %.
+    d.text(0.985, 0.46, f"free-Jones EFIM full rank\nin {len(Tp) - defic}/{len(Tp)} trials",
            ha="right", va="top", transform=d.transAxes, fontsize=6.4,
            linespacing=0.95, color="0.25")
     # Anchor the grid against the scene every other figure and table uses, so
