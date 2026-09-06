@@ -130,6 +130,12 @@ G.~H. Golub and V.~Pereyra, ``The differentiation of pseudo-inverses and
   nonlinear least squares problems whose variables separate,'' \emph{SIAM J.
   Numer. Anal.}, vol.~10, no.~2, pp. 413--432, Apr. 1973.
 
+\bibitem{chen2026emvsris}
+H.~Chen, Z.~Yu, T.~Wu, W.~Liu, M.~Elkashlan, H.~Shin, M.~C. Valenti, and
+  R.~Schober, ``Beyond $\lambda/2$: Can arbitrary {EMVS} arrays achieve
+  unambiguous {NLOS} localization?'' \emph{arXiv preprint arXiv:2602.07515},
+  2026.
+
 \bibitem{zhao2021timing}
 Y.~Zhao, W.~Xu, H.~Sun, D.~W.~K. Ng, and X.~You, ``Cooperative reflection
   design with timing offsets in distributed multi-{RIS} communications,''

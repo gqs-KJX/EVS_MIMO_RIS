@@ -138,7 +138,7 @@ def _inject_ris_bs_angle_error(
         perturbed = _perturbed_unit_direction(nominal, std_deg, rng)
         direction_local = np.asarray(scene["rotations"][path]) @ perturbed
         generation["a_RB"][path] = np.exp(
-            -1j * wavenumber * (np.asarray(scene["ris_grid"]) @ direction_local)
+            1j * wavenumber * (np.asarray(scene["ris_grid"]) @ direction_local)
         )
         generation["v_B"][path] = ula_steering(
             int(scene["M_A"]), wavelength / 2.0, wavelength, -perturbed
@@ -168,7 +168,7 @@ def _inject_bs_sensor_position_error(
         )
         arrival /= np.linalg.norm(arrival)
         generation["v_B"][path] = np.exp(
-            -1j * wavenumber * (positions @ arrival)
+            1j * wavenumber * (positions @ arrival)
         )
     return generation
 

@@ -383,7 +383,10 @@ def far_field_ris_response(
     direction_local = rotation_global_to_ris @ (target_position - ris_center)
     direction_local = direction_local / np.linalg.norm(direction_local)
     wavenumber = 2.0 * np.pi / wavelength
-    return np.exp(-1j * wavenumber * (ris_grid @ direction_local))
+    # Extra path of element m relative to the panel centre is
+    # -rho_m^T R s, so the extra-path convention e^{-j k l} used by
+    # near_field_spherical_response gives a +1j exponent here.
+    return np.exp(1j * wavenumber * (ris_grid @ direction_local))
 
 
 def ula_steering(
@@ -398,7 +401,9 @@ def ula_steering(
     direction = direction / np.linalg.norm(direction)
     x_positions = (np.arange(num_sensors) - (num_sensors - 1) / 2.0) * spacing
     wavenumber = 2.0 * np.pi / wavelength
-    return np.exp(-1j * wavenumber * x_positions * direction[0])
+    # arrival_direction points from the array back towards the source, so
+    # the extra path of sensor i is -x_i u_x^T u_arr and the exponent is +1j.
+    return np.exp(1j * wavenumber * x_positions * direction[0])
 
 
 def maxwell_matrix(propagation_direction_global: np.ndarray) -> np.ndarray:

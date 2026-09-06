@@ -21,7 +21,12 @@ import numpy as np
 from .geometry import elev_az_from_unit_vector, polarization_vector, unit_vector_from_elev_az
 from .baselines.backend import BackendConfig, get_backend
 from .projections_delay import tau_from_pole
-from .utils import bounded_coordinate_search, copy_estimate, scipy_is_available
+from .utils import (
+    bounded_coordinate_search,
+    copy_estimate,
+    observed_maxwell_matrices as _theta_obs,
+    scipy_is_available,
+)
 
 
 def _global_vp_config(config: dict) -> dict:
@@ -460,7 +465,7 @@ def _raw_design_matrix_from_factors(
 
 def _evs_linear_polarization_basis(scene: dict, path: int) -> np.ndarray:
     """Return EVS basis columns for the two linear polarization components."""
-    theta = np.asarray(scene["Theta"][path], dtype=complex)
+    theta = np.asarray(_theta_obs(scene)[path], dtype=complex)
     basis_1 = np.kron(scene["v_B"][path], theta[:, 0])
     basis_2 = np.kron(scene["v_B"][path], theta[:, 1])
     return np.column_stack([basis_1, basis_2])
@@ -472,7 +477,7 @@ def _evs_legacy_full_polarization_atom(stage1_factors: dict, scene: dict, path: 
     eta_pol = stage1_factors.get("eta_pol_phys")
     if gamma is None or eta_pol is None:
         return stage1_factors["A_phys"][:, path : path + 1]
-    pol = scene["Theta"][path] @ polarization_vector(float(gamma[path]), float(eta_pol[path]))
+    pol = _theta_obs(scene)[path] @ polarization_vector(float(gamma[path]), float(eta_pol[path]))
     return np.kron(scene["v_B"][path], pol)[:, None]
 
 
@@ -944,7 +949,7 @@ def extract_stage1_jones_directions(
                 s_hat = a_matrix @ np.conj(scene["v_B"][k]) / (
                     np.vdot(scene["v_B"][k], scene["v_B"][k]).real + eps
                 )
-                x0 = np.linalg.pinv(scene["Theta"][k], rcond=eps) @ s_hat
+                x0 = np.linalg.pinv(_theta_obs(scene)[k], rcond=eps) @ s_hat
                 norm = np.linalg.norm(x0)
                 if np.isfinite(norm) and norm > eps:
                     e0[k] = x0 / norm

@@ -10,7 +10,7 @@ error columns, which the paper reports and the summary CSV does not always
 carry at the requested percentile.
 
 Usage:
-    python scripts/extract_paper_numbers.py [--results results/paper_v3]
+    python scripts/extract_paper_numbers.py [--results results/paper_v4]
 """
 
 from __future__ import annotations
@@ -437,7 +437,7 @@ def receiver_block(root: pathlib.Path, snrs: list[float]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", default="results/paper_v3")
+    ap.add_argument("--results", default="results/paper_v4")
     args = ap.parse_args()
     root = pathlib.Path(args.results)
 

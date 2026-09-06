@@ -21,6 +21,7 @@ from .projections_delay import (
     tau_from_pole,
 )
 from .projections_evs import project_evs_factor
+from .utils import observed_maxwell_matrices as _theta_obs
 from .projections_ris import (
     _beamspace_coarse_candidates,
     _ris_search_bounds,
@@ -921,7 +922,7 @@ def _assignment_by_projection(
         for ris in range(k_paths):
             evs_start = time.perf_counter()
             evs_proj = project_evs_factor(
-                a_proxy[:, col], scene["v_B"][ris], scene["Theta"][ris], eps
+                a_proxy[:, col], scene["v_B"][ris], _theta_obs(scene)[ris], eps
             )
             timing["stage1_time_assignment_evs"] += time.perf_counter() - evs_start
             if geometry_mode in ("coarse_correlation", "coarse_to_exact_assignment"):
@@ -1683,7 +1684,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     gamma_before = float(gamma[k])
                     eta_pol_before = float(eta_pol[k])
                     evs_proj = project_evs_factor(
-                        a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                        a_proxy[:, k], scene["v_B"][k], _theta_obs(scene)[k], config["eps"]
                     )
                     local_res_before = _relative_scaled_residual(
                         a_proxy[:, k], a_before, config["eps"]
@@ -1760,7 +1761,7 @@ def structured_refinement(z_tensor: np.ndarray, scene: dict, config: dict, estim
                     gamma_before = float(gamma[k])
                     eta_pol_before = float(eta_pol[k])
                     evs_proj = project_evs_factor(
-                        a_proxy[:, k], scene["v_B"][k], scene["Theta"][k], config["eps"]
+                        a_proxy[:, k], scene["v_B"][k], _theta_obs(scene)[k], config["eps"]
                     )
                     local_res_before = _relative_scaled_residual(
                         a_proxy[:, k], a_before, config["eps"]

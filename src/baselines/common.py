@@ -758,7 +758,7 @@ def training_response_from_direction(scene: dict, panel: int, direction_local: n
     direction = np.asarray(direction_local, dtype=float).reshape(3)
     direction /= np.linalg.norm(direction) + 1.0e-15
     wavenumber = 2.0 * np.pi / float(scene["wavelength"])
-    a_ur = np.exp(-1j * wavenumber * (np.asarray(scene["ris_grid"], dtype=float) @ direction))
+    a_ur = np.exp(1j * wavenumber * (np.asarray(scene["ris_grid"], dtype=float) @ direction))
     g_elem = np.asarray(scene["a_RB"][panel], dtype=complex) * a_ur
     return np.asarray(scene["Omega"][panel], dtype=complex) @ g_elem
 

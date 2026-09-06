@@ -121,3 +121,26 @@ def bounded_coordinate_search(
         "iterations": it + 1,
     }
     return x, best, info
+
+
+def observed_maxwell_matrices(scene: dict) -> np.ndarray:
+    """Return the Maxwell matrices as the configured receiver observes them.
+
+    The observation carries ``S_mode Theta_k``: ``channel_model`` masks the
+    EVS factor, so a dictionary built from the unmasked ``Theta_k`` cannot
+    represent it and leaves a residual floor even in the noiseless,
+    correct-panel case (0.95 for a scalar mask, 0.71 for a dual mask).  Every
+    estimator-side Maxwell dictionary must go through this helper.  It is
+    recomputed from ``evs_component_mask`` rather than cached in the scene so
+    that a scene re-masked in place (nested receiver-mode data) cannot carry a
+    stale copy.  For ``full_6d`` the mask is all ones and the result is
+    bit-identical to ``Theta``.
+    """
+    theta = np.asarray(scene["Theta"], dtype=complex)
+    mask = scene.get("evs_component_mask")
+    if mask is None:
+        return theta
+    mask = np.asarray(mask, dtype=float).reshape(-1)
+    if mask.size != theta.shape[1]:
+        raise ValueError("evs_component_mask length must match the Maxwell row count")
+    return mask[None, :, None] * theta

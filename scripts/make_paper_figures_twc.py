@@ -89,6 +89,30 @@ CAMPAIGNS = {
         # a different host, so it cannot be mixed with the cluster benchmark.
         "components_cost": [RES / "paper_v3" / "components_cost30_cpu"],
     },
+    # Re-run of every suite after two model corrections: the RIS-BS / BS-array
+    # two-hop phase sign (geometry.py) and the receiver-mask leak in the
+    # estimator Maxwell dictionaries (utils.observed_maxwell_matrices).  The
+    # seven suites profiled before the mask fix are full-6D only, where the
+    # mask is all ones and the fix is bit-identical, so the campaign is
+    # internally consistent.
+    "v4": {
+        "snr_internal": [RES / "paper_v4" / "snr_internal_480"],
+        "components": [RES / "paper_v4" / "components_480"],
+        "components_m20": [RES / "paper_v4" / "components_480_m20"],
+        "receiver": [RES / "paper_v4" / "receiver_information_480"],
+        "compression": [RES / "paper_v4" / "compression_matched_480"],
+        "benchmark": [RES / "paper_v4" / "benchmark_as_published_960_5"],
+        "benchmark_clock": [RES / "paper_v4" / "benchmark_as_published_960_5"],
+        "maxwell_mismatch": [RES / "paper_v4" / "maxwell_mismatch_480"],
+        "colored_noise": [RES / "paper_v4" / "colored_noise_boundary_480"],
+        "ris_calibration": [RES / "paper_v4" / "ris_bs_calibration_boundary_480"],
+        "model_order": [RES / "paper_v4" / "model_order_mismatch_480"],
+        "positions": [RES / "paper_v4" / "positions50x480"],
+        "resolvability": [RES / "paper_v4" / "evs_resolvability_480"],
+        "scaling": [RES / "paper_v4" / "robustness_scaling_480"],
+        "benchmark_runtime": [RES / "paper_v4" / "benchmark_runtime30_cpu_as_published_v2"],
+        "components_cost": [RES / "paper_v4" / "components_cost30_cpu"],
+    },
     # 10 trials per cell.  A pipeline smoke test, NOT a source of paper
     # numbers: at n = 10 a Clopper-Pearson interval on a rate spans roughly
     # +-30 percentage points and the paired bootstrap / McNemar statistics the
@@ -115,9 +139,9 @@ CAMPAIGNS = {
 }
 
 # Active dataset map; set from the command line by ``--campaign``.  The paper
-# source of record is v3, so a plain invocation cannot silently fall back to
+# source of record is v4, so a plain invocation cannot silently fall back to
 # an earlier campaign.
-DATA = CAMPAIGNS["v3"]
+DATA = CAMPAIGNS["v4"]
 
 
 def ds(key: str, filename: str) -> list[dict]:
@@ -370,7 +394,15 @@ def nearest_rank(values, q: float) -> float:
 # logged in the benchmark suite.  Its SNR dependence is *not* assumed: the
 # curve is anchored here and scaled by the released free-Jones PEB, which is
 # exact because the EFIM scales as 2/sigma^2 and the geometry is fixed.
-CEB_REF_PS_AT_MINUS10 = 3.35
+#
+# Recomputed 2026-09-06 under the v4 model by scripts/recompute_ceb_anchor.py
+# (seed root 20260727, seeds 20260727..20260746, SNR -10 dB), which prints the
+# per-draw table reproduced in the supplement.  The previous value 3.40 could
+# not be traced to a recorded computation: the only archived CEB record is the
+# single-draw geometry audit (results/geometry_audit/quick_20260827T141519Z,
+# trials=1, 3.4388 ps), which is neither this geometry's 20-draw median nor
+# equal to 3.40.  The anchor now carries the recomputed median.
+CEB_REF_PS_AT_MINUS10 = 3.3789
 
 
 # =========================================================== fig: geometry ==
@@ -534,7 +566,7 @@ def fig_internal(out: pathlib.Path) -> None:
         ("proposed", "Proposed MKSC-GI + CCOP-JVP", C["proposed"], MK["proposed"], "-"),
         ("mksc_gi_4_no_refresh_ccop", "MKSC-GI, no anchor refresh", C["gi4"], MK["gi4"], "--"),
         ("old_stage1_ccop", "R3: frozen Phase I + CCOP-JVP", C["r3"], MK["r3"], "-."),
-        ("scaled_4d", "R2: frozen Phase I + 4D-JVP", C["r2"], MK["r2"], ":"),
+        ("scaled_4d", "R2: baseline-init. 4D-JVP", C["r2"], MK["r2"], ":"),
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(DBL_W, 4.0))
@@ -822,13 +854,11 @@ def fig_receiver(out: pathlib.Path) -> None:
     a.set_xlabel("SNR [dB]")
     a.set_ylabel("Conditional RMSE [m]")
     a.set_title("(a) Matched RMSE and PEB", pad=3)
-    # Confirmed by the lambda sweep (Section C2/supplementary): the scalar
-    # high-SNR floor persists identically at lambda_k=0, so it is the
-    # rank-one structure of single-component sensing, not the directional
-    # penalty, that keeps the scalar curve off its own bound.
-    a.annotate("scalar: rank-one\nsensing floor", xy=(28, 9.4e-5), xytext=(15.5, 6.0e-4),
-               fontsize=6.2, ha="center", color=C["scalar"], linespacing=0.95,
-               arrowprops=dict(arrowstyle="->", lw=0.5, color=C["scalar"]))
+    # No high-SNR annotation: the v3 scalar floor was an artifact of the
+    # receiver-mask leak in utils.observed_maxwell_matrices, which biased the
+    # reduced-mask dictionaries only.  After the v4 fix every mode tracks its
+    # own free-Jones PEB (scalar RMSE/PEB 0.97-0.98 above 0 dB), as the purely
+    # multiplicative information identity of Theorem C1(i) requires.
     grid(a)
 
     # The efficiency ratio is drawn with its paired-bootstrap 95% interval.
@@ -915,7 +945,7 @@ def fig_receiver(out: pathlib.Path) -> None:
     # descriptive consistency check whose three numbers and two interval widths
     # are quoted in the text (Remark 1 governs their reading), so the main text
     # carries the information panel and the supplement keeps the ratio panel.
-    figm, am = plt.subplots(1, 1, figsize=(COL_W, 2.45))
+    figm, am = plt.subplots(1, 1, figsize=(COL_W, 2.30))
     for m, lab, col, mk, ls in modes:
         x, y = curve(S, "x_value", "position_conditional_rmse_m", "variant", f"proposed_{m}")
         am.semilogy(x, y, color=col, marker=mk, ls="-", label=lab)
@@ -923,10 +953,6 @@ def fig_receiver(out: pathlib.Path) -> None:
         am.semilogy(x, y, color=col, ls="--", lw=1.05)
     am.set_xlabel("SNR [dB]")
     am.set_ylabel("Conditional RMSE [m]")
-    am.annotate("scalar: rank-one\nsensing floor", xy=(28, 9.4e-5),
-                xytext=(13.0, 7.5e-4), fontsize=5.8, ha="center",
-                color=C["scalar"], linespacing=0.95,
-                arrowprops=dict(arrowstyle="->", lw=0.5, color=C["scalar"]))
     grid(am)
     # Solid/dashed is defined in the caption, so the legend carries modes only.
     figm.legend(handles=[Line2D([], [], color=col, marker=mk, ls="-", label=lab)
@@ -1022,7 +1048,7 @@ def fig_benchmark(out: pathlib.Path) -> None:
         "snr_db")
     series = [
         ("mksc_ccop", "Proposed", C["proposed"], "o", "-"),
-        ("scaled_4d", "4D-JVP", C["r2"], "s", ":"),
+        ("scaled_4d", "baseline-init. 4D-JVP", C["r2"], "s", ":"),
         ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
         ("ris_vbi_sbl", "VBI/SBL", C["vbi"], "P", "-."),
         ("nf_ris_groupomp_localgrid_wls", "OMP-SAGE-WLS", C["omp"], "X", "--"),
@@ -1430,7 +1456,7 @@ def fig_benchmark(out: pathlib.Path) -> None:
         "lines.linewidth": 1.0,
         "lines.markersize": 3.0,
     }):
-     figm, ((am, bm), (dm, em)) = plt.subplots(2, 2, figsize=(COL_W, 4.15))
+     figm, ((am, bm), (dm, em)) = plt.subplots(2, 2, figsize=(COL_W, 3.90))
 
      for v, lab, col, mk, ls in series:
          x, y = curve(B, "snr_db", "position_error_m_median", "baseline", v)
@@ -1502,7 +1528,7 @@ def fig_benchmark_clock(out: pathlib.Path) -> None:
     # (proposed, R2) internal: median/p95 from summary [ns]; externals: from Cx.
     internal = [
         ("mksc_ccop", "Proposed", C["proposed"], "o", "-"),
-        ("scaled_4d", "4D-JVP", C["r2"], "s", ":"),
+        ("scaled_4d", "baseline-init. 4D-JVP", C["r2"], "s", ":"),
     ]
     external = [
         ("als_cpd", "Algebraic CPD", C["als"], "D", "--"),
@@ -1819,7 +1845,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
           if r["variant"] == "proposed"]
 
     fig, (a, b, d) = plt.subplots(
-        1, 3, figsize=(DBL_W, 2.15),
+        1, 3, figsize=(DBL_W, 1.95),
         gridspec_kw={"width_ratios": [1.0, 1.0, 1.45]})
 
     angle = sel(M, x_name="ris_bs_angle_deg", variant="proposed")
@@ -1897,7 +1923,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
     sc = d.scatter(xp, yp, c=cp, cmap="viridis", marker="o", s=27,
                    edgecolor="0.2", linewidth=0.35, label="Proposed", zorder=3)
     d.scatter(xr, yr, facecolors="none", edgecolors=C["r2"], marker="s",
-              s=25, linewidth=0.9, label="4D-JVP", zorder=2)
+              s=25, linewidth=0.9, label="baseline-init. 4D-JVP", zorder=2)
     d.axvline(1.2, color=C["r2"], lw=0.8, ls="--")
     # Placed below the "reference scene" tick label, which reaches down to
     # about y = 0.55; the panel is empty here because every off-corner point
@@ -1925,7 +1951,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
     cb.ax.tick_params(labelsize=7)
     grid(d)
 
-    fig.subplots_adjust(left=0.065, right=0.965, top=0.90, bottom=0.185,
+    fig.subplots_adjust(left=0.065, right=0.965, top=0.890, bottom=0.205,
                         wspace=0.42)
     fig.savefig(out / "fig_boundaries.pdf")
     plt.close(fig)
@@ -1960,7 +1986,7 @@ def fig_generalization(out: pathlib.Path) -> None:
     ]
 
     for v, lab, col, mk in [("proposed", "Proposed", C["proposed"], "o"),
-                            ("scaled_4d", "R2: 4D-JVP", C["r2"], "s")]:
+                            ("scaled_4d", "R2: baseline-init. 4D-JVP", C["r2"], "s")]:
         rs = sel(G, variant=v)
         e = sorted(100 * fnum(r["catastrophic_rate"]) for r in rs)
         y = np.arange(1, len(e) + 1) / len(e)
@@ -2074,7 +2100,7 @@ def fig_generalization(out: pathlib.Path) -> None:
             mfc="white",
             mec=C["r2"],
             mew=0.75,
-            label="4D-JVP",
+            label="baseline-init. 4D-JVP",
             zorder=2,
         )
 
@@ -2167,7 +2193,7 @@ def fig_generalization(out: pathlib.Path) -> None:
             ls="--",
             mfc="white",
             mec=C["r2"],
-            label="4D-JVP",
+            label="baseline-init. 4D-JVP",
         ),
     ]
 
@@ -2201,7 +2227,10 @@ def fig_generalization(out: pathlib.Path) -> None:
     # the four overlap levels give Holm-adjusted p = 1.00 in every full-EVS
     # cell and p as small as 1e-181 for the reduced modes, so the collapse and
     # the fan-out are the finding, not an artifact of the colour scale.
-    fig, axs = plt.subplots(1, 3, figsize=(DBL_W, 2.10), sharey=True)
+    # Height, not width: the page includes this at the full \textwidth it was
+    # designed for, so the in-figure type is already at its true size and only
+    # the panel band can be traded for page space.
+    fig, axs = plt.subplots(1, 3, figsize=(DBL_W, 1.90), sharey=True)
     seps = sorted({fnum(r["target_delay_separation_ns"]) for r in Rv})
     ovs = sorted({fnum(r["polarization_overlap_target"]) for r in Rv})
 
@@ -2275,7 +2304,7 @@ def fig_generalization(out: pathlib.Path) -> None:
                      columnspacing=1.2, handlelength=2.0,
                      title="Jones overlap", title_fontsize=7.1)
     leg.get_title().set_position((0, 0))
-    fig.subplots_adjust(left=0.075, right=0.995, top=0.885, bottom=0.335,
+    fig.subplots_adjust(left=0.075, right=0.995, top=0.873, bottom=0.370,
                         wspace=0.10)
     fig.savefig(out / "fig_resolvability.pdf")
     plt.close(fig)
@@ -2346,7 +2375,7 @@ def fig_cost(out: pathlib.Path) -> None:
             "o",
         ),
         "scaled_4d": (
-            "4D-JVP",
+            "baseline-init. 4D-JVP",
             C["r2"],
             "s",
         ),
@@ -2573,8 +2602,8 @@ def main() -> None:
     ap.add_argument(
         "--campaign",
         choices=tuple(CAMPAIGNS),
-        default="v3",
-        help="which released campaign to plot (default: 'v3', "
+        default="v4",
+        help="which released campaign to plot (default: 'v4', "
              "the paper source of record)",
     )
     ap.add_argument(

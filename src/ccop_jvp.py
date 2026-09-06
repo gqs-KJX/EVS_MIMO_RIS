@@ -231,14 +231,35 @@ class CommonClockJonesProfiler:
         if loading != 0.0:
             raise RuntimeError("CCOP strict-equivalence loading changed after validation")
         normal = _hermitian(gram + regularizer)
+        # G = Phi^H Phi is positive semidefinite and b = Phi^H y always lies in
+        # range(G), so the Moore-Penrose inverse returns the exact profiled
+        # criterion b^H G^+ b = ||Pi_{range Phi} y||^2 when a reduced receiver
+        # mask makes G rank deficient (rank K rather than 2K for a scalar
+        # mask).  G does not depend on the clock, so replacing G^-1 by G^+
+        # leaves the profile a trigonometric polynomial.  The rank test is
+        # explicit because np.linalg.solve does not raise on a numerically
+        # singular matrix -- it returns an unusable inverse instead.
+        normal_eigvals, normal_eigvecs = np.linalg.eigh(normal)
+        rank_tolerance = (
+            normal.shape[0]
+            * float(np.finfo(float).eps)
+            * max(float(np.max(np.abs(normal_eigvals))), 0.0)
+        )
+        keep = normal_eigvals > rank_tolerance
         identity = np.eye(normal.shape[0], dtype=complex)
-        inverse_backend = "numpy.linalg.solve"
-        try:
+        if bool(np.all(keep)):
+            inverse_backend = "numpy.linalg.solve"
             normal_inverse = np.linalg.solve(normal, identity)
-        except np.linalg.LinAlgError:
-            normal_inverse = np.linalg.pinv(normal)
-            inverse_backend = "numpy.linalg.pinv"
+        else:
+            inverse_backend = "eigh.pseudoinverse"
+            inverse_eigvals = np.where(
+                keep, 1.0 / np.where(keep, normal_eigvals, 1.0), 0.0
+            )
+            normal_inverse = (
+                normal_eigvecs * inverse_eigvals
+            ) @ normal_eigvecs.conj().T
         normal_inverse = _hermitian(normal_inverse)
+        normal_rank = int(np.count_nonzero(keep))
 
         u_coeff = self._clock_matched_coefficients(stats["aux"])
         b_zero_from_orbit = np.sum(u_coeff, axis=0)

@@ -185,7 +185,7 @@ def exact_and_plane_ris_bs_matrices(
     )
     center_distance = float(scene["d_RB"][panel])
     wavenumber = 2.0 * np.pi / float(scene["wavelength"])
-    exact_phase = np.exp(1j * wavenumber * (distances - center_distance))
+    exact_phase = np.exp(-1j * wavenumber * (distances - center_distance))
     exact_amplitude = (center_distance / distances) * exact_phase
     plane = np.outer(
         np.asarray(scene["v_B"][panel], dtype=complex),
