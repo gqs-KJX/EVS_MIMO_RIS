@@ -308,28 +308,28 @@ $N$ subcarriers spaced by $\Delta f$ (occupied bandwidth
 $B_{\rm occ}=(N-1)\Delta f$) over $T$ known RIS phase configurations. The nonlinear parameters of interest are the
 UE position $\bp$ and the clock offset $\Delta t$.
 
-Six assumptions define the model and its tested or declared operating
-boundaries. \textbf{(A1)} The LoS path is blocked and each of the $K$
-calibrated panels contributes one dominant cascade, so the model order is
-known; Section~\ref{subsec:res_robustness} measures the cost of a wrong $K$.
-\textbf{(A2)} The BS and panel geometry is surveyed and the EVS Maxwell
-response and its per-component gains are
-calibrated~\cite{bayraktar2024risloc}; Fig.~\ref{fig:boundaries}(a)--(b)
-sweeps residual calibration error. \textbf{(A3)} Following the one-sided
-near-field convention of~\cite{yang2024nfris,cui2022channel}, the UE--RIS hop
-is modeled with an exact spherical-wave phase over a uniform-amplitude
-aperture and the RIS--BS hop with a center-frequency plane wave;
-Table~\ref{tab:params} verifies
+Six assumptions carry the model, each with the experiment that tests it.
+\textbf{(A1)} The LoS path is blocked and each panel contributes one dominant
+cascaded component, so the model order is the known panel count $K$; the
+$0$-dB model-order sweep of Section~\ref{subsec:res_robustness} measures the
+cost of a wrong $K$. \textbf{(A2)} Calibration fixes the BS phase center,
+every panel position and rotation, the EVS Maxwell response and the
+per-component gains~\cite{bayraktar2024risloc};
+Fig.~\ref{fig:boundaries}(a)--(b) sweeps residual calibration error.
+\textbf{(A3)} Following the one-sided near-field convention
+of~\cite{yang2024nfris,cui2022channel}, the UE--RIS hop carries an exact
+spherical-wave phase over a uniform-amplitude aperture and the RIS--BS hop a
+center-frequency plane wave; Table~\ref{tab:params} verifies
 $\max_k d_{{\rm UR},k}<R_{\rm F}<\min_k d_{{\rm RB},k}$. \textbf{(A4)}
 Spatial responses are evaluated at $f_c$ and the wideband dependence is
-confined to the delay phase, the neglected spatial-wideband phase reaching
-$\epsilon_{\rm sq}=0.102$~rad here; Section~\ref{subsec:res_setup} diagnoses
-the resulting bias. \textbf{(A5)} The cyclic prefix covers the cascaded delay
-spread and one common clock offset enters every delay; residual
-carrier-frequency offset, phase noise and panel-dependent timing
-offsets~\cite{zhao2021timing} lie outside the model. \textbf{(A6)} UE
-position, clock, gains and Jones states are block-static over the $T$
-configurations and the noise is white with unknown variance;
+carried by the delay phase, the neglected spatial-wideband phase reaching
+$\epsilon_{\rm sq}=0.102$~rad here; a per-subcarrier diagnostic in
+Section~\ref{subsec:res_setup} measures the resulting bias. \textbf{(A5)} The
+cyclic prefix covers the cascaded delay spread, one common clock offset
+enters every delay, and residual carrier-frequency offset and phase noise are
+neglected; panel-dependent offsets~\cite{zhao2021timing} lie outside the
+model. \textbf{(A6)} UE position, clock, gains and Jones states are constant
+over the $T$ configurations, and the noise is white with unknown variance;
 Section~\ref{subsec:res_robustness} reports the coherence budget and a
 colored-noise sweep.
 
@@ -591,7 +591,7 @@ $I\!\to\!r\le2K$ \hfill\eqref{eq:calibsub}
 \hfill\eqref{eq:assoc_perm}
 \FOR{$k=1,\ldots,K$}
 \STATE Dechirped 2-D DFT proposals, re-scored by $J_{\rm RIS}$
-\hfill\eqref{eq:fresnel},\,\eqref{eq:Jris_short}
+\hfill\eqref{eq:Jris_short}
 \ENDFOR
 \STATE Fuse by $J_{\rm geom}$; select by clock spread
 \hfill\eqref{eq:Jgeom_short}
@@ -673,11 +673,8 @@ or, equivalently, one $K\times K$ solve:
  (\bD^{\mathsf T}\bW\bD^{\ast}+\lambda_\tau\bI)^{-1}.
  \label{eq:coupledls_short}
 \end{equation}
-Here $\bW=\diag(w_n)$, with $w_n=\#\{(p,\ell):p+\ell=n\}$ the anti-diagonal
-multiplicity of the $P\times L$ Hankel lift of the tone axis, $P+L-1=N$;
-solving in the lifted domain gives the same linear system. The window weights
-this factor recovery only: the poles of \eqref{eq:shift} are read on the full
-$N$-tone aperture, unsmoothed. Window and loading are fixed in the supplement.
+Here $\bW=\diag(w_n)$, with $w_n=\#\{(p,\ell):p+\ell=n\}$ for the
+$P\times L$ smoothing window, $P+L-1=N$; the loading is fixed in the supplement.
 Reshaping column $j$ as an $r\times T$ matrix with receive index running
 slowest, its leading singular triplet gives
 \begin{equation}
@@ -1009,21 +1006,15 @@ matrix (EFIM), the reference information of the unpenalized data model,
  \Real\{\bD_\chi^{\mathsf H}\bPi_{\bA}^{\perp}\bD_\chi\}.
  \label{eq:efim_short}
 \end{equation}
-The projector is what the elimination leaves behind: a geometric perturbation
-$\bD_\chi\bq$ is indistinguishable from a Jones perturbation exactly when it
-lies in $\coll(\bA)$, that is when $\bPi_{\bA}^{\perp}\bD_\chi\bq=\mathbf0$.
-Realifying that map and stacking,
+Local position--clock identifiability after eliminating the Jones nuisance
+requires
 \begin{equation}
- \widetilde\bD_\chi=\begin{bmatrix}
- \Real\{\bPi_{\bA}^{\perp}\bD_\chi\}\\
- \Imag\{\bPi_{\bA}^{\perp}\bD_\chi\}\end{bmatrix},
- \qquad \rank_{\R}\widetilde\bD_\chi=4,
+ \rank_{\R}[\Real\{\bPi_{\bA}^{\perp}\bD_\chi\}^{\mathsf T},
+ \Imag\{\bPi_{\bA}^{\perp}\bD_\chi\}^{\mathsf T}]^{\mathsf T}=4,
  \label{eq:rankcond}
 \end{equation}
-is the first-order condition for local position--clock identifiability. Since
-$\widetilde\bD_\chi^{\mathsf T}\widetilde\bD_\chi
-=\Real\{\bD_\chi^{\mathsf H}\bPi_{\bA}^{\perp}\bD_\chi\}$, it is equivalently
-$\bJ_\chi^{\rm free}\succ\mathbf0$. The EFIM then yields the position and clock error bounds
+equivalently $\bJ_\chi^{\rm free}\succ\mathbf0$, that matrix being the Gram
+of the real stacking. It then yields the position and clock error bounds
 (PEB, CEB) ${\rm PEB}=\sqrt{\tr[(\bJ_p^{\rm eff})^{-1}]}$ and
 ${\rm CEB}=\sqrt{[(\bJ_\chi^{\rm free})^{-1}]_{4,4}}$, with
 $\bJ_p^{\rm eff}=\bJ_{pp}-\bJ_{pt}\bJ_{tt}^{-1}\bJ_{tp}$. The delay-only
@@ -1041,20 +1032,8 @@ Jacobian of \eqref{eq:dk} is
 \end{equation}
 whose all-ones clock column is what row differencing removes. At $K=3$,
 $\rank\bD_\tau\le3<4$, so the cascaded delays cannot identify $\bchi$ by
-themselves. The aperture phase of \eqref{eq:delta} supplies what they cannot:
-with $\bs_{k,m}=(\bxi_k-\brho_{k,m})/\|\bxi_k-\brho_{k,m}\|_2$ the unit vector
-from element $m$ to the UE,
-\begin{equation}
-	\frac{\partial\delta_{k,m}}{\partial\bp}
-	=\bR_k^{\mathsf T}\big[\bs_{k,m}(\bp)-\bs_{{\rm UR},k}(\bp)\big],
-	\label{eq:apertjac}
-\end{equation}
-the deviation of each element's bearing from the panel bearing that
-\eqref{eq:delayjac} already carries. This tangent scales as
-$O(\|\brho_{k,m}\|/d_{{\rm UR},k})$ and weakens toward the far-field limit.
-Whether it restores rank four is not settled by counting; the supplement
-records the conditions on RIS codes, curvature and panel geometry. After
-complex-scale elimination the projected tangents
+themselves; the near-field aperture supplies the missing direction, because
+after complex-scale elimination the projected tangents
 $\bPi_{\bh_k}^{\perp}[\partial\bh_k/\partial x,\partial\bh_k/\partial y,
 \partial\bh_k/\partial z]$ retain the phase slope and curvature of
 \eqref{eq:delta}. The test is local and conditions on the panel assignment, with pseudoinverse
@@ -1105,30 +1084,21 @@ $\dot{\boldsymbol{\zeta}}_i=(\partial\bTheta/\partial\chi_i)\bx$. Then
  \label{eq:split_short}
 \end{equation}
 Since calibrated infrastructure gives
-$\partial\bTheta/\partial\bchi=\mathbf0$, the second term vanishes and
-\begin{equation}
-	\bJ_\chi^{\rm free}=\frac{2}{\sigma^2}\|\bTheta\bx\|^2\,
-	\Real\{\dot\bc^{\mathsf H}\bPi_{\bc}^{\perp}\dot\bc\},
-	\label{eq:c1_scalarfac}
-\end{equation}
-with $\dot\bc=[\dot\bc_1,\ldots,\dot\bc_4]$: the polarimetric block enters
-only through the scalar $\|\bTheta\bx\|^2$, and all $\bchi$-dependence is
-confined to the geometric factor. Throughout C1,
-$\bTheta=\bTheta_k^{(6)}$ is the \emph{full} block of
+$\partial\bTheta/\partial\bchi=\mathbf0$, the second term vanishes.
+Throughout C1, $\bTheta=\bTheta_k^{(6)}$ is the \emph{full} block of
 \eqref{eq:Theta} and $\bS_{\rm mode}$ one of the selections
 \eqref{eq:smode}, so for a single panel with nonzero retained signal
-$\|\bS_{\rm mode}\bTheta\bx\|>0$,
-\begin{align}
-	\bJ_\chi^{\bS_{\rm mode}}&=\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full},
+\begin{equation}
+	\bJ_\chi^{\bS_{\rm mode}}=\alpha_{\bS_{\rm mode}}\bJ_\chi^{\rm full},
 	\quad
 	{\rm PEB}^{\bS_{\rm mode}}
-	=\alpha_{\bS_{\rm mode}}^{-1/2}\,{\rm PEB}^{\rm full},\nonumber\\
-	\alpha_{\bS_{\rm mode}}&=\frac{\|\bS_{\rm mode}\bTheta\bx\|^2}
-	{\|\bTheta\bx\|^2},
+	=\alpha_{\bS_{\rm mode}}^{-1/2}\,{\rm PEB}^{\rm full},
 	\label{eq:c1_scaling}
-\end{align}
-the ${\rm PEB}$ identity requiring in addition
-$\bJ_\chi^{\rm full}\succ\mathbf0$ so that both bounds are finite.
+\end{equation}
+with $\alpha_{\bS_{\rm mode}}
+=\|\bS_{\rm mode}\bTheta\bx\|^2/\|\bTheta\bx\|^2$, the ${\rm PEB}$ identity
+requiring in addition $\bJ_\chi^{\rm full}\succ\mathbf0$ so that both bounds
+are finite.
 
 \textbf{(ii) Discrimination consequence.} Define
 $\bA_k^{(\bS)}(\bchi)=\bc_k(\bchi)\otimes
@@ -1142,19 +1112,12 @@ $\bc_{k'}(\bchi')\parallel\bc_k(\bchi)$, its free-Jones residual is
  \bS_{\rm mode}\bTheta_k^{(6)}\bx_k\|.
  \label{eq:panelres_short}
 \end{equation}
-Writing $R_{kk'}$ for \eqref{eq:panelres_short},
-\begin{equation}
-	R_{kk'}\begin{cases}
-	{}=0, & d_{\rm evs}\le2,\\[2pt]
-	{}\ge\|\bc_k\|\,\|\bTheta_k^{(6)}\bx_k\|\sin\theta_{\min},
-	& d_{\rm evs}=6,
-	\end{cases}
-	\label{eq:c1_dichotomy}
-\end{equation}
-the first line assuming the retained competitor block
-$\bS_{\rm mode}\bTheta_{k'}^{(6)}\in\C^{d_{\rm evs}\times2}$ has full row
-rank, and $\theta_{\min}>0$ being the minimum principal angle between the two
-panel Maxwell subspaces, positive whenever they are distinct.
+If the retained competitor block
+$\bS_{\rm mode}\bTheta_{k'}^{(6)}\in\C^{d_{\rm evs}\times2}$ has full row rank
+for $d_{\rm evs}\le2$, this residual is zero. With all six components it is at least
+$\|\bc_k\|\|\bTheta_k^{(6)}\bx_k\|\sin\theta_{\min}$, where
+$\theta_{\min}>0$ is the minimum principal angle between the two panel
+Maxwell subspaces, positive whenever they are distinct.
 \end{theorem}
 
 \begin{IEEEproof}
@@ -1229,8 +1192,7 @@ $2\times10^{-5}$ in relative terms (supplementary).
 \label{thm:compress}
 Let $\bU_S=\bI_{NT}\otimes\bQ_S$ be the semi-unitary lifting matrix in the
 vectorization of \eqref{eq:obs}, and suppose
-$\coll[\bA(\bchi)]\subseteq\coll(\bU_S)$ for all admissible $\bchi$, which
-\eqref{eq:calibsub} establishes from calibration alone. Write
+$\coll[\bA(\bchi)]\subseteq\coll(\bU_S)$ for all admissible $\bchi$. Write
 $\by_c=\bU_S^{\mathsf H}\by$ and
 $c_\perp=\|(\bI-\bU_S\bU_S^{\mathsf H})\by\|^2$. Under the matched
 white-Gaussian model:
@@ -1291,9 +1253,6 @@ Section~\ref{sec:simulation}.
 Let $\mathcal P$ and $\mathcal T$ be the compact search sets of
 Section~\ref{subsec:defchain} and assume
 $\bG_\lambda(\bp)=\bG_0(\bp)+\bR_{\rm dir}(\bp)\succ\mathbf0$ on $\mathcal P$.
-At each $\bp$, $Q(\bp,\cdot)$ is the real trigonometric polynomial
-\eqref{eq:trig_short} of degree at most $N-1$, and the certificate below
-rests on its curvature bound \eqref{eq:clock_curvature}.
 
 \textbf{(i) Exact nesting.} Analytic Jones elimination and global inner
 clock maximization nest the penalized criterion \eqref{eq:penalized_short}
@@ -1404,7 +1363,7 @@ and Jones states\\
 UE / box [m] & $(1.25,0.55,0.75)$;
 $[0.30,2.70]\!\times\![-1.40,1.50]\!\times\![0.35,1.45]$\\
 BS [m] & $(-22.50,-12.50,2.00)$\\
-RIS centers $\br_k$ [m] & $(4.20,-2.20,1.05)$; $(5.10,2.10,1.15)$;
+RIS centres $\br_k$ [m] & $(4.20,-2.20,1.05)$; $(5.10,2.10,1.15)$;
 $(4.80,0,1.25)$\\
 RIS normals $\hat{\bm n}_k$ & $(-0.9159,0.4005,-0.0264)$;
 $(-0.8523,-0.5205,-0.0528)$; $(-0.9940,0.0158,-0.1084)$\\
@@ -1447,7 +1406,7 @@ Position and clock conditional RMSEs are each taken over the complement of
 their own event in \eqref{eq:pcat}. Phase~I acquires the basin on trial $r$ when $\hat\bp_{{\rm I},r}$ is finite
 with $\|\hat\bp_{{\rm I},r}-\bp^\star\|_2\le0.1$~m. The declared operating
 region is ${\rm SNR}\ge-10$~dB, with results at $-15$ or $-20$~dB labeled as
-below it. Every cell generates and estimates on the same center-frequency
+below it. Every cell generates and estimates on the same centre-frequency
 spatial manifold, so $\epsilon_{\rm sq}$ of Section~\ref{subsec:defchain}
 contributes no residual. A supplementary per-subcarrier diagnostic at nine
 pre-specified samples produces instead a deterministic offset of at most
@@ -1463,7 +1422,7 @@ noise.
     \centering
     \includegraphics[width=\textwidth]{fig_benchmark_main.pdf}
     \caption{Native-readout end-to-end benchmark on the matched
-    center-frequency spatial manifold, $960$ shared-realization trials per
+    centre-frequency spatial manifold, $960$ shared-realization trials per
     SNR. Medians include catastrophic trials. The free-Jones PEB and CEB
     ($20$-draw median $3.38$~ps at $-10$~dB, $\sigma$-scaled) are
     local-information references, not bounds on median error; vertical dashed
@@ -1479,8 +1438,7 @@ projection, whereas the proposed route pairs MKSC-GI acquisition with
 CCOP-JVP; the figure therefore compares complete
 pipelines, not isolating C3. Their $-10$~dB median position errors differ by only $0.006$~mm.
 They differ in acquisition reliability: at $-10$~dB the proposed route lowers
-the position and clock catastrophic rates by $6.0\times$ and $6.7\times$
-(supplementary).
+the position and clock catastrophic rates by $6.0\times$ and $6.7\times$.
 
 Each external adaptation saturates at a different stage. Algebraic canonical
 polyadic decomposition (CPD)~\cite{lin2021tensor,sidiropoulos2017tensor}
@@ -1634,10 +1592,9 @@ predicts. Theorem~\ref{thm:split}(i) separately identifies the scalar informatio
 weight $\alpha_{\bS_{\rm mode}}$ for a single panel.
 
 The consequential loss is elsewhere, and it is the
-one a local bound cannot see. Fig.~\ref{fig:c1_separability} sweeps the
-Jones overlap $|\be_k^{\mathsf H}\be_{k'}|$ of the closest-delay panel pair
-against cascaded-delay separation and scores resolution probability -- the
-fraction of trials
+one a local bound cannot see. Fig.~\ref{fig:c1_separability} varies the
+Jones overlap of the closest-delay panel pair at fixed cascaded-delay
+separation and scores resolution probability -- the fraction of trials
 returning $K$ correctly paired components with Phase-I delay error at most
 $0.5$~ns and no pole collapse -- rather than position accuracy. This sweep,
 the panel-scaling sweep and Fig.~\ref{fig:boundaries}(c) union the beam-space
@@ -1653,7 +1610,7 @@ Theorem~\ref{thm:split}(i) becomes panel-dependent: under the dual mask
 $\alpha_{\bS_{\rm mode}}$ holds at $0.50$ for the reference panel while
 falling to $0.005$ for the competing one at the smallest overlap, whereas the
 full mask holds unity for both at every overlap (supplementary). And the reduced modes stay below full EVS at every
-delay separation, which is \eqref{eq:c1_dichotomy}: with
+delay separation, which is \eqref{eq:panelres_short}: with
 $d_{\rm evs}\le2$ the competing Jones block spans $\C^{d_{\rm evs}}$ and the
 residual separating two panels can vanish outright, whereas six components
 hold it above $\sin\theta_{\min}$. Resolution as scored here is a joint event:
@@ -1667,9 +1624,8 @@ of $13.33\%$, $1.88\%$ and $0.83\%$.
 \centering
 \includegraphics[width=\textwidth]{fig_resolvability.pdf}
 \caption{Panel separability at $-10$~dB: resolution probability against
-cascaded-delay separation, one curve per Jones overlap
-$|\be_k^{\mathsf H}\be_{k'}|$ of the closest-delay pair, $480$ trials per
-cell with exact $95\%$ Clopper--Pearson bands.}
+cascaded-delay separation, $480$ trials per cell with exact $95\%$
+Clopper--Pearson bands.}
 \label{fig:c1_separability}
 \end{figure*}
 
@@ -1743,7 +1699,7 @@ almost unobserved, and the free-Jones information matrix stays full rank even
 where acquisition is least reliable. Receiver-mode selection and panel
 deployment should be screened by Maxwell-subspace and cascaded-delay
 separation, not by a bound map alone. The accuracies reported here are
-established on a center-frequency spatial manifold, under which a
+established on a centre-frequency spatial manifold, under which a
 per-subcarrier diagnostic identifies the clock, not the position, as the
 sensitive quantity. More generally, neither mechanism behind Phase~II is
 specific to a Maxwell--Jones receiver: calibration turns sufficiency into a

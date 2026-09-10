@@ -1916,6 +1916,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
     x, y = curve(angle, "x_value", "position_p95_m")
     a.semilogy(x, 1e3 * y, color=C["r2"], marker="s", mfc="white", ls="--",
                label="p95 (all trials)")
+    a.axvspan(0.1, 0.25, color=C["r3"], alpha=0.08, lw=0)
     # Locate the same tested calibration point in both panels.  Numerical
     # labels are taken from the summaries, not transcribed from the prose.
     reference = next(r for r in angle if fnum(r["x_value"]) == 0.25)
@@ -1940,6 +1941,7 @@ def fig_boundaries(out: pathlib.Path) -> None:
     b.set_xlabel("RIS--BS angle error [deg]")
     b.set_ylabel("Rate [%]")
     b.set_ylim(-3, 104)
+    b.axvspan(0.1, 0.25, color=C["r3"], alpha=0.08, lw=0)
     basin_pct = 100 * fnum(reference["stage1_basin_acquisition_rate"])
     b.annotate(f"{basin_pct:.2f}% basin", (0.25, basin_pct), xytext=(0.30, 66),
                textcoords="data", fontsize=7.0, color="0.25",

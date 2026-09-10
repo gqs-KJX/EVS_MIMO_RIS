@@ -395,9 +395,10 @@ percentage points for full, dual and scalar reception. Table~\ref{tab:s_resolv}
 reports two-sided Cochran--Armitage tests, using the overlap values as
 scores and Holm adjustment within each receiver mode across delay cells
 with nonzero pooled binomial variance. Full-EVS tests do not reject the
-trend null, and extreme-overlap Fisher tests give $p\ge0.58$ for full EVS.
-Shared realizations across overlaps induce a dependence that these
-pooled-binomial variances do not model.
+trend null; this is not a proof of invariance. Extreme-overlap Fisher tests
+give $p\ge0.58$ for full EVS. These pooled-binomial checks are descriptive:
+their variance does not model the dependence induced by shared
+realizations across overlaps.
 
 \begin{table}[t]
 \caption{Resolvability test summary at $-10$~dB, $480$ paired trials per
@@ -542,8 +543,8 @@ and the oracle-calibrated reference PEB.}
 $\rho=0,0.5,0.8$, proposed catastrophic rates are $0.83\%,0.42\%,0.21\%$,
 compared with $1.04\%,1.88\%,2.71\%$ for the raw-delay control.
 Proposed conditional RMSE changes from $0.436$ to $0.310$~mm across
-the sweep. Sufficiency under colored noise would require whitening, which is
-not applied here.
+the sweep. This is an empirical mismatch check at the stated noise
+normalization; general colored-noise sufficiency would require whitening.
 
 \emph{Model order.} At $0$~dB, $\widehat K=2$ gives a $0.705$-m median
 and $65.63\%$ catastrophic events. For $\widehat K=4$ and $5$, medians
@@ -912,7 +913,8 @@ $8.02\times10^{-4}$ and $8.00\times10^{-4}$; at $30$~dB both are about
 $7.99\times10^{-7}$. All $448$, $333$, $303$ and $299$ failing trials at
 $-10$, $0$, $10$ and $30$~dB report a unique three-panel assignment and
 successful factor refinement. These fields support locating the loss
-downstream of the factor fit. The behavior characterizes this
+downstream of the factor fit, although uniqueness alone does not prove
+that every label is physically correct. The behavior characterizes this
 adaptation and mapping implementation, not the reference method
 of~\cite{lin2021tensor} in general.
 
@@ -936,30 +938,28 @@ paper therefore emphasizes catastrophic rates and complementary CDFs.
 
 \begin{table*}[t]
 \caption{External benchmark, $960$ shared-realization trials per cell,
-native-read-out tier. Position quantiles are nearest-rank;
-$P_{\rm cat}^{\rm clk}$ is the clock catastrophic rate; NMSE is the
+native-read-out tier. Position quantiles are nearest-rank; NMSE is the
 unconditional mean over all trials. Cost comes from the separately
 serialized $30$-trial suite of Table~\ref{tab:s_cost}.}
 \label{tab:s_benchmark_main}
 \centering
 \scriptsize
 \setlength{\tabcolsep}{2.8pt}
-\begin{tabular}{lcccccccccc}
+\begin{tabular}{lccccccccc}
 \toprule
-& \multicolumn{5}{c}{$-10$~dB} & \multicolumn{3}{c}{$0$~dB} &
+& \multicolumn{4}{c}{$-10$~dB} & \multicolumn{3}{c}{$0$~dB} &
 \multicolumn{1}{c}{$30$~dB} & Cost\\
-\cmidrule(lr){2-6}\cmidrule(lr){7-9}\cmidrule(lr){10-10}\cmidrule(lr){11-11}
+\cmidrule(lr){2-5}\cmidrule(lr){6-8}\cmidrule(lr){9-9}\cmidrule(lr){10-10}
 Method & med. [mm] & p95 [mm] & p99 [mm] & $P_{\rm cat}$ [\%] &
-$P_{\rm cat}^{\rm clk}$ [\%] &
 med. [mm] & $P_{\rm cat}$ [\%] & NMSE & med. [mm] & s / GB\\
 \midrule
-Algebraic CPD + mapping & $1.57$ & $2.43e+03$ & $2.46e+03$ & $46.67$ & $6.98$ & $0.342$ & $34.69$ & $8.1\!\times\!10^{-4}$ & $0.0103$ & $4.38/1.07$\\
-VBI/SBL, native read-out & $26.1$ & $593$ & $1.18e+03$ & $9.90$ & $6.77$ & $26.1$ & $1.25$ & $1.2\!\times\!10^{-1}$ & $26.1$ & $1.07/1.09$\\
-Near-field RIS OMP--SAGE--WLS & $1.03e+03$ & $1.81e+03$ & $2.06e+03$ & $93.96$ & $74.48$ & $1.03e+03$ & $94.58$ & $7.6\!\times\!10^{-1}$ & $1.03e+03$ & $11.51/1.72$\\
-Baseline-initialized 4D-JVP & $0.33$ & $0.891$ & $1.47e+03$ & $2.50$ & $2.08$ & $0.102$ & $0.10$ & $1.0\!\times\!10^{-3}$ & $0.00322$ & $2.40/1.79$\\
-\textbf{Proposed} & $0.324$ & $0.829$ & $1.37$ & $0.42$ & $0.31$ & $0.102$ & $0.00$ & $5.2\!\times\!10^{-6}$ & $0.00322$ & $3.18/2.52$\\
+Algebraic CPD + mapping & $1.57$ & $2.43e+03$ & $2.46e+03$ & $46.67$ & $0.342$ & $34.69$ & $8.1\!\times\!10^{-4}$ & $0.0103$ & $4.38/1.07$\\
+VBI/SBL, native read-out & $26.1$ & $593$ & $1.18e+03$ & $9.90$ & $26.1$ & $1.25$ & $1.2\!\times\!10^{-1}$ & $26.1$ & $1.07/1.09$\\
+Near-field RIS OMP--SAGE--WLS & $1.03e+03$ & $1.81e+03$ & $2.06e+03$ & $93.96$ & $1.03e+03$ & $94.58$ & $7.6\!\times\!10^{-1}$ & $1.03e+03$ & $11.51/1.72$\\
+Baseline-initialized 4D-JVP & $0.33$ & $0.891$ & $1.47e+03$ & $2.50$ & $0.102$ & $0.10$ & $1.0\!\times\!10^{-3}$ & $0.00322$ & $2.40/1.79$\\
+\textbf{Proposed} & $0.324$ & $0.829$ & $1.37$ & $0.42$ & $0.102$ & $0.00$ & $5.2\!\times\!10^{-6}$ & $0.00322$ & $3.18/2.52$\\
 \midrule
-Free-Jones PEB (RMS) & $0.441$ & $---$ & $---$ & $---$ & $---$ & $0.14$ & $---$ & $---$ & $0.00441$ & $---$\\
+Free-Jones PEB (RMS) & $0.441$ & $---$ & $---$ & $---$ & $0.14$ & $---$ & $---$ & $0.00441$ & $---$\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -981,11 +981,13 @@ paper. The largest change over the weight range is
 $6.23\times10^{-6}$~mm in position and $3.76\times10^{-5}$~ps in clock.
 All weights produce the same catastrophic indicators in this full-EVS
 sweep. The largest penalty/data-objective ratio is $6.45\times10^{-6}$.
-Thus the penalty has little measured effect on these full-EVS results.
+Thus the penalty has little measured effect on these full-EVS results;
+this does not prove fixed-weight asymptotic efficiency.
 
 The reduced-receiver arms of the archived weight sweep are not used to
 support this conclusion: their scalar high-SNR behavior has not been
-reconciled with the corrected receiver-mode campaign.
+reconciled with the corrected receiver-mode campaign. No scalar error
+floor or reduced-mode weight invariance is inferred from those arms.
 
 \begin{table}[t]
 \caption{Full-EVS directional-weight control, $480$ paired trials per
@@ -1155,8 +1157,10 @@ ordering. Each row's conditional RMSE uses its own inliers.
 The shortlist size, association clock weight, confidence weights and
 beam-space range count in Section~\ref{sec:impl_supp} are fixed design
 choices. The component ladder tests compression, common geometry,
-restart count and anchor refresh. The corrected campaign has no
-corresponding four-parameter sensitivity sweep.
+restart count and anchor refresh, but does not establish optimality of
+these individual constants. The corrected campaign has no corresponding
+four-parameter sensitivity sweep, so no numerical invariance or
+optimality claim for those constants is made here.
 
 \begin{table}[!tb]
 \caption{Serialized single-thread cost at $-10$~dB, as-published tier:
@@ -1214,9 +1218,11 @@ The serialized benchmark mean is $3.18$~s with peak RSS $2.52$~GB
 gives a sum of component medians of $3.16$~s: $0.229$~s for projection,
 $0.845$~s for common geometry, $0.086$~s for anchor refresh, $0.339$~s for
 Phase~II and $1.656$~s for the remaining Phase-I blocks. The last value
-aggregates several operations. The decomposition run peaks at $3.25$~GB in
-its own harness; the serialized benchmark RSS above is the reported figure.
-Parallel-harness timings elsewhere are not latency comparisons.
+aggregates several operations and cannot be attributed to spherical
+projection alone. The decomposition run peaks at $3.25$~GB; that value
+belongs to its own harness and is not substituted for the serialized
+benchmark RSS. Parallel-harness timings elsewhere are not latency
+comparisons.
 
 \begin{figure*}[t]
 \centering
@@ -1307,8 +1313,10 @@ The receiver ordering persists below the operating region
 and full-EVS catastrophic rates are $43.75\%$, $10.63\%$ and $1.88\%$;
 at $-20$~dB they are $85.83\%$, $31.67\%$ and $5.00\%$.
 These end-to-end rates complement the local information and separability
-results. Only $14.17\%$ of scalar trials remain position inliers at
-$-20$~dB, so the reduced-mode conditional efficiencies rest on few trials.
+results, but their ratios cannot be compared quantitatively with PEB
+ratios: the metrics describe different aspects of the error distribution.
+Conditional efficiency in the reduced modes must also be read cautiously;
+only $14.17\%$ of scalar trials remain position inliers at $-20$~dB.
 
 \begin{figure*}[t]
 \centering
@@ -1481,7 +1489,7 @@ and estimates on the same center-frequency spatial manifold, so the neglected
 frequency dependence contributes exactly zero residual there. This section
 measures it directly instead. The observation is generated with a
 per-subcarrier manifold, $f_n=f_c+\nu_n\Delta f$ and $\lambda_n=c_0/f_n$ at
-the archived centered indices, and processed by the unchanged center-frequency
+the archived centerd indices, and processed by the unchanged center-frequency
 estimator. Panel geometry, element coordinates and the physical ULA spacing
 are fixed across tones; the RIS codes, Jones states and gains are one draw
 shared by all tones; and the center-path baseband delay phase is unchanged, so
@@ -1498,8 +1506,8 @@ value is a noiseless local refinement from the true position. Both are free of
 the directional penalty; a run with the paper penalty changes them by at most
 $0.6\%$. One anchor control produced no reportable difference: replacing the
 true Jones states by a Stage-I anchor carrying a $6.1\times10^{-3}$~rad error
-left the result unchanged to every digit. That is a single control at a
-single sample.
+left the result unchanged to every digit. That is a single control at a single
+sample and is not a claim of anchor independence in general.
 
 \begin{table}[t]
 \caption{Spatial-wideband mismatch bias over nine pre-specified samples: the
@@ -1656,11 +1664,15 @@ raw criteria and carry no evaluation order; the campaign's mutually exclusive
 joint failure to pairing first, which is why its \texttt{panel\_pairing\_error}
 counts equal the ``pairing only'' and ``both'' columns summed.
 
-Co-occurrence does not establish which criterion fails first: the delay
-statistic is a maximum over paths and so does not localize the loss to the
-weakly retained path, and retained polarization energy is not held fixed
-along the overlap axis. Isolating polarimetric separability would require a
-control that fixes retained energy, which is not run here.
+This decomposition describes joint degradation and its association, and does
+not isolate the two mechanisms. Co-occurrence does not establish which
+criterion fails first or why, the delay statistic is a maximum over paths and
+so does not localize the loss to the weakly retained path, and the retained
+polarization energy is not held fixed along the overlap axis. Attributing the
+reduced-mode loss to polarimetric separability alone would require a control
+that fixes retained energy, which is not run here. Two trials meeting neither
+failure criterion in the extreme cell are also too few to compare energy
+distributions between outcomes.
 
 \section{Scope of the Three Projection Roles}
 \label{sec:c2scope_supp}

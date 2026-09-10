@@ -1479,8 +1479,7 @@ projection, whereas the proposed route pairs MKSC-GI acquisition with
 CCOP-JVP; the figure therefore compares complete
 pipelines, not isolating C3. Their $-10$~dB median position errors differ by only $0.006$~mm.
 They differ in acquisition reliability: at $-10$~dB the proposed route lowers
-the position and clock catastrophic rates by $6.0\times$ and $6.7\times$
-(supplementary).
+the position and clock catastrophic rates by $6.0\times$ and $6.7\times$.
 
 Each external adaptation saturates at a different stage. Algebraic canonical
 polyadic decomposition (CPD)~\cite{lin2021tensor,sidiropoulos2017tensor}

@@ -1479,8 +1479,7 @@ projection, whereas the proposed route pairs MKSC-GI acquisition with
 CCOP-JVP; the figure therefore compares complete
 pipelines, not isolating C3. Their $-10$~dB median position errors differ by only $0.006$~mm.
 They differ in acquisition reliability: at $-10$~dB the proposed route lowers
-the position and clock catastrophic rates by $6.0\times$ and $6.7\times$
-(supplementary).
+the position and clock catastrophic rates by $6.0\times$ and $6.7\times$.
 
 Each external adaptation saturates at a different stage. Algebraic canonical
 polyadic decomposition (CPD)~\cite{lin2021tensor,sidiropoulos2017tensor}
@@ -1634,10 +1633,9 @@ predicts. Theorem~\ref{thm:split}(i) separately identifies the scalar informatio
 weight $\alpha_{\bS_{\rm mode}}$ for a single panel.
 
 The consequential loss is elsewhere, and it is the
-one a local bound cannot see. Fig.~\ref{fig:c1_separability} sweeps the
-Jones overlap $|\be_k^{\mathsf H}\be_{k'}|$ of the closest-delay panel pair
-against cascaded-delay separation and scores resolution probability -- the
-fraction of trials
+one a local bound cannot see. Fig.~\ref{fig:c1_separability} varies the
+Jones overlap of the closest-delay panel pair at fixed cascaded-delay
+separation and scores resolution probability -- the fraction of trials
 returning $K$ correctly paired components with Phase-I delay error at most
 $0.5$~ns and no pole collapse -- rather than position accuracy. This sweep,
 the panel-scaling sweep and Fig.~\ref{fig:boundaries}(c) union the beam-space
@@ -1667,9 +1665,8 @@ of $13.33\%$, $1.88\%$ and $0.83\%$.
 \centering
 \includegraphics[width=\textwidth]{fig_resolvability.pdf}
 \caption{Panel separability at $-10$~dB: resolution probability against
-cascaded-delay separation, one curve per Jones overlap
-$|\be_k^{\mathsf H}\be_{k'}|$ of the closest-delay pair, $480$ trials per
-cell with exact $95\%$ Clopper--Pearson bands.}
+cascaded-delay separation, $480$ trials per cell with exact $95\%$
+Clopper--Pearson bands.}
 \label{fig:c1_separability}
 \end{figure*}
 
