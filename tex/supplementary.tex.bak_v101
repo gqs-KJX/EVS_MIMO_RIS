@@ -71,16 +71,14 @@
 \newcommand{\bV}{\mathbf{V}}
 \newcommand{\bY}{\mathbf{Y}}
 \newcommand{\bOmega}{\boldsymbol{\Omega}}
-\newcommand{\br}{\mathbf{r}}
 \newcommand{\bPsi}{\boldsymbol{\Psi}}
 \newcommand{\brho}{\boldsymbol{\rho}}
 \newcommand{\R}{\mathbb{R}}
 
 \begin{document}
 
-\title{Supplementary Material for ``Maxwell--Jones Vector-Sensor
-Localization and Synchronization for Distributed Near-Field RIS-Aided
-OFDM''}
+\title{Supplementary Material:\\
+Detailed Derivations, Numerical Specifications, and Additional Experiments}
 
 \author{Qingshan Gong,~\IEEEmembership{Member,~IEEE}}
 
@@ -100,8 +98,7 @@ results that lie outside the main paper, chiefly below its declared
 operating region and under model mismatch.
 
 Abbreviations defined in the main paper retain their meanings. Throughout,
-$P_{\rm cat}$ denotes the empirical position catastrophic-event rate unless
-qualified otherwise, p95 the 95th
+$P_{\rm cat}$ denotes the empirical catastrophic-event rate, p95 the 95th
 percentile, c-RMSE the inlier-conditional root-mean-square error, NMSE
 normalized mean-square error, and RSS resident set size. Unqualified vector norms are Euclidean and
 unqualified matrix norms are spectral.
@@ -171,8 +168,8 @@ columns at fixed $t$ gives main-paper Eq.~\eqref{main-eq:obsmat}.
 
 Section~\ref{main-subsec:defchain} of the main paper defines the neglected
 spatial phase $\epsilon_{\rm sq}$ and audits it through the exact wavefront
-differences. This section derives the closed-form design-time screen that
-accompanies that audit.
+differences. This section derives the closed-form screen that the main paper
+quotes, which is its design-time counterpart.
 
 Write $f_n=f_c(1+\beta_n)$ with $\beta_n=\nu_n\Delta f/f_c$ at the centered
 tone indices, so that $|\beta_n|\le\beta_{\rm BW}/2$ with fractional
@@ -187,8 +184,8 @@ manifold retained by the estimator. The neglected phase is therefore
 	\label{eq:squint_step}
 \end{equation}
 so a bound on the element path difference bounds the discarded phase.
-Splitting $\delta_{k,m}$ into the linear aperture projection and the residual
-curvature as in main-paper Eq.~\eqref{main-eq:fresnel}, with aperture radius
+Expanding $\delta_{k,m}$ to second order about the panel center as in
+main-paper Eq.~\eqref{main-eq:fresnel}, with aperture radius
 $a_k=\max_m\|\brho_{k,m}\|_2$, UE range $R_k$ and in-plane direction
 component $\bu_{k,\parallel}$,
 \begin{equation}
@@ -196,9 +193,8 @@ component $\bu_{k,\parallel}$,
 	\le a_k\|\bu_{k,\parallel}\|_2+\frac{a_k^2}{2R_k},
 	\label{eq:squint_delta}
 \end{equation}
-which holds for every in-panel element offset whenever $R_k>a_k$, the first
-term being the plane-wave projection and the second the curvature left after
-it is removed. Substituting
+the first term being the linear aperture projection and the second the
+residual curvature left after the plane-wave part is removed. Substituting
 \eqref{eq:squint_delta} into \eqref{eq:squint_step} and dropping the $O(1)$
 constants gives the screen
 \begin{equation}
@@ -245,8 +241,7 @@ The smoothing weights of main-paper Eq.~\eqref{main-eq:coupledls_short} use
 the balanced window $P=\lceil N/2\rceil$, $L=N+1-P$, so that
 $w_n=\#\{(p,\ell):p+\ell=n\}$ over $0\le p<P$, $0\le\ell<L$ is the
 triangular anti-diagonal count of the plain Hankel lift
-$[\mathcal Z]_{i,p,\ell,t}=[\bY_{{\rm d},t}]_{i,\,p+\ell}$, $i=1,\ldots,r$.
-Posing
+$[\mathcal Z]_{i,p,\ell,t}=[\bY_t]_{i,\,p+\ell}$. Posing
 \eqref{main-eq:coupledls_short} in that lifted form gives a system whose
 $k$th design column
 is $\bd_{P,k}\otimes\bd_{L,k}$ with $[\bd_{P,k}]_p=z_k^{p}$ and
@@ -332,11 +327,10 @@ now immediate: for $\bu\in\R^4$,
 \end{equation}
 so $\bJ_\chi^{\rm free}\succ\mathbf0$ if and only if $\widetilde{\bD}_\chi$
 of \eqref{eq:s_ident} has trivial real nullspace, that is
-$\rank_{\R}\widetilde{\bD}_\chi=4$. Since $\bPi_{\bA}^{\perp}$ is built from the
-Moore--Penrose inverse, \eqref{eq:s_efim} is the generalized Schur complement
-of the nuisance block and is defined for any $\bA_\star$; it coincides with the
-ordinary Schur complement exactly when $\bA_\star$ has full column rank, so
-that the nuisance information block is invertible.
+$\rank_{\R}\widetilde{\bD}_\chi=4$. The Schur complement is well defined
+whenever $\bA_\star$ has constant rank near the truth, which is the standing
+assumption; where it fails, the pseudoinverse in $\bPi_{\bA}^{\perp}$ is the
+correct object and \eqref{eq:s_efim} still holds.
 
 The statement is local and conditional. In particular, three panels are
 not sufficient by equation counting alone: the RIS codes must preserve the
@@ -555,10 +549,8 @@ gap remains a valid bound in either case. The outer position search is
 L-BFGS-B restricted to $\mathcal P$, with at most
 $20$ iterations, relative objective tolerance $10^{-12}$ and
 projected-gradient tolerance $10^{-8}$, and a
-Powell restart, capped at $40$ iterations, when a near-tied clock branch makes
-the envelope derivative unreliable; a branch is declared near-tied when the
-competing objectives differ by less than $10^{-10}$ in absolute value or
-$10^{-8}$ in relative value. The common-geometry stage runs
+Powell restart when a near-tied clock branch
+makes the envelope derivative unreliable. The common-geometry stage runs
 L-BFGS-B from its four deterministic starts under its own settings: at most
 $30$ iterations, relative objective tolerance $10^{-10}$ and
 projected-gradient tolerance $10^{-6}$.
@@ -568,15 +560,10 @@ fixes, $\bp_0=\mathrm{clip}_{\mathcal P}\{\mathrm{median}_k
 \hat\bp_k^{\rm loc}\}$. The remaining budget is filled by taking at most one
 of the axis-aligned displacements of $\bp_0$ by $\pm25$~cm, then the height
 samples that replace the third coordinate of $\bp_0$ by a $7$-point grid
-spanning $\mathcal P$ ordered outward from its center, and only then the
+spanning $\mathcal P$ ordered outward from its centre, and only then the
 remaining axial displacements;
 every candidate is clipped back to $\mathcal P$ and duplicates are dropped,
-so height diversity is reached before the axial sweep is exhausted. Among the
-resulting candidates, those whose clock replicas
-$\hat\tau_k-(\|\bp-\br_k\|+d_{{\rm RB},k})/c_0$ have standard deviation at most
-$0.5$~ns are retained when any exist; of these, the ones within a relative
-$10^{-3}$ of the best objective are near-optimal, and $\hat\bp_{\rm GI}$ is the
-one among them with the smallest clock spread.
+so height diversity is reached before the axial sweep is exhausted.
 
 The per-column confidence weights of main-paper
 Eq.~\eqref{main-eq:Jgeom_short} use $\varrho_0=1/2$ and
@@ -642,8 +629,10 @@ compression, then simultaneous diagonalization of the compressed pencils by
 generalized eigendecomposition, each Khatri--Rao column split by its
 dominant singular pair; polished by complex CP-ALS warm-started from that
 solution\\
-Initialization & None: the algebraic stage is deterministic and runs no
-iterations\\
+Initialization & None: the algebraic stage is deterministic, runs no
+iterations and draws no random numbers. A fixed-seed complex Gaussian draw
+is used only if the eigendecomposition raises, in which case the route
+falls back to plain CP-ALS\\
 Iteration cap & $0$ algebraic; $\leq3000$ ALS sweeps for the polish\\
 Stopping rule & Relative factor change $<10^{-8}$\\
 Read-out & CP factors to position by grid search over $5\times5\times3$
@@ -747,7 +736,7 @@ $N_{\rm int}\le N_{\rm cap}$ visited intervals costs one $O(N)$ evaluation of
 the polynomial and its derivative plus one heap operation. The profiled solve
 therefore acts on $M_r$ compressed rows instead of the $M=I\,N\,T$ raw rows,
 and the exact spherical panel projection, not the certified clock profile,
-dominates the measured runtime (Section~\ref{main-subsec:res_robustness}).
+dominates the measured runtime (Section~\ref{main-subsec:res_cost}).
 
 \begin{table}[!tb]
 \caption{Serialized single-thread cost at $-10$~dB, method-specific
@@ -889,20 +878,9 @@ right-hand axis diverge by four orders of magnitude under overestimation.}
 \label{fig:s_robustness}
 \end{figure*}
 
-Each perturbation is drawn independently per trial. EVS phase errors are
-zero-mean Gaussian per panel and component; EVS gains are log-normal,
-$\exp(\sigma Z-\sigma^2/2)$ with $Z$ standard normal, so the swept level
-$\sigma$ is a log-gain standard deviation and the gain has unit mean; the
-RIS--BS direction error is an isotropic Gaussian in the tangent plane of the
-nominal unit direction, renormalized; BS sensor offsets are Gaussian and
-independent per coordinate. The colored-noise sweep draws circularly
-symmetric noise with $[\bR]_{ij}=\rho^{|i-j|}$ across the EVS index, white
-across tones and training, rescaled to the target SNR on the active
-components.
-
 \emph{Receiver-side calibration.} Table~\ref{tab:s_calib} compares the
 tested receiver perturbations with the RIS--BS angular boundary. Across
-EVS log-gain standard deviations up to $0.1$, phase errors up to $10^\circ$,
+EVS gain standard deviations up to $0.1$, phase errors up to $10^\circ$,
 and BS sensor-position errors up to $0.5$~mm, proposed catastrophic rates
 remain between $0.21\%$ and $0.62\%$. Conditional RMSE increases by at most
 $20\%$, from $0.416$ to $0.497$~mm, while reconstruction NMSE changes much
@@ -925,7 +903,7 @@ c-RMSE is the inlier-conditional position RMSE.}
 Mismatch & Level & $P_{\rm cat}$ [\%] & c-RMSE [mm] & NMSE med.\\
 \midrule
 --- (reference) & $0$ & $0.21$ & $0.416$ & $5.0\!\times\!10^{-5}$\\
-EVS log-gain std & $0.1$ & $0.42$ & $0.420$ & $5.0\!\times\!10^{-3}$\\
+EVS gain std & $0.1$ & $0.42$ & $0.420$ & $5.0\!\times\!10^{-3}$\\
 EVS phase & $10^\circ$ & $0.21$ & $0.418$ & $1.5\!\times\!10^{-2}$\\
 BS sensor position & $0.5$~mm & $0.62$ & $0.497$ & $3.0\!\times\!10^{-1}$\\
 \midrule
@@ -978,15 +956,16 @@ the spatial responses add only element-relative path differences. In the
 reference configuration the mismatch carries $0.13\%$ of the signal energy,
 of which $7.5$~parts per million leave the calibrated receive subspace.
 
-Table~\ref{tab:s_wideband} reports two estimates per sample. The
-first-order prediction solves
+Two estimates are reported per sample. The first-order prediction solves
 $\min_{\Delta\bz\in\R^4}\|\bP\boldsymbol{\delta}-\bP\bD_{\bz}\Delta\bz\|^2$ in the real
 parameters, with $\boldsymbol{\delta}=[\bA_{\rm wb}-\bA_c]\bx^\star$,
 $\bP=\bI-\bA_c\bA_c^{+}$, $\bz=[\bp^{\mathsf T},c_0\Delta t]^{\mathsf T}$ and
 $\bx^\star$ constructed from the generator rather than fitted. The nonlinear
 value is a noiseless local refinement from the true position. Both are free of
 the directional penalty; a run with the paper penalty changes them by at most
-$0.6\%$.
+$0.6\%$. Replacing the true Jones states by a Phase-I anchor carrying a
+$6.1\times10^{-3}$~rad error left the result unchanged to every digit at the
+one sample where this control was run.
 
 \begin{table}[t]
 \caption{Spatial-wideband mismatch bias over nine pre-specified samples: the
@@ -1019,13 +998,16 @@ Hard & $3$ & $0.0071$ & $0.0072$ & $3.843$ & $3.846$ & $0.02$ & $1.19$\\
 
 The linearization is accurate at every sample, the two columns agreeing to
 between $9\times10^{-5}$ and $2\times10^{-2}$ in relative terms, so no
-higher-order check is needed. The zero-mismatch controls return the true
-parameters to $2.6\times10^{-12}$~m and $2\times10^{-11}$~ps, nine orders below
-the tightest accuracy scale compared against, so the reported bias is the
-wideband mismatch and not a solver residual.
+higher-order check is needed. The real Jacobian has rank $4$ and condition
+number below $20$ at every sample, so the small bias is not the minimum-norm
+solution of a rank-deficient system. Every zero-mismatch control returns the
+true parameters to $2.6\times10^{-12}$~m and $2\times10^{-11}$~ps, nine orders
+below the tightest accuracy scale compared against, and tightening the outer
+tolerance by $10^{2}$ moves the reported bias by $5\times10^{-6}$~mm. All
+clock certificates hold.
 
 Position and clock behave differently. The position bias spans
-0.0037--0.0804~mm, median 0.0186~mm, and stays at or below $0.17$ of the
+0.0037--0.0804~mm, median 0.0186~mm, and stays at or below $0.18$ of the
 sample's own PEB throughout, so it is not visible against the noise at the
 low end of the evaluated range. The clock bias spans 0.19--5.38~ps, median
 1.93~ps, and reaches $1.6$ times the sample's own CEB, exceeding it at four
@@ -1034,7 +1016,7 @@ with $\sigma$, both ratios grow as the SNR rises.
 
 This is a local refinement diagnostic: it does not exercise Phase-I
 acquisition, and nothing here bounds the catastrophic rate or the basin
-behavior under spatial wideband.
+behaviour under spatial wideband.
 
 \section{External Benchmark}
 \label{sec:benchmark_full_supp}
@@ -1103,16 +1085,15 @@ auxiliary trials are independent of the primary benchmark; therefore only
 comparisons within each protocol are paired. Near-field OMP already carries
 its prescribed SAGE refinement and is unchanged by this comparison.
 
-Table~\ref{tab:s_matched_audit} collects the comparison. At $-10$~dB,
-VBI/SBL's median changes from $26.1$~mm under its method-specific read-out
-to $0.322$~mm under the common refinement, with
+At $-10$~dB, VBI/SBL's median changes from $26.1$~mm under its
+method-specific read-out to $0.322$~mm under the common refinement, with
 catastrophic rates $9.90\%$ and $0.83\%$. Under the common refinement the
 proposed route has $0.320$~mm median and $0.42\%$ catastrophic events. The
 paired comparison shows eight discordant catastrophic events in one
 direction and four in the other ($p=0.388$, McNemar exact), so a rate
 difference is not established there. For this blocked-direct-path
-adaptation of~\cite{li2024vbi}, the gap seen in the primary benchmark is
-therefore consistent with read-out rather than acquisition error.
+adaptation of~\cite{li2024vbi}, the read-out rather than the acquisition
+therefore accounts for the gap seen in the primary benchmark.
 
 Algebraic CPD's median under the common refinement is $0.664$~mm, but its
 catastrophic rate remains $42.92\%$ ($46.67\%$ under its method-specific
@@ -1155,8 +1136,9 @@ The main paper compares the proposed route with the baseline-initialized
 4D-JVP control at $-10$~dB. Table~\ref{tab:s_paired} gives the paired
 position-RMSE statistics of the internal suite at every SNR where the two
 routes differ, including the two points below the operating region.
-Comparisons are within one experiment and therefore paired, and the values
-below are specific to this suite.
+Comparisons are within one experiment and therefore paired; the
+independently seeded component suite gives $-0.187$~m at $-10$~dB, so
+suite-specific values are kept separate.
 
 \begin{table}[t]
 \caption{Paired comparison against baseline-initialized 4D-JVP, $480$
@@ -1213,6 +1195,10 @@ $6.23\times10^{-6}$~mm in position and $3.76\times10^{-5}$~ps in clock.
 All weights produce the same catastrophic indicators in this full-EVS
 sweep. The largest penalty/data-objective ratio is $6.45\times10^{-6}$.
 Thus the penalty has little measured effect on these full-EVS results.
+
+The reduced-receiver arms of the weight sweep are not used to
+support this conclusion: their scalar high-SNR behavior has not been
+reconciled with the receiver-mode experiment reported here.
 
 \begin{table}[t]
 \caption{Full-EVS directional-weight control, $480$ paired trials per

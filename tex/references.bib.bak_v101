@@ -252,15 +252,11 @@
   keywords={Doppler shift;Clocks;Location awareness;Vectors;Synchronization;Gaussian noise;Iterative methods;Accuracy;Position measurement;Frequency conversion;Anchor node (AN) position error;Doppler shift;joint localization and synchronization (JLAS);moving user node (UN);semidefinite programming (SDP);time of arrival (TOA)},
   doi={10.1109/JSEN.2025.3560989}}
 
-@inproceedings{yu2026emvsris,
-  author={Yu, Zhenhao and Chen, Hua and Wu, Tuo and Liu, Wei and Valenti, Matthew C.},
-  booktitle={Proc. IEEE Int. Conf. Commun. Workshops (ICC Workshops)},
-  title={{RIS}-Aided Far-Field {NLOS} Target Localization in Bistatic {EMVS-MIMO} Radar},
-  year={2026},
-  address={Glasgow, U.K.},
-  month=may,
-  pages={1--6},
-  doi={10.1109/ICCWorkshops63917.2026.11586621}}
+@article{chen2026emvsris,
+  author={Chen, Hua and Yu, Zhenhao and Wu, Tuo and Liu, Wei and Elkashlan, Maged and Shin, Hyundong and Valenti, Matthew C. and Schober, Robert},
+  journal={arXiv preprint arXiv:2602.07515},
+  title={Beyond $\lambda/2$: Can Arbitrary {EMVS} Arrays Achieve Unambiguous {NLOS} Localization?},
+  year={2026}}
 
 @article{wang2025wbnf,
   author={Wang, Zhaolin and Mu, Xidong and Liu, Yuanwei},
@@ -338,27 +334,3 @@
   volume={62},
   pages={7303-7325},
   doi={10.1109/TAES.2026.3670808}}
-
-@article{golub1973varpro,
-  author  = {Gene H. Golub and Victor Pereyra},
-  title   = {The Differentiation of Pseudo-Inverses and Nonlinear Least Squares Problems Whose Variables Separate},
-  journal = {SIAM J. Numer. Anal.},
-  year    = {1973},
-  volume  = {10},
-  number  = {2},
-  pages   = {413--432},
-  month   = apr,
-  doi     = {10.1137/0710036}
-}
-
-@article{byrd1995lbfgsb,
-  author  = {Richard H. Byrd and Peihuang Lu and Jorge Nocedal and Ciyou Zhu},
-  title   = {A Limited Memory Algorithm for Bound Constrained Optimization},
-  journal = {SIAM J. Sci. Comput.},
-  year    = {1995},
-  volume  = {16},
-  number  = {5},
-  pages   = {1190--1208},
-  month   = sep,
-  doi     = {10.1137/0916069}
-}

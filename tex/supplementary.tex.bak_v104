@@ -747,7 +747,7 @@ $N_{\rm int}\le N_{\rm cap}$ visited intervals costs one $O(N)$ evaluation of
 the polynomial and its derivative plus one heap operation. The profiled solve
 therefore acts on $M_r$ compressed rows instead of the $M=I\,N\,T$ raw rows,
 and the exact spherical panel projection, not the certified clock profile,
-dominates the measured runtime (Section~\ref{main-subsec:res_robustness}).
+dominates the measured runtime (Section~\ref{main-subsec:res_cost}).
 
 \begin{table}[!tb]
 \caption{Serialized single-thread cost at $-10$~dB, method-specific
@@ -978,8 +978,7 @@ the spatial responses add only element-relative path differences. In the
 reference configuration the mismatch carries $0.13\%$ of the signal energy,
 of which $7.5$~parts per million leave the calibrated receive subspace.
 
-Table~\ref{tab:s_wideband} reports two estimates per sample. The
-first-order prediction solves
+Two estimates are reported per sample. The first-order prediction solves
 $\min_{\Delta\bz\in\R^4}\|\bP\boldsymbol{\delta}-\bP\bD_{\bz}\Delta\bz\|^2$ in the real
 parameters, with $\boldsymbol{\delta}=[\bA_{\rm wb}-\bA_c]\bx^\star$,
 $\bP=\bI-\bA_c\bA_c^{+}$, $\bz=[\bp^{\mathsf T},c_0\Delta t]^{\mathsf T}$ and
@@ -1025,7 +1024,7 @@ the tightest accuracy scale compared against, so the reported bias is the
 wideband mismatch and not a solver residual.
 
 Position and clock behave differently. The position bias spans
-0.0037--0.0804~mm, median 0.0186~mm, and stays at or below $0.17$ of the
+0.0037--0.0804~mm, median 0.0186~mm, and stays at or below $0.18$ of the
 sample's own PEB throughout, so it is not visible against the noise at the
 low end of the evaluated range. The clock bias spans 0.19--5.38~ps, median
 1.93~ps, and reaches $1.6$ times the sample's own CEB, exceeding it at four
@@ -1103,9 +1102,8 @@ auxiliary trials are independent of the primary benchmark; therefore only
 comparisons within each protocol are paired. Near-field OMP already carries
 its prescribed SAGE refinement and is unchanged by this comparison.
 
-Table~\ref{tab:s_matched_audit} collects the comparison. At $-10$~dB,
-VBI/SBL's median changes from $26.1$~mm under its method-specific read-out
-to $0.322$~mm under the common refinement, with
+At $-10$~dB, VBI/SBL's median changes from $26.1$~mm under its
+method-specific read-out to $0.322$~mm under the common refinement, with
 catastrophic rates $9.90\%$ and $0.83\%$. Under the common refinement the
 proposed route has $0.320$~mm median and $0.42\%$ catastrophic events. The
 paired comparison shows eight discordant catastrophic events in one

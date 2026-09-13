@@ -144,9 +144,10 @@ of the unknowns, so a sufficient compression ($96\to6$ here) precedes acquisitio
 the profiled maximizer and the free-Jones information exactly. The common clock leaves the Jones Gram invariant,
 reducing its conditional dependence to a finite trigonometric polynomial
 whose global maximizer admits a deterministic optimality-gap certificate and whose
-elimination leaves a 3-D search. At $-10$~dB SNR, the estimator attains a $0.32$-mm median 
-position error and position and clock catastrophic rates of $0.42\%$ and $0.31\%$, respectively, 
-corresponding to $6.0$- and $6.7$-fold reductions over the matched-accuracy in-model 4-D control.
+elimination leaves a 3-D search. The resulting two-phase estimator gains in acquisition
+reliability rather than local precision: at $-10$~dB SNR it attains
+$0.32$-mm median position error at $0.42\%$ and $0.31\%$ position and clock
+catastrophic rates, roughly six- and sevenfold below the matched-accuracy in-model 4-D control, respectively.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -164,34 +165,36 @@ electrically large at millimeter-wave and sub-terahertz
 frequencies~\cite{wymeersch2020risloc}, the users they serve fall inside the
 radiative near field, where wavefront curvature across the aperture carries
 range in addition to direction~\cite{cui2023nearfield}. That geometric
-content turns a surface into a passive anchor, capable of localizing a user in three
+content turns a surface into a passive anchor, able to fix a user in three
 dimensions without active infrastructure of its
 own~\cite{elzanaty2021bounds,zhu2026mixed}, and several panels add the
 spatially diverse paths a blocked direct link to the base station (BS)
 demands~\cite{xia2026nlos}. A passive RIS
 carries no timing reference, however, so the delays measured through such a
-deployment depend jointly on the user equipment (UE) as well as clock offset, and the two must be recovered together.
+deployment carry the clock offset of the user equipment (UE) as well as its
+position, and the two must be recovered together.
 
-That problem sits at the intersection of three lines of work. RIS-aided
+That problem sits at the intersection of three separate lines. RIS-aided
 localization and synchronization has moved from single-panel geometry to
 distributed deployments~\cite{ma2023distributed,liu2025multiris,zhu2025hybrid} and to
-formulations with an explicit unknown clock~\cite{fascista2022rissync,gong2024async,peng2025sdp,yan2025ris,fadakar2024multiris}.
+formulations carrying an unknown clock
+explicitly~\cite{fascista2022rissync,gong2024async,peng2025sdp,yan2025ris,fadakar2024multiris}.
 Near-field and extremely-large-aperture estimation supplies the
 spherical-wave models this regime needs~\cite{liu2025corr} and the
-acquisition front ends that make such estimation tractable: multilinear factorization of
+acquisition front ends that make them tractable: multilinear factorization of
 the training tensor~\cite{lin2021tensor,cao2025tensorris}, sparse and
 variational recovery on a
 discretized manifold~\cite{li2024vbi}, and polar or beam-split codebooks
 matched to wavefront
 curvature~\cite{cui2022channel,yang2024nfris,zheng2025wideband}. Polarization
 enters RIS work mainly as a controllable resource, dual-polarized surfaces
-exploiting it for beamforming gain~\cite{han2022dual,zheng2025dualpol}, whereas
+spending it on beamforming gain~\cite{han2022dual,zheng2025dualpol}, whereas
 array processing treats it as an unknown: an electromagnetic vector sensor
 (EVS) measures co-located electric and magnetic fields and so resolves the
 polarization state of an incident wave alongside its
 direction~\cite{nehorai1994vector,khan2020sixcomponent,lan2026vecpol}. RIS-aided EVS radar
 extends this processing to joint departure-angle, arrival-angle and
-polarization estimation~\cite{yu2026emvsris}. Our own EVS-OFDM
+polarization estimation~\cite{chen2026emvsris}. Our own EVS-OFDM
 (orthogonal frequency-division multiplexing)
 estimator~\cite{gong2026aimdf} applies such an array to a direct multipath
 channel, without the distributed geometry, panel labeling, compression or
@@ -204,8 +207,8 @@ fit~\cite{ma2023distributed,liu2025multiris,fascista2022rissync}. Here all
 cascades reach the same EVS array within one observation and an algebraic
 front end returns them unlabeled~\cite{lin2021tensor}, so two panels at
 nearly coincident delays present similar space--frequency evidence and their
-separability depends on the retained Maxwell structure of the receiver --
-whereas existing polarimetric processing treats polarization mainly as an additional estimation
+separability falls to the retained Maxwell structure of the receiver --
+which existing polarimetric processing treats as one more estimation
 dimension~\cite{nehorai1994vector,khan2020sixcomponent}. Second, full-EVS
 training produces six field components over $M_A$ sensors, $N$ subcarriers
 and $T$ configurations, and an arbitrary linear reduction guarantees nothing
@@ -219,7 +222,8 @@ retaining the absolute delays leaves a nonconvex four-dimensional
 position--clock problem: variable projection~\cite{golub1973varpro} eliminates the
 linear nuisances
 but not this coupling, and the semidefinite route to a
-certified solution~\cite{peng2025sdp} addresses timing models admitting a linear lifting, not the OFDM likelihood here.
+certified solution~\cite{peng2025sdp} addresses timing models that lift to a
+linear one, not the OFDM likelihood here.
 
 We address these limitations through one structural property of the
 cascaded observation, not through three separate devices. The sensing block of
@@ -240,12 +244,12 @@ separated from the calibrated polarimetric response. Three consequences
 follow.
 
 \textbf{C1. In a polarimetric array, local information and source
-discrimination are separate resources.} A local Cram\'er--Rao analysis does not expose
-this distinction. Component selection rescales a panel's free-Jones information by the
-polarization energy it retains, leaving its eigenvectors untouched; discrimination
-instead rests on a residual in the retained Maxwell subspace, which a sufficiently
-reduced receiver -- two or fewer field components here -- can make vanish while local bounds
-remain finite. Receiver selection is therefore a design condition that no bound map
+discrimination are separate resources.} A local Cram\'er--Rao analysis does not expose 
+this distinction. Component selection rescales a panel's free-Jones information by the 
+polarization energy it retains, leaving its eigenvectors untouched; discrimination 
+instead rests on a residual in the retained Maxwell subspace, which a sufficiently 
+reduced receiver -- two or fewer field components here -- can make vanish while local bounds 
+remain finite. Receiver selection is therefore a design condition that no bound map 
 expresses (Theorem~\ref{thm:split};
 Figs.~\ref{fig:c1_receiver} and~\ref{fig:c1_separability}).
 
@@ -284,9 +288,6 @@ generalizes the same way: wherever a nuisance enters a separable
 least-squares problem as a common unitary phase ramp, the profiled Gram is
 invariant to it, its conditional profile is a trigonometric polynomial, and
 its global solve is certifiable rather than heuristic.
-
-Proofs, numerical specifications and additional experiments are provided in
-the supplementary material.
 
 Notation: bold symbols denote vectors/matrices; $(\cdot)^{\mathsf T}$,
 $(\cdot)^{\mathsf H}$ and $(\cdot)^{\dagger}$ are transpose, Hermitian
@@ -506,7 +507,8 @@ form~\eqref{eq:premise},
 	\label{eq:Ak}
 \end{align}
 where $\bc_k(\bchi)=\bh_k(\bp)\otimes\bd_k(\bp,\Delta t)\otimes
-\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor.
+\bv_{{\rm B},k}\in\C^{TNM_A}$ is the space--frequency factor; the scalar
+sample expansion and pilot normalization are supplementary.
 
 Arranging the $I$ receive channels against the $N$ subcarriers at
 configuration $t$ gives
@@ -680,7 +682,7 @@ Here $\bW=\diag(w_n)$, with $w_n=\#\{(p,\ell):p+\ell=n\}$ the anti-diagonal
 multiplicity of the $P\times L$ Hankel lift of the tone axis, $P+L-1=N$;
 solving in the lifted domain gives the same linear system. The window weights
 this factor recovery only: the poles of \eqref{eq:shift} are read on the full
-$N$-tone aperture, unsmoothed.
+$N$-tone aperture, unsmoothed. Window and loading are fixed in the supplement.
 Reshaping column $j$ as an $r\times T$ matrix with receive index running
 slowest, its leading singular triplet gives
 \begin{equation}
@@ -743,7 +745,8 @@ two, $\pi_{(1)},\pi_{(2)}$, using exact spherical projection:
  \label{eq:assoc_two_tier}
 \end{equation}
 The re-scored costs satisfy $C_{(1)}\le C_{(2)}$, and
-$\epsilon_{\rm assoc}=10^{-10}$ is the implementation's numerical guard. It returns the labeled delay--factor triples
+$\epsilon_{\rm assoc}=10^{-10}$ is the implementation's numerical guard; the supplement gives the
+reliability threshold on $m_{\rm assoc}$. It returns the labeled delay--factor triples
 $\{\hat\tau_j,\tilde\ba_j,\tilde\bt_j;\hat\pi(j)\}$ for geometric acquisition.
 
 \subsection{Beam-Space Acquisition and Common-Geometry Initialization}
@@ -833,7 +836,8 @@ whose rank-one split is poor while keeping every panel in the fit. We minimize
 deterministic starts around
 $\hat\bp_0=\clip_{\mathcal P}\{\median_k\hat\bp_k^{\rm loc}\}$, and select
 $\hat\bp_{\rm GI}$ as the near-optimal minimum whose clock replicas
-$\hat\tau_k-(\|\bp-\br_k\|+d_{{\rm RB},k})/c_0$ vary least.
+$\hat\tau_k-(\|\bp-\br_k\|+d_{{\rm RB},k})/c_0$ vary least; constants are
+supplementary.
 
 \textit{3) Jones-anchor refresh:}
 At the selected $\hat\bp_{\rm GI}$, the $\lambda_k=0$ instance of the
@@ -995,7 +999,8 @@ The bounded search starts from $\hat\bp_{\rm GI}$ and approximates
 safeguard is used when clock certification fails or
 the maximizing branch is ambiguous. Phase~II outputs
 $(\hat\bp,\widehat{\Delta t},\hat\bx)$ together with the certificate attached
-to every conditional clock solve it evaluated.
+to every conditional clock solve it evaluated. Tolerances and the safeguard
+trigger are supplementary.
 
 
 \section{Structural Analysis and Guarantees}
@@ -1058,15 +1063,15 @@ from element $m$ to the UE,
 the deviation of each element's bearing from the panel bearing that
 \eqref{eq:delayjac} already carries. This tangent scales as
 $O(\|\brho_{k,m}\|/d_{{\rm UR},k})$ and weakens toward the far-field limit.
-Whether it restores rank four is not settled by counting; it requires
-conditions on the RIS codes, panel curvature and geometry. After
+Whether it restores rank four is not settled by counting; the supplement
+records the conditions on RIS codes, curvature and panel geometry. After
 complex-scale elimination the projected tangents
 $\bPi_{\bh_k}^{\perp}[\partial\bh_k/\partial x,\partial\bh_k/\partial y,
 \partial\bh_k/\partial z]$ retain the phase slope and curvature of
 \eqref{eq:delta}. The test is local and conditions on the panel assignment, with pseudoinverse
 projectors covering the rank-deficient Jones blocks of \eqref{eq:g0rank}. The
-derivation of \eqref{eq:efim_short}, the real-rank equivalence and the
-conditions above are given in the supplementary material.
+derivation of \eqref{eq:efim_short} and of the real-rank equivalence is
+supplementary.
 
 \textit{B. C1---Maxwell--Jones information splitting:}
 Both parts of C1 rest on one identity: because $\bA_k$ is a Kronecker
@@ -1459,8 +1464,9 @@ with $\|\hat\bp_{{\rm I},r}-\bp^\star\|_2\le0.1$~m. The declared operating
 region is ${\rm SNR}\ge-10$~dB, with results at $-15$ or $-20$~dB labeled as
 below it. Every cell generates and estimates on the same center-frequency
 spatial manifold, so $\epsilon_{\rm sq}$ of Section~\ref{subsec:defchain}
-contributes no residual. A nine-sample per-subcarrier diagnostic produces instead a deterministic offset of at most
-$0.080$~mm in position, $0.17$ of that sample's PEB, but up to $5.4$~ps in
+contributes no residual. A supplementary per-subcarrier diagnostic at nine
+pre-specified samples produces instead a deterministic offset of at most
+$0.080$~mm in position, $0.18$ of that sample's PEB, but up to $5.4$~ps in
 clock, exceeding that sample's CEB at four samples.
 
 Methods within a cell share the scene, RIS codes, Jones states, gains and
@@ -1516,7 +1522,7 @@ Against the baseline-initialized route the paired catastrophic difference
 remains significant at $-10$~dB (McNemar exact, $p=0.0129$), and the
 evaluated algebraic-CPD adaptation still exhibits a $42.92\%$
 catastrophic-rate floor under the same polish, which the added refinement
-does not remove. Baseline specifications and adaptations are supplementary.
+does not remove. Adaptation details are supplementary.
 
 \subsection{C2: Sufficient Compression and Acquisition}
 \label{subsec:res_c2}
@@ -1590,7 +1596,7 @@ from $13$ to $9$.
 All $950$ conditional clock profiles meet the prescribed objective-gap
 tolerance, with a worst gap/tolerance ratio of $0.998$ and no subdivision-cap
 hit, which certifies the inner maximization at each visited position but
-not the outer search.
+not the outer search. A larger independently seeded audit is supplementary.
 
 \begin{table}[!t]
 \caption{Phase-II refinement control at $-10$~dB over $100$ shared MKSC-GI
@@ -1661,7 +1667,7 @@ turns it into the weakly retained Maxwell direction, so the scalar weight of
 Theorem~\ref{thm:split}(i) becomes panel-dependent: under the dual mask
 $\alpha_{\bS_{\rm mode}}$ holds at $0.50$ for the reference panel while
 falling to $0.005$ for the competing one at the smallest overlap, whereas the
-full mask holds unity for both at every overlap. And with
+full mask holds unity for both at every overlap (supplementary). And with
 $d_{\rm evs}\le2$ the competing Jones block spans $\C^{d_{\rm evs}}$, so by
 \eqref{eq:c1_dichotomy} the residual separating two panels can vanish
 outright, whereas six components hold it above $\sin\theta_{\min}$. Resolution as scored here is a joint event:
@@ -1693,7 +1699,8 @@ position rather than fitting a trend.}
 
 \subsection{Robustness, Complexity and Deployment Limits}
 \label{subsec:res_robustness}
-Three sensitivities set the deployment envelope. Calibration is the binding one
+Three sensitivities set the deployment envelope; the remaining mismatch and
+resource-scaling sweeps are supplementary. Calibration is the binding one
 (Fig.~\ref{fig:boundaries}(a)--(b)): RIS--BS angular error degrades
 precision long before capture,
 raising conditional RMSE from $0.416$ to $31.1$~mm at $0.25^\circ$ while
@@ -1718,11 +1725,13 @@ Local information sufficiency therefore does not imply global acquisition
 reliability: screening needs a delay-coincidence check and a coarse global
 fallback, not a PEB map alone.
 
+\label{subsec:res_cost}
 On one host at $-10$~dB the proposed route requires $3.18$~s and $2.52$~GB
 on the $96$ receive chains a full EVS costs, between the
 baseline-initialized 4D-JVP ($2.40$~s) and
 Algebraic CPD ($4.38$~s). A separate decomposition gives $2.83$~s in Phase~I and
 $0.34$~s in Phase~II, so acquisition dominates the measured budget.
+The breakdown is supplementary.
 
 A $25\%$ cyclic prefix at $\Delta f=5$~MHz is $50$~ns, covering the
 $19.1$-ns reference-scene delay span over the clock-search interval, so one
