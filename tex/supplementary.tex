@@ -1,29 +1,23 @@
 \documentclass[journal,letterpaper]{IEEEtran}
-% =========================================================================
-% Supplementary material for final.tex.
-%
-% Part I:   detailed derivations behind the main-paper results.
-% Part II:  numerical and comparison specifications.
-% Part III: additional numerical results not reported in the main paper.
-% =========================================================================
+
 \usepackage{amsmath,amsfonts,amssymb}
 \usepackage{bm}
-\usepackage{algorithmic}
-\usepackage{algorithm}
 \usepackage{array}
 \usepackage{booktabs}
 \usepackage{textcomp}
-\usepackage{stfloats}
 \usepackage{url}
-\usepackage{graphicx}
-\graphicspath{{figs_supp/}}
 \usepackage{cite}
 \usepackage{xr}
+\usepackage{balance}
 \externaldocument[main-]{final}
 
-\newtheorem{proposition}{Proposition}
 \newtheorem{lemma}{Lemma}
 
+\renewcommand{\theequation}{S\arabic{equation}}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thelemma}{S\arabic{lemma}}
+
+\newcommand{\R}{\mathbb{R}}
 \newcommand{\C}{\mathbb{C}}
 \newcommand{\bx}{\mathbf{x}}
 \newcommand{\by}{\mathbf{y}}
@@ -32,49 +26,37 @@
 \newcommand{\bc}{\mathbf{c}}
 \newcommand{\bd}{\mathbf{d}}
 \newcommand{\be}{\mathbf{e}}
-\newcommand{\bh}{\mathbf{h}}
 \newcommand{\bg}{\mathbf{g}}
-\newcommand{\bBm}{\mathbf{B}}
-\newcommand{\bv}{\mathbf{v}}
-\newcommand{\bt}{\mathbf{t}}
+\newcommand{\bh}{\mathbf{h}}
+\newcommand{\bp}{\mathbf{p}}
+\newcommand{\bq}{\mathbf{q}}
 \newcommand{\bs}{\mathbf{s}}
-\newcommand{\bz}{\mathbf{z}}
+\newcommand{\bu}{\mathbf{u}}
+\newcommand{\bv}{\mathbf{v}}
 \newcommand{\bA}{\mathbf{A}}
+\newcommand{\bBm}{\mathbf{B}}
 \newcommand{\bD}{\mathbf{D}}
-\newcommand{\bE}{\mathbf{E}}
-\newcommand{\bF}{\mathbf{F}}
 \newcommand{\bG}{\mathbf{G}}
-\newcommand{\bH}{\mathbf{H}}
 \newcommand{\bI}{\mathbf{I}}
-\newcommand{\bM}{\mathbf{M}}
-\newcommand{\bP}{\mathbf{P}}
+\newcommand{\bJ}{\mathbf{J}}
+\newcommand{\bN}{\mathbf{N}}
+\newcommand{\bPi}{\boldsymbol{\Pi}}
 \newcommand{\bQ}{\mathbf{Q}}
 \newcommand{\bR}{\mathbf{R}}
 \newcommand{\bS}{\mathbf{S}}
+\newcommand{\bU}{\mathbf{U}}
+\newcommand{\bW}{\mathbf{W}}
+\newcommand{\bY}{\mathbf{Y}}
+\newcommand{\bZ}{\mathbf{Z}}
+\newcommand{\bOmega}{\boldsymbol{\Omega}}
+\newcommand{\bchi}{\boldsymbol{\chi}}
 \newcommand{\bTheta}{\boldsymbol{\Theta}}
-\newcommand{\bPi}{\boldsymbol{\Pi}}
-\newcommand{\bmu}{\boldsymbol{\mu}}
 \newcommand{\bvt}{\boldsymbol{\vartheta}}
 \newcommand{\Real}{\operatorname{Re}}
-\newcommand{\Imag}{\operatorname{Im}}
+\newcommand{\coll}{\operatorname{col}}
+\newcommand{\diag}{\operatorname{diag}}
 \newcommand{\rank}{\operatorname{rank}}
 \newcommand{\tr}{\operatorname{tr}}
-\newcommand{\coll}{\operatorname{col}}
-\newcommand{\blkdiag}{\operatorname{blkdiag}}
-
-\newcommand{\bchi}{\boldsymbol{\chi}}
-\newcommand{\bJ}{\mathbf{J}}
-\newcommand{\bp}{\mathbf{p}}
-\newcommand{\bu}{\mathbf{u}}
-\newcommand{\bq}{\mathbf{q}}
-\newcommand{\bU}{\mathbf{U}}
-\newcommand{\bV}{\mathbf{V}}
-\newcommand{\bY}{\mathbf{Y}}
-\newcommand{\bOmega}{\boldsymbol{\Omega}}
-\newcommand{\br}{\mathbf{r}}
-\newcommand{\bPsi}{\boldsymbol{\Psi}}
-\newcommand{\brho}{\boldsymbol{\rho}}
-\newcommand{\R}{\mathbb{R}}
 
 \begin{document}
 
@@ -88,1187 +70,456 @@ OFDM''}
 Material: MKSC-GI Initialized CCOP-JVP}
 
 \maketitle
+\raggedbottom
+\makeatletter
+\def\ps@supplementary{%
+  \def\@oddhead{\hbox{}\normalfont\scriptsize
+    SUPPLEMENTARY MATERIAL: MKSC-GI INITIALIZED CCOP-JVP\hfil\thepage}%
+  \let\@evenhead\@oddhead
+  \let\@oddfoot\@empty
+  \let\@evenfoot\@empty}
+\let\ps@plain\ps@supplementary
+\pagestyle{supplementary}
+\makeatother
 
-\section{Organization and Notation}
+\section{Analytical and Algorithmic Details}
 
-This supplement carries the derivations, specifications and experiments that
-the main paper states or cites but has no room to develop. Part~I gives in
-full the derivations the main paper compresses to their key steps; Part~II
-specifies the reference bounds, numerical settings and baseline adaptations
-that the main text names only in words; Part~III reports the numerical
-results that lie outside the main paper, chiefly below its declared
-operating region and under model mismatch.
+\subsection{Free-Jones EFIM and Closed-Form Derivatives}
 
-Abbreviations defined in the main paper retain their meanings. Throughout,
-$P_{\rm cat}$ denotes the empirical position catastrophic-event rate unless
-qualified otherwise, p95 the 95th
-percentile, c-RMSE the inlier-conditional root-mean-square error, NMSE
-normalized mean-square error, and RSS resident set size. Unqualified vector norms are Euclidean and
-unqualified matrix norms are spectral.
-
-Unless otherwise stated, each accuracy point contains $480$ Monte Carlo
-trials, and the external benchmark contains $960$ trials per point. Methods
-compared within one experiment use identical scene, training-code,
-Jones-state, gain and noise realizations, so comparisons within an
-experiment are paired; independently generated experiments share no
-realization and are interpreted separately. All numerical parameters are
-fixed across SNRs and trials unless they are the stated variable of an
-ablation, and no estimator is tuned for this supplement.
-
-\section*{Part I: Detailed Derivations}
-
-\section{Observation Stacking and Factorization}
-\label{sec:coords_supp}
-
-On an $M_{Rx}\times M_{Ry}$ grid of spacings $(d_x,d_y)$ the panel elements
-are centered on the panel in its own frame,
-\begin{equation}
-	\brho_{k,m}=\left[\left(m_x-\tfrac{M_{Rx}-1}{2}\right)d_x,\;
-	\left(m_y-\tfrac{M_{Ry}-1}{2}\right)d_y,\;0\right]^{\mathsf T},
-	\label{eq:s_rho}
-\end{equation}
-and the BS uniform linear array lies along the global $x$ axis at
-$x_i=(i-\tfrac{M_A-1}{2})d_A$ for $i=0,\ldots,M_A-1$, with
-$\{\bm u_x,\bm u_y,\bm u_z\}$ the global axes and $\kappa=2\pi/\lambda_c$ the
-center-frequency wavenumber.
-
-The transverse basis of main-paper Eq.~\eqref{main-eq:qbasis} is built from
-$\bm u_z$, which degenerates when the RIS-to-BS direction approaches the
-pole. When $|\bs_{{\rm RB},k}^{\mathsf T}\bm u_z|>0.95$, $\bm u_y$ replaces
-$\bm u_z$, which keeps the cross product well conditioned. The substitution is a gauge choice and changes no
-observable: any other transverse frame differs by a $2\times2$ orthogonal
-factor that the unknown Jones state absorbs, so
-$\bTheta_k^{(6)}$ changes only by right multiplication with that factor and
-every quantity in Theorems~\ref{main-thm:split}--\ref{main-thm:clock} is
-invariant.
-
-Finally, the stacking that produces main-paper Eq.~\eqref{main-eq:Ak} is
-read off one scalar sample. Pilots are unit modulus and removed by pilot
-normalization, so with $y_{i,n,t}$ the sample at receive index $i$,
-subcarrier $n$ and configuration $t$,
-\begin{equation}
-\begin{split}
-	y_{i,n,t}=\sum_{k=1}^{K}
-	&\Big(\sum_{m=1}^{M_R}[\bOmega_k]_{t,m}[\bg_k]_m\Big)\\
-	&\times e^{-j2\pi\left(n-\frac{N-1}{2}\right)\Delta f\tau_k}\,
-	[\bBm_k]_{i,:}\bx_k+n_{i,n,t},
-\end{split}
-	\label{eq:s_scalar}
-\end{equation}
-with $\bg_k=\bg_k(\bp)$ as in main-paper Eq.~\eqref{main-eq:hk}. The inner
-sum is the reflection at panel $k$, the $t$th entry of $\bh_k(\bp)$,
-carrying both the spherical UE--RIS and plane-wave RIS--BS phases; the
-exponential is the OFDM ramp of the cascaded delay; and
-$[\bBm_k]_{i,:}\bx_k$ is the Maxwell--Jones response. All $K$ panels
-reflect in every configuration, so their contributions add coherently, and
-because \eqref{eq:s_scalar} separates in $t$, $n$ and $i$, ordering the
-samples with the EVS index fastest and stacking reproduces main-paper
-Eq.~\eqref{main-eq:Ak}, while reading $i$ down the rows and $n$ across the
-columns at fixed $t$ gives main-paper Eq.~\eqref{main-eq:obsmat}.
-
-\section{Spatial-Narrowband Bound}
-\label{sec:squint_supp}
-
-Section~\ref{main-subsec:defchain} of the main paper defines the neglected
-spatial phase $\epsilon_{\rm sq}$ and audits it through the exact wavefront
-differences. This section derives the closed-form design-time screen that
-accompanies that audit.
-
-Write $f_n=f_c(1+\beta_n)$ with $\beta_n=\nu_n\Delta f/f_c$ at the centered
-tone indices, so that $|\beta_n|\le\beta_{\rm BW}/2$ with fractional
-bandwidth $\beta_{\rm BW}=B_{\rm occ}/f_c$. The exact element phase at tone
-$n$ is $2\pi f_n\delta_{k,m}/c_0=\kappa\delta_{k,m}
-+\kappa\beta_n\delta_{k,m}$, whose first term is the center-frequency
-manifold retained by the estimator. The neglected phase is therefore
-\begin{equation}
-	\epsilon_{{\rm sq},k}
-	=\max_{n,m}\,\kappa\,|\beta_n|\,|\delta_{k,m}|
-	\le\frac{\pi\beta_{\rm BW}}{\lambda_c}\max_m|\delta_{k,m}| ,
-	\label{eq:squint_step}
-\end{equation}
-so a bound on the element path difference bounds the discarded phase.
-Splitting $\delta_{k,m}$ into the linear aperture projection and the residual
-curvature as in main-paper Eq.~\eqref{main-eq:fresnel}, with aperture radius
-$a_k=\max_m\|\brho_{k,m}\|_2$, UE range $R_k$ and in-plane direction
-component $\bu_{k,\parallel}$,
-\begin{equation}
-	\max_m|\delta_{k,m}|
-	\le a_k\|\bu_{k,\parallel}\|_2+\frac{a_k^2}{2R_k},
-	\label{eq:squint_delta}
-\end{equation}
-which holds for every in-panel element offset whenever $R_k>a_k$, the first
-term being the plane-wave projection and the second the curvature left after
-it is removed. Substituting
-\eqref{eq:squint_delta} into \eqref{eq:squint_step} and dropping the $O(1)$
-constants gives the screen
-\begin{equation}
-	\beta_{\rm BW}\left(
-	\frac{a_k}{\lambda_c}\|\bu_{k,\parallel}\|_2
-	+ \frac{a_k^2}{\lambda_c R_k}\right)\ll 1,
-	\label{eq:squint_cond}
-\end{equation}
-whose second term is the fractional bandwidth times the Fresnel number
-$R_{{\rm Fr},k}/R_k$ with the Fresnel-number length
-$R_{{\rm Fr},k}=a_k^2/\lambda_c$, distinct from the Fraunhofer distance
-$R_{\rm FF}$ of main-paper (A3). Near broadside the linear aperture term is
-small and the curvature term dominates; away from broadside the conventional
-squint term $\beta_{\rm BW}a_k/\lambda_c$ must also be small. The same test
-applies separately to the inter-element path differences of the RIS--BS and
-BS-ULA responses: knowing the infrastructure geometry does not remove the
-frequency dependence of its spatial response.
-
-Because \eqref{eq:squint_step} maximizes over $n$ and $m$ and
-\eqref{eq:squint_delta} is a worst-case aperture bound,
-\eqref{eq:squint_cond} is a design screen and not a substitute for the exact
-audit. In the reference configuration ($\beta_{\rm BW}=0.52\%$) the audited
-values are $0.102$, $0.058$ and $0.048$~rad, with maximum wavefront
-differences of $31.3$, $17.8$ and $14.8$~mm.
-
-\section{Hankel Weighting and Coupled Recovery}
-
-Pole estimation runs on the compressed frequency matrix
-$\bY_f\in\C^{N\times rT}$ of main-paper Eq.~\eqref{main-eq:freqsnap}, which
-treats the compressed receive and training indices as snapshots. It is
-augmented in forward--backward form
-$\bY_{\rm aug}=[\bY_f,\ \bJ\bY_f^{\ast}]$ with $\bJ$ the exchange matrix.
-The $K$ leading left singular vectors of $\bY_{\rm aug}$ give the signal
-subspace $\bE_s$; the shift-invariant pair is $\bE_1=\bE_s(1{:}N-1,:)$ and
-$\bE_2=\bE_s(2{:}N,:)$, and the rotation is taken by total least squares,
-$\bPsi_{\rm TLS}=-\bV_{12}\bV_{22}^{-1}$ from the right singular vectors of
-$[\bE_1,\bE_2]$, falling back to ordinary least squares when
-$N-1<2K$. The poles are the eigenvalues of $\bPsi_{\rm TLS}$, each divided
-by its modulus so that only the delay phase survives. The shift invariance
-is therefore read on the tone index itself, over the full $N$-tone
-aperture, and no smoothing window enters the pole estimate.
-
-The smoothing weights of main-paper Eq.~\eqref{main-eq:coupledls_short} use
-the balanced window $P=\lceil N/2\rceil$, $L=N+1-P$, so that
-$w_n=\#\{(p,\ell):p+\ell=n\}$ over $0\le p<P$, $0\le\ell<L$ is the
-triangular anti-diagonal count of the plain Hankel lift
-$[\mathcal Z]_{i,p,\ell,t}=[\bY_{{\rm d},t}]_{i,\,p+\ell}$, $i=1,\ldots,r$.
-Posing
-\eqref{main-eq:coupledls_short} in that lifted form gives a system whose
-$k$th design column
-is $\bd_{P,k}\otimes\bd_{L,k}$ with $[\bd_{P,k}]_p=z_k^{p}$ and
-$[\bd_{L,k}]_\ell=z_k^{\ell}$, matching main-paper
-Eq.~\eqref{main-eq:dk} up to the column-wise phase
-$e^{j\pi(N-1)\Delta f\tau_k}$ that the factor coefficients absorb. Since
-$\sum_{p,\ell}z_k^{p+\ell}\overline{z_l^{p+\ell}}
-=\sum_n w_n z_k^n\bar z_l^n$, and identically for the correlation against
-the data, the lifted normal equations and the weighted matrix ones of
-\eqref{main-eq:coupledls_short} are the same linear system. Nothing is
-decomposed in the lifted domain.
-
-\section{Local Identifiability with Unknown Jones Nuisance}
-\label{sec:ident_proof_supp}
-
-Let $(\bchi_\star,\bx_\star)$ be the true parameters, let
-$\bD_\chi=[\partial(\bA\bx_\star)/\partial\chi_i]_{i=1}^4$, and define
-\begin{equation}
- \widetilde{\bD}_\chi=
- \begin{bmatrix}
- \Real\{\bPi_{\bA}^{\perp}\bD_\chi\}\\
- \Imag\{\bPi_{\bA}^{\perp}\bD_\chi\}
- \end{bmatrix},\qquad
- \bPi_{\bA}^{\perp}=\bI-\bA_\star\bA_\star^\dagger.
- \label{eq:s_ident}
-\end{equation}
-
-\begin{proposition}[Local position--clock identifiability]
-Suppose $\bA_\star$ has constant rank near the truth, the paths are
-resolvable in the raw OFDM domain, the panel assignment is fixed, the truth
-is interior, and $\rank_{\R}(\widetilde{\bD}_\chi)=4$. Then $\bchi_\star$
-is first-order locally identifiable after eliminating the complex Jones
-coefficients. Under white Gaussian noise this rank condition is equivalent
-to positive definiteness of the free-Jones EFIM.
-\end{proposition}
-
-\begin{IEEEproof}
-A first-order perturbation is
-$\delta\bmu=\bD_\chi\,\delta\bchi+\bA_\star\delta\bx$ with
-$\delta\bchi\in\R^4$. A nonzero
-geometric direction can be canceled by a Jones perturbation exactly when
-$\bD_\chi\,\delta\bchi\in\coll(\bA_\star)$, or equivalently
-$\bPi_{\bA}^{\perp}\bD_\chi\,\delta\bchi=\mathbf0$. Realifying this map gives
-\eqref{eq:s_ident}, whose nullspace is trivial precisely at real rank four.
-The equivalence with the free-Jones EFIM follows from the elimination below.
-\end{IEEEproof}
-
-The main paper states the eliminated information in closed form; the
-elimination itself is the following. Collect the real parameters as
+Let $\bchi=[\bp^{\mathsf T},\Delta t]^{\mathsf T}$, let
+$\bD_\chi=[\partial(\bA\bx)/\partial\chi_i]_{i=1}^{4}$ at the true
+parameters, and explicitly realify the complete parameter vector as
 $\bvt=[\bchi^{\mathsf T},\Real\{\bx\}^{\mathsf T},
-\Imag\{\bx\}^{\mathsf T}]^{\mathsf T}\in\R^{4+4K}$. For
-$\by\sim\mathcal{CN}(\bmu(\bvt),\sigma^2\bI)$ with known $\sigma^2$ the
-Fisher information is
-$\bJ(\bvt)=\frac{2}{\sigma^2}\Real\{\bG^{\mathsf H}\bG\}$ with
-$\bG=\partial\bmu/\partial\bvt^{\mathsf T}$. Since
-$\bmu=\bA(\bchi)\bx$ is linear in $\bx$,
+\operatorname{Im}\{\bx\}^{\mathsf T}]^{\mathsf T}$.  For
+$\by\sim\mathcal{CN}(\bA(\bchi)\bx,\sigma^2\bI)$, its complex Jacobian blocks
+with respect to these real coordinates are
 \begin{equation}
-	\bG=\big[\,\bD_\chi,\ \bA_\star,\ j\bA_\star\,\big],
-	\label{eq:s_efim_jac}
+ \bG=\big[\,\bD_\chi,\ \bA,\ j\bA\,\big].
+ \label{eq:s_efim_jac}
 \end{equation}
-so the nuisance columns span, over the reals, the set
-$\{\bA_\star\bv_1+j\bA_\star\bv_2:\bv_1,\bv_2\in\R^{2K}\}
-=\coll(\bA_\star)$ regarded as a real subspace. That subspace is closed
-under multiplication by $j$, and for $\ba,\bb\in\C^{M}$ the real inner
-product $\Real\{\ba^{\mathsf H}\bb\}$ restricted to it therefore has the
-same orthogonal projector as the complex one. Eliminating the nuisance block
-by its Schur complement is exactly orthogonal projection of the geometric
-columns onto the orthogonal complement of that subspace, which is
-$\bPi_{\bA}^{\perp}=\bI-\bA_\star\bA_\star^{\dagger}$. Hence
+The last two blocks span over $\R$ the complex column space
+$\coll(\bA)$ viewed as a real subspace.  Because this subspace is closed
+under multiplication by $j$, its projector under the real inner product
+$\Real\{\ba^{\mathsf H}\bv\}$ equals the usual complex projector
+$\bA\bA^\dagger$.  Eliminating the real and imaginary Jones coordinates is
+therefore orthogonal projection of the geometric derivatives, giving
 \begin{equation}
-	\bJ_\chi^{\rm free}
-	=\frac{2}{\sigma^2}\Real\{\bD_\chi^{\mathsf H}
-	\bPi_{\bA}^{\perp}\bD_\chi\},
-	\label{eq:s_efim}
+ \bJ_\chi^{\rm free}
+ =\frac{2}{\sigma^2}\Real\!\left\{\bD_\chi^{\mathsf H}
+ \big(\bI-\bA\bA^\dagger\big)\bD_\chi\right\}.
+ \label{eq:s_efim}
 \end{equation}
-which is the expression used in the main paper. Positive definiteness is
-now immediate: for $\bu\in\R^4$,
-\begin{equation}
-	\bu^{\mathsf T}\bJ_\chi^{\rm free}\bu
-	=\frac{2}{\sigma^2}\big\|\bPi_{\bA}^{\perp}\bD_\chi\bu\big\|_2^2
-	=\frac{2}{\sigma^2}\big\|\widetilde{\bD}_\chi\bu\big\|_2^2 ,
-	\label{eq:s_efim_quad}
-\end{equation}
-so $\bJ_\chi^{\rm free}\succ\mathbf0$ if and only if $\widetilde{\bD}_\chi$
-of \eqref{eq:s_ident} has trivial real nullspace, that is
-$\rank_{\R}\widetilde{\bD}_\chi=4$. Since $\bPi_{\bA}^{\perp}$ is built from the
-Moore--Penrose inverse, \eqref{eq:s_efim} is the generalized Schur complement
-of the nuisance block and is defined for any $\bA_\star$; it coincides with the
-ordinary Schur complement exactly when $\bA_\star$ has full column rank, so
-that the nuisance information block is invertible.
+This is the generalized Schur complement of the Jones nuisance block.  The
+Moore--Penrose inverse makes it valid when $\bA$ is rank deficient; it reduces
+to the ordinary Schur complement when the nuisance information block is
+invertible.
 
-The statement is local and conditional. In particular, three panels are
-not sufficient by equation counting alone: the RIS codes must preserve the
-near-field spatial tangents, the curvature must be nondegenerate, and the
-panel geometry must avoid collinearity and symmetry. Global permutations
-and finite-bandwidth ambiguities are not excluded.
-
-\section{Exact Complex-Scale Elimination}
-\label{sec:technical_proofs_supp}
-
-\begin{proposition}[Exact complex-scale elimination]
-For every $\bp$ with $\bh_k(\bp)\ne\mathbf0$,
+The EFIM used for the PEB and CEB is evaluated without numerical
+differencing.  Put $\nu_n=n-(N-1)/2$ and
+$\bN_\nu=\bI_T\otimes\diag(\nu_0,\ldots,\nu_{N-1})\otimes\bI_I$.  The common
+clock orbit of main-paper Eq.~\eqref{main-eq:orbit_short} gives
 \begin{equation}
- \min_{\alpha_k\in\C}\|\tilde\bt_k-\alpha_k\bh_k(\bp)\|^2
- =\|\bPi_{\bh_k(\bp)}^\perp\tilde\bt_k\|^2,
- \quad
- \hat\alpha_k=\frac{\bh_k^{\mathsf H}\tilde\bt_k}{\|\bh_k\|^2}.
- \label{eq:s_scale}
+ \frac{\partial(\bA\bx)}{\partial\Delta t}
+ =-j2\pi\Delta f\,\bN_\nu\bA\bx .
+ \label{eq:s_clock_jac}
 \end{equation}
-The profiled term is invariant to every nonzero complex rescaling of
-$\bh_k$ and every phase rotation of $\tilde\bt_k$.
-\end{proposition}
+For position coordinate $p_i$, define
+$\boldsymbol\delta_k=[\delta_{k,1},\ldots,\delta_{k,M_R}]^{\mathsf T}$ and
+use the aperture derivative in main-paper Eq.~\eqref{main-eq:apertjac}.  The
+remaining factor derivatives and the product rule are
+\begin{align}
+ \frac{\partial\bd_k}{\partial p_i}
+ &=-j2\pi\Delta f\,\diag(\nu_0,\ldots,\nu_{N-1})\bd_k
+ \frac{[\bR_k^{\mathsf T}\bs_{{\rm UR},k}]_i}{c_0},\nonumber\\
+ \frac{\partial\bh_k}{\partial p_i}
+ &=\bOmega_k\!\left[\bg_k\odot
+ \left(-j\kappa\frac{\partial\boldsymbol\delta_k}{\partial p_i}\right)
+ \right],\nonumber\\
+ \frac{\partial\bA_k}{\partial p_i}
+ &=\left(\frac{\partial\bh_k}{\partial p_i}\otimes\bd_k
+ +\bh_k\otimes\frac{\partial\bd_k}{\partial p_i}\right)\otimes\bBm_k .
+ \label{eq:s_position_jac}
+\end{align}
+Thus the $i$th position column of $\bD_\chi$ is
+$\sum_k(\partial\bA_k/\partial p_i)\bx_k$.  A parameter-independent
+compression uses the same formulas after replacing
+$(\bA,\bD_\chi,\bBm_k)$ by
+$(\bU_S^{\mathsf H}\bA,\bU_S^{\mathsf H}\bD_\chi,
+\bQ_S^{\mathsf H}\bBm_k)$, respectively.  The unknown variance does not add
+an EFIM correction: for circular Gaussian noise, its Fisher cross block with
+all mean parameters is zero.
+
+The absorbed carrier phase $e^{-j2\pi f_c\tau_k}$, including the common
+range phase $e^{-j\kappa d_{{\rm UR},k}}$, and any smooth pathwise scalar
+amplitude factor multiply $\bA_k\bx_k$ by a scalar; their position
+derivatives lie in $\coll(\bA)$ and are annihilated by
+$\bPi_{\bA}^{\perp}$, so omitting them from~\eqref{eq:s_position_jac} is
+exact for free complex $\bx_k$.
+
+Equation~\eqref{eq:s_clock_jac} also isolates the free-Jones clock information,
+\begin{align}
+ J_{tt}^{\rm free}
+ &=\frac{2}{\sigma^2}(2\pi\Delta f)^2
+ \big\|\bPi_{\bA}^{\perp}\bN_\nu\bA\bx\big\|_2^2,\nonumber\\
+ {\rm CEB}
+ &\ge \frac{\sigma}{2\sqrt{2}\,\pi\Delta f\,
+ \|\bPi_{\bA}^{\perp}\bN_\nu\bA\bx\|_2}.
+ \label{eq:s_clock_info}
+\end{align}
+The second line accounts for the additional position nuisance through the
+Schur complement; equality holds when the clock column is EFIM-orthogonal to
+the position columns.  The same generator $\bN_\nu$ makes the conditional
+clock profile $Q(\bp,\cdot)$ a finite trigonometric polynomial in C3 and
+quantifies the information carried by that profile.
+
+\subsection{Phase-II Normal Matrix and Envelope Gradient}
+
+Let $s_k=\tfrac12\tr\bG_{0,kk}$ and partition
+$\bA_0=[\bA_{0,1},\ldots,\bA_{0,K}]$ into its two-column Jones blocks.
+
+\begin{lemma}[Anchor-column test for positive definiteness]
+\label{lem:s_glambda}
+Suppose every anchor $\hat\be_k$ is nonzero and $\lambda_ks_k>0$.  Define
+\begin{equation}
+ \bZ_{\hat e}=\big[\bA_{0,1}\hat\be_1,\ldots,
+ \bA_{0,K}\hat\be_K\big].
+ \label{eq:s_anchor_columns}
+\end{equation}
+Then $\bG_\lambda\succ\mathbf0$ if and only if
+$\rank\bZ_{\hat e}=K$.
+\end{lemma}
 
 \begin{IEEEproof}
-For fixed $\bp$, the objective is a strictly convex quadratic in the real
-and imaginary parts of $\alpha_k$. Setting the Wirtinger derivative with
-respect to $\alpha_k^\ast$ to zero yields \eqref{eq:s_scale}; substitution
-gives the orthogonal residual. An orthogonal projector depends only on the
-one-dimensional span of $\bh_k$, and its output norm is unchanged by a
-phase rotation of the input.
+For $\bx=[\bx_1^{\mathsf T},\ldots,\bx_K^{\mathsf T}]^{\mathsf T}$,
+\begin{equation}
+ \bx^{\mathsf H}\bG_\lambda\bx
+ =\|\bA_0\bx\|_2^2+
+ \sum_{k=1}^{K}\lambda_ks_k
+ \|\bPi_{\hat\be_k}^{\perp}\bx_k\|_2^2.
+ \label{eq:s_pd_quadratic}
+\end{equation}
+The right-hand side is zero exactly when
+$\bx_k=a_k\hat\be_k$ for some $a_k\in\C$ and
+$\bZ_{\hat e}[a_1,\ldots,a_K]^{\mathsf T}=\mathbf0$.  Its only zero is
+therefore $\bx=\mathbf0$ exactly when $\bZ_{\hat e}$ has column rank $K$.
 \end{IEEEproof}
 
-\section{Nested-Component Information Order}
-\label{sec:split_proof_supp}
+Lemma~\ref{lem:s_glambda} turns the nullspace condition of main-paper
+Eq.~\eqref{main-eq:glambda_pd} into a pointwise rank test.  In the scalar
+receiver mode, $\bS_1\bTheta_k^{(6)}\hat\be_k\ne\mathbf0$ is necessary for
+each anchor column to survive, and the $K$ surviving columns must additionally
+remain jointly independent.  The resulting rank test costs $O(M_rK^2)$ at
+any candidate position.
 
-Theorem~\ref{main-thm:split} and its proof, including the Kronecker
-projector splitting lemma on which both parts rest, are in the main paper.
-A numerical audit and two remarks extend them.
+The implementation also evaluates the Phase-II position gradient
+analytically.  At a fixed clock branch, put
+$\hat\bx=\bG_\lambda^{-1}\bb$ and write $\partial_i=\partial/\partial p_i$.
+Differentiating $Q=\bb^{\mathsf H}\bG_\lambda^{-1}\bb$ without
+differentiating $\hat\bx$ explicitly gives
+\begin{equation}
+ \partial_iQ=2\Real\{\hat\bx^{\mathsf H}\partial_i\bb\}
+ -\Real\{\hat\bx^{\mathsf H}(\partial_i\bG_\lambda)\hat\bx\}.
+ \label{eq:s_envelope_grad}
+\end{equation}
+With the refreshed anchors held fixed during Phase~II, every term is
+available from the response derivatives above:
+\begin{align}
+ \partial_i\bb
+ &=(\partial_i\bA_0)^{\mathsf H}\bU_{\rm clk}^{\mathsf H}\by,\nonumber\\
+ \partial_i\bG_0
+ &=(\partial_i\bA_0)^{\mathsf H}\bA_0
+ +\bA_0^{\mathsf H}(\partial_i\bA_0),\nonumber\\
+ \partial_i\bR_{{\rm dir},kk}
+ &=\lambda_k\Real\!\left\{\tr\!\left(
+ \bA_{0,k}^{\mathsf H}\partial_i\bA_{0,k}\right)\right\}
+ \bPi_{\hat\be_k}^{\perp}.
+ \label{eq:s_envelope_terms}
+\end{align}
+At a unique interior clock maximizer, main-paper Eq.~\eqref{main-eq:envelope}
+then gives $\nabla\widetilde F=-\nabla Q$.  The implementation divides both
+$F$ and this gradient by $M=INT$, which does not change the optimizer.  The
+calculation reuses $\hat\bx$ and the existing normal-matrix factorization; the
+Gram derivatives use the same Kronecker products as main-paper
+Eq.~\eqref{main-eq:gram_factorization}, so no additional $2K$-dimensional
+factorization is required.
 
-The single-panel scalar identity follows from the calibrated
-$\partial\bTheta/\partial\bchi=0$ model. The receiver-mode plots evaluate
-the full multi-panel estimator, for which the additional qualifications
-below are needed.
+\subsection{Coupled Factor Recovery}
 
-First, the exact single-panel ratio
-$\alpha_{\bS_{\rm mode}}=\|\bS_{\rm mode}\bTheta\bx\|^2/\|\bTheta\bx\|^2$
-depends on $k$ once several panels are resolved, so the weighted sum over
-panels is in general not a global rescaling of the aggregate EFIM. The main
-paper states the block-orthogonal approximation this admits; nothing beyond
-the single-panel identity is claimed exactly.
+The coupled recovery uses the balanced Hankel window
+$P=\lceil N/2\rceil$ and $L=N+1-P$.  Its anti-diagonal multiplicity
+$w_n$ counts the pairs $(p,\ell)$ satisfying $p+\ell=n$.  After absorbing the
+centered-tone column scalar into the recovered factor, write
+$[\bD]_{n,k}=z_k^n$.  Let $\bY_{{\rm d},t}\in\C^{r\times N}$ denote the
+compressed receive--tone slice at configuration $t$.  Define its balanced
+Hankel lift by
+\[
+ [\mathcal Z]_{i,p,\ell,t}=[\bY_{{\rm d},t}]_{i,p+\ell},
+ \qquad 0\le p<P,\quad 0\le\ell<L,
+\]
+and denote its row-$(i,t)$, column-$(p,\ell)$ matricization by
+$\mathcal Z_{(i,t),(p,\ell)}\in\C^{rT\times PL}$.  For each estimated pole
+$z_k$, the implementation constructs
+$[\bv_{P,k}]_p=z_k^p$ and $[\bv_{L,k}]_\ell=z_k^\ell$ from that same pole;
+the $k$th lifted design column is $\bv_{P,k}\otimes\bv_{L,k}$.  Hence
+\begin{align}
+ [\bD_{\rm lift}]_{(p,\ell),k}&=z_k^{p+\ell},\nonumber\\
+ \bD_{\rm lift}^{\mathsf T}\bD_{\rm lift}^{\ast}
+ &=\bD^{\mathsf T}\bW\bD^{\ast},\nonumber\\
+ \mathcal Z_{(i,t),(p,\ell)}\bD_{\rm lift}^{\ast}
+ &=\bY_{rT,N}\bW\bD^{\ast}.
+ \label{eq:s_lift_equivalence}
+\end{align}
+Thus the lifted and weighted matrix-domain normal equations, including the
+same diagonal loading, are identical to main-paper
+Eq.~\eqref{main-eq:coupledls_short}.  Both Vandermonde factors are powers of
+one $z_k$, so each design column depends on one delay only; the lift is a
+weighting device, not an independent projection or a second decomposition.
 
-Second, for \emph{nested} component sets the free-Jones information order
-follows without any assumption on the Jones block, from the variational
-identity
+\subsection{Information and Compression Scope}
+
+For a real geometric direction $\bu$, free-Jones information has the
+variational representation
 \begin{equation}
  \bu^{\mathsf T}\bJ_\chi^{\rm free}\bu
  =\frac{2}{\sigma^2}\min_{\delta\bx}
- \|\bD_\chi\bu+\bA\delta\bx\|^2 .
+ \left\|\bD_\chi\bu+\bA\delta\bx\right\|_2^2.
+ \label{eq:s_nested_info}
 \end{equation}
-Observing additional components appends nonnegative residual terms to the
-minimized quadratic form, which therefore cannot decrease. This is why the
-${\rm PEB}_{\rm scalar}\ge{\rm PEB}_{\rm dual}\ge{\rm PEB}_{\rm full}$
-ordering of the reported bounds holds
-even where a mask makes the retained Jones block singular and the exact
-ratio $\alpha_{\bS_{\rm mode}}$ is not by itself enough to order the
-aggregate.
+Adding a nested set of receive components appends nonnegative residual terms
+to this minimized quadratic form and hence cannot decrease the free-Jones
+information.  This aggregate order remains valid even when a receive mask
+makes an individual Jones block singular; a single-panel scalar information
+ratio alone need not order a multi-panel EFIM.
 
-\section{Scope of the Three Projection Roles}
-\label{sec:c2scope_supp}
+The likelihood isometry in main-paper Theorem~\ref{main-thm:compress} is a
+pointwise deterministic identity for every observation and candidate.
+Interpreting the compressed observation as a sufficient statistic and
+preserving the stated EFIM additionally use the matched white-Gaussian model.
+With colored covariance, whitening or the corresponding covariance-weighted
+projection is required; that case is outside the theorem.
 
-The Maxwell--Kronecker projection plays three roles that the main paper
-distinguishes but does not separate at length. Sufficiency and EFIM
-preservation apply to the matched statistical model and require the
-white-noise model of the main paper. The coupled recovery is equivariant only
-\emph{after} the observation is projected, so it is the raw recovery applied
-to a projected observation and can change the estimate through noise
-suppression. Only the likelihood isometry is deterministic, holding pointwise
-for every candidate and any observation, so it can move neither the final
-objective nor its optimum. Pole preservation adds four conditions, namely
-distinct poles, an adequate frequency aperture, nonzero paths, and full
-compressed snapshot rank, which are recorded per trial rather than
-assumed. Under colored noise an optimal processor would whiten or use a
-covariance-weighted projector, so the unwhitened sweep of the main paper is a
-mismatch test and not an extension of Theorem~\ref{main-thm:compress}.
+More generally, any parameter-independent semi-unitary map whose range
+contains both $\coll(\bA)$ and $\coll(\bD_\chi)$ preserves the free-Jones
+information by the same argument.  The calibrated Maxwell--Kronecker basis is
+useful because it is fixed without UE-dependent quantities.  Preservation of
+the noiseless delay poles further requires distinct nonzero paths, adequate
+frequency aperture, and rank $K$ of the compressed non-frequency snapshot
+matrix; these are acquisition conditions, not consequences of likelihood
+sufficiency.
 
-\section{Generality and Degenerate Cases of Compression}
-\label{sec:compress_proof_supp}
+\section{Phase-I Complexity by Block}
 
-Theorem~\ref{main-thm:compress} is proved in the main paper. Two points
-about its reach are recorded here.
+Let $N_{\rm pk}$ be the number of retained angular peaks, $N_r$ the exact
+range-scan length, $N_\pi$ the number of shortlisted permutations, $N_s$ the
+number of exact local starts, and $I_{\rm ex}$ the objective/gradient
+evaluations used per start.
+Receive compression costs $O(IrNT)$.  The reference delay solver forms the
+$N\times N$ snapshot covariance and eigendecomposes it, costing
+$O(N^2rT+N^3)$; its FB-TLS step adds $O(NK^2+K^3)$.  A direct thin-SVD
+implementation would instead cost $O(NrT\min\{N,rT\})$ for the subspace.
 
-The EFIM step uses only semi-unitarity of $\bU_S$, so the same argument
-proves preservation under \emph{any} semi-unitary map whose range contains
-both $\coll(\bA)$ and $\coll(\bD_\chi)$; the specific aggregate
-Maxwell--Kronecker basis is one convenient such map, not the only one, and
-it is the one that can be built without any UE-dependent quantity.
+For the balanced $P\times L$ lift, constructing and solving the coupled
+normal equations costs
+$O(rTPLK+PLK^2+rTK^2+K^3)$, followed by
+$O(KrT\min\{r,T\})$ for the $K$ rank-one splits.  For one panel--column pair,
+the beam-space proposal and exact candidate re-scoring cost
+\begin{equation}
+ C_{\rm pair}=O\!\left(TM_R+G_rF\log F
+ +N_{\rm pk}(N_rM_R+TM_R)\right),
+ \label{eq:s_pair_cost}
+\end{equation}
+where $F=F_xF_y$.  The $N_r$ exact range tests act on the element-domain
+adjoint and therefore cost $O(N_rM_R)$ per peak, not $O(N_rTM_R)$.
+Candidate generation is evaluated for all $K^2$ panel--column pairs.  At
+most $N_\pi K$ distinct pairs from the shortlisted permutations undergo
+multi-start exact spherical refinement, adding
+$O(N_\pi K N_s I_{\rm ex}TM_R)$, while permutation arithmetic costs
+$O(KK!)$.  When enabled, the fixed-count dictionary of size
+$|\mathcal C|$ adds $O(K|\mathcal C|TM_R+K^2|\mathcal C|T)$ for cached
+panel responses and pairwise correlations.  Finally, $S$ common-geometry
+starts with $I_g$ evaluations cost
+$O(SI_gKTM_R)$.  Here $N_\pi=2$ and all other fixed budgets are listed in
+Table~\ref{tab:s_settings}.  Thus $KK!$ is the asymptotic bottleneck in $K$;
+for the reference $K=3$, beam-space and exact spherical response work,
+rather than permutation arithmetic, carries the leading operation count.
+Refreshing the Jones anchors at $\hat\bp_{\rm GI}$ requires one conditional
+clock profile---approximately one $C_{\rm outer}$ in main-paper
+Eq.~\eqref{main-eq:cost}---and introduces no outer iteration.
 
-The generic-rank claim of part~(iv) is a measure-zero statement and
-excludes named structural degeneracies rather than all of them. Each
-$K\times K$ minor of the compressed non-frequency snapshot matrix is real
-analytic in the continuously distributed training phases, Jones states and
-nonzero gains, so a single feasible design with a nonzero minor implies
-that this minor is not identically zero and its zero set is null. What this
-does not cover, and what is therefore recorded per trial instead of
-assumed, is $rT<K$, an annihilated path, a zero gain, or
-systematically dependent panel signatures.
+\section{Reproducibility and Comparison Protocol}
 
-\section*{Part II: Numerical and Comparison Specifications}
+Table~\ref{tab:s_settings} lists the numerical choices not listed in
+main-paper Table~\ref{main-tab:params}.  They are fixed across SNRs and trials
+unless explicitly varied by an ablation.
 
-\section{Reference Bounds and Additional Settings}
-\label{sec:impl_supp}
-
-This section gives the reference bounds and the numerical settings the
-algorithm needs but the main text states only by name. All settings are
-fixed across SNRs and trials unless they constitute the variable of a
-stated ablation.
-
-Table~\ref{tab:s_params} lists the settings not already fixed by main-paper
-Table~I. At the default UE position the minimum path-delay separation is
-$3.28$~ns, marginally above $1/B_{\rm occ}=3.23$~ns, and the clock search
-interval occupies $5\%$ of the $1/\Delta f=200$~ns unambiguous period.
-
-\begin{table}[t]
-\caption{Numerical settings additional to main-paper Table~I.}
-\label{tab:s_params}
+\begin{table*}[!t]
+\caption{Essential numerical settings.}
+\label{tab:s_settings}
 \centering
 \scriptsize
-\begin{tabular}{@{}l@{\quad}p{0.60\columnwidth}@{}}
-\toprule
-Setting & Value\\
-\midrule
-SNR definition & $10\log_{10}(\|\bmu_{\rm act}\|_2^2/(M_{\rm act}\sigma^2))$;
-the receiver-mode study reuses the full-EVS $\sigma^2$ across masks\\
-Basin diagnostic & Phase~I returns finite $\hat\bp_{\rm I}$ with
-$\|\hat\bp_{\rm I}-\bp^\star\|_2\le0.1$~m\\
-Path ranges & UE--RIS $3.63$--$4.17$~m; RIS--BS $28.63$--$31.24$~m\\
-Support & known $K$; one cascaded path per panel; blocked LoS\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-In Table~\ref{tab:s_params}, $\bmu_{\rm act}$ stacks the noiseless samples
-on the active receive components and $M_{\rm act}$ is their scalar count.
-The noise variance is chosen separately for each trial; absolute path loss
-is therefore absorbed into the SNR normalization.
-
-Over the same $960$ draws per SNR as the benchmark, the root mean square of
-the per-trial free-Jones PEB is $1.396$, $0.441$, $0.140$ and
-$0.00441$~mm at $-20$, $-10$, $0$ and $30$~dB. Across all $10\,560$
-benchmark draws the known-Jones-direction/free-Jones PEB ratio lies in
-$[0.999960,1]$, and the projector and real-Schur calculations agree to
-median relative deviation $4.15\times10^{-13}$ and maximum
-$2.38\times10^{-12}$. These are numerical checks of the bound calculation,
-not efficiency guarantees for the penalized estimator.
-
-At $-10$~dB, $20$ independent training-code, Jones-state and gain
-realizations at the reference geometry and default UE position give a median
-free-Jones CEB of $3.3789$~ps, with range $3.2267$--$3.9675$~ps. The clock
-bound plotted in Fig.~\ref{main-fig:benchmark_combined} is anchored at that
-median and scaled by the free-Jones PEB. Like the position bound, it is a
-local-information reference at the matched geometry and is not a lower bound
-on a median error.
-
-\subsection{Beam-Space Acquisition}
-
-The adjoint pass forms
-$\tilde\bg_k=\ba_{{\rm RB},k}^{\ast}\odot(\bOmega_k^{\mathsf H}\tilde\bt_k)$
-and never inverts $\bOmega_k$. Trial ranges are $G_r=9$ points spaced
-uniformly over the panel range bounds. At each of them the Fresnel dechirp
-$e^{+j\kappa\|\brho_{k,m}\|^2/(2r)}$ is applied and a two-dimensional
-transform zero-padded by a factor $4$ per axis, capped at $512$ bins per
-axis, evaluates the correlation on the direction-cosine grid
-$u=\lambda_c\nu_x/d_x$, $v=\lambda_c\nu_y/d_y$ at the transform frequencies
-$\nu$. A bin is admissible when $u^2+v^2<1$ and when its normal cosine
-$w=\sqrt{1-u^2-v^2}$ and azimuth fall inside the panel search bounds; the
-phase-only response is front/back ambiguous, so only $w\ge0$ is enumerated.
-
-Peaks are then taken on the range-maximized angular map
-$\max_r S_r(u,v)$ rather than on the full cube, because the aperture
-resolves direction far better than range. Four peaks are extracted greedily,
-each followed by a guard of $\lceil 4/2\rceil=2$ bins per axis to prevent
-re-selecting the same mainlobe, and every selected direction receives an
-exact spherical range scan on $41$ uniformly spaced ranges before local
-refinement. The retained fixed-count dictionary
-$\mathcal C_k^{\rm cnt}$ is the $15\times9\times25$ range/elevation/azimuth
-grid over the global panel bounds, and the local refinement grid is
-$3\times3\times5$ in the same order over spans of $0.45$~m and $0.12$~rad
-about the current iterate.
-
-\subsection{Association}
-
-The first tier evaluates all $K!$ permutations with the RIS term of
-\eqref{main-eq:assoc_score} taken on the cached coarse codebook rather than
-on the exact spherical projection, which is what makes the exhaustive
-ranking affordable. The two permutations with the smallest coarse costs are
-then re-evaluated using the exact spherical projection. The margin
-$m_{\rm assoc}$ of main-paper Eq.~\eqref{main-eq:assoc_two_tier} is formed
-from those two exact totals, and a trial is flagged unreliable when it falls
-below $0.3$.
-
-\subsection{Phase~II Solvers and Tolerances}
-
-The inner clock search seeds its incumbent from a zero-padded transform of
-length $M_c=4096$ over $\mathcal T$, then runs interval branch-and-bound
-with the second-derivative bound \eqref{main-eq:bound_short}, bisecting the
-interval of largest upper bound. Subdivision stops when the global gap falls
-below
-\begin{equation}
-	\epsilon_{\rm clk}=M\,\epsilon_{\rm abs}
-	+\epsilon_{\rm rel}\max\{\|\by\|^2,|Q_{\rm best}|\},
-	\label{eq:eps_clk_supp}
-\end{equation}
-with $\epsilon_{\rm abs}=10^{-12}$ and $\epsilon_{\rm rel}=10^{-10}$, or
-when the cap $N_{\rm cap}=2\times10^4$ subdivisions is reached; the reported
-gap remains a valid bound in either case. The outer position search is
-L-BFGS-B restricted to $\mathcal P$, with at most
-$20$ iterations, relative objective tolerance $10^{-12}$ and
-projected-gradient tolerance $10^{-8}$, and a
-Powell restart, capped at $40$ iterations, when a near-tied clock branch makes
-the envelope derivative unreliable; a branch is declared near-tied when the
-competing objectives differ by less than $10^{-10}$ in absolute value or
-$10^{-8}$ in relative value. The common-geometry stage runs
-L-BFGS-B from its four deterministic starts under its own settings: at most
-$30$ iterations, relative objective tolerance $10^{-10}$ and
-projected-gradient tolerance $10^{-6}$.
-Those four starts are built in a fixed order and contain no random or oracle
-state. The first is the clipped coordinate-wise median of the $K$ panel-local
-fixes, $\bp_0=\mathrm{clip}_{\mathcal P}\{\mathrm{median}_k
-\hat\bp_k^{\rm loc}\}$. The remaining budget is filled by taking at most one
-of the axis-aligned displacements of $\bp_0$ by $\pm25$~cm, then the height
-samples that replace the third coordinate of $\bp_0$ by a $7$-point grid
-spanning $\mathcal P$ ordered outward from its center, and only then the
-remaining axial displacements;
-every candidate is clipped back to $\mathcal P$ and duplicates are dropped,
-so height diversity is reached before the axial sweep is exhausted. Among the
-resulting candidates, those whose clock replicas
-$\hat\tau_k-(\|\bp-\br_k\|+d_{{\rm RB},k})/c_0$ have standard deviation at most
-$0.5$~ns are retained when any exist; of these, the ones within a relative
-$10^{-3}$ of the best objective are near-optimal, and $\hat\bp_{\rm GI}$ is the
-one among them with the smallest clock spread.
-
-The per-column confidence weights of main-paper
-Eq.~\eqref{main-eq:Jgeom_short} use $\varrho_0=1/2$ and
-$\varpi_{\min}=0.05$, so
-a column whose rank-one split is poor is down-weighted smoothly while every
-panel stays in the fit; $\varpi_{\min}>0$ is what prevents a single bad split
-from removing a panel outright. The refreshed Jones anchor of
-\eqref{main-eq:refresh_short} is
-$\hat\be_k=\hat\bx_{{\rm ref},k}/\|\hat\bx_{{\rm ref},k}\|_2$ whenever
-$\|\hat\bx_{{\rm ref},k}\|_2>10^{-12}$, which holds throughout the reported
-experiments, and the Jones direction already carried by the Phase-I estimate
-otherwise. Either way $\|\hat\be_k\|_2=1$, so $\bPi_{\hat\be_k}^{\perp}$ is a
-rank-one orthogonal projector and the penalty weight of
-\eqref{main-eq:penalized_short} is the same in both cases.
-
-\subsection{Coupled-Recovery Loading}
-
-The coupled recovery \eqref{main-eq:coupledls_short} uses the Tikhonov
-loading $\lambda_\tau=\lambda_{\rm rel}
-\tr(\bD_{\rm lift}^{\mathsf T}\bD_{\rm lift}^{\ast})/K+\lambda_{\rm fl}$,
-where $\bD_{\rm lift}$ collects the $K$ lifted design columns above, with the
-dimensionless relative term $\lambda_{\rm rel}=10^{-6}$ normalizing by that
-design Gram and the absolute floor $\lambda_{\rm fl}=10^{-12}$. Neither
-constant enters the reconstruction of the two frequency factors from the
-shared pole, so neither can move a delay estimate.
-
-\section{Baseline Definitions and Adaptations}
-\label{sec:baselinespec_supp}
-
-All methods use the same observations and trial realizations within each
-experimental cell. Table~\ref{tab:s_baselinespec} specifies their acquisition
-models, read-out rules, numerical settings, and adaptations to the
-blocked-LoS, polarimetric common-clock setting. All settings are fixed across
-SNRs and trials, and none is tuned per method.
-
-Each route is an \emph{adaptation} to the common forward model, not the
-reference algorithm run unmodified: none of the three references addresses a
-blocked-LoS, polarimetric, common-clock geometry with $K$ oriented near-field
-panels, and the adaptation row names what changed. Each is stopped at the
-method-specific read-out or refinement its own cited formulation prescribes,
-so the residual gap measures the reliability of that formulation's own
-acquisition and read-out on this scene; Section~\ref{sec:aspub} reports
-separately what changes when the same exact-model refinement is applied to
-every output. Undefined estimates remain in the denominator and are
-classified as catastrophic failures.
-
-\begin{table*}[t]
-\centering
-\caption{Baseline definitions and adaptations. Grid entries give
-the number of candidates per listed axis.}
-\label{tab:s_baselinespec}
-\footnotesize
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}p{0.18\textwidth}p{0.80\textwidth}@{}}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}p{0.17\textwidth}p{0.79\textwidth}@{}}
 \toprule
-Item & Setting\\
+Module & Setting \\
 \midrule
-\multicolumn{2}{l}{\emph{Algebraic CPD with geometric mapping}~\cite{lin2021tensor}}\\
-Acquisition & Algebraic CPD of the raw
-$(\text{EVS}\times\text{tone}\times\text{training})$ tensor at rank $K$:
-minimum-description-length rank check, truncated multilinear SVD
-compression, then simultaneous diagonalization of the compressed pencils by
-generalized eigendecomposition, each Khatri--Rao column split by its
-dominant singular pair; polished by complex CP-ALS warm-started from that
-solution\\
-Initialization & None: the algebraic stage is deterministic and runs no
-iterations\\
-Iteration cap & $0$ algebraic; $\leq3000$ ALS sweeps for the polish\\
-Stopping rule & Relative factor change $<10^{-8}$\\
-Read-out & CP factors to position by grid search over $5\times5\times3$
-candidates per panel, then $4$ off-grid least-squares restarts, $60$
-iterations each, relative objective tolerance $10^{-12}$\\
-Refinement received & CP-factor-domain refinement (its own formulation)\\
-Adaptation & Fiber-sampling tensor completion of the reference dropped,
-this tensor being fully observed; panel labels taken from the association
-of the CP factors; mapping extended to oriented panels and a common
-clock\\
-\midrule
-\multicolumn{2}{l}{\emph{VBI/SBL}~\cite{li2024vbi}}\\
-Acquisition & Mean-field VBI with Gamma--Gaussian automatic relevance
-determination (ARD) prior, one block per
-physical panel, run on the panel's known EVS/Jones subspace\\
-Dictionary & Near-field UE-position grid $9\times9\times7$; delay grid $121$
-points over the scene delay support\\
-Iteration cap & $40$ VBI sweeps ($200$ additional Nelder--Mead iterations
-of the continuous exact-model position/clock polish apply only to the
-refinement-matched diagnostic of Section~\ref{sec:aspub}, not this row)\\
-Stopping rule & Evidence change $<10^{-6}$\\
-Refinement received & None beyond its own closed-form WLS fusion of the
-converged per-panel posterior; the published construction removes the
-clock by a delay difference against a direct link this scene does not
-have, which is why its read-out floor does not vanish with SNR
-(Section~\ref{sec:aspub})\\
-Adaptation & SISO single-RIS angle grid replaced by a per-panel near-field
-position grid; one block per panel; explicit clock unknown retained\\
-\midrule
-\multicolumn{2}{l}{\emph{Near-field RIS OMP--SAGE--WLS}~\cite{yan2025ris}}\\
-Acquisition & Sequential rank-one CPD with orthogonal residual updates,
-$\leq K$ groups, followed by the reference's own far-field direction match
-and one-dimensional $\ell_1$-regularized near-field range recovery, as the
-reference prescribes; seeding an exact three-dimensional near-field position
-grid instead would replace the reference's own acquisition and is therefore
-not used\\
-Dictionary & Direction grid $31$, restricted to rays meeting the declared
-UE box; range grid $31$; delay grid $41$\\
-Path consistency & The reference's own consistency gate: paths whose implied clock offset departs
-from the median-absolute-deviation consensus by more than $3\sigma$,
-floored at $10\%$ of the clock search interval, are discarded before the
-weighted-least-squares fusion, which is then recomputed on the retained
-set; at least two paths are always kept\\
-Iteration cap & $80$ CPD iterations per group; $2$ SAGE cycles of $\leq30$
-iterations; WLS $\leq100$ function evaluations\\
-Stopping rule & CPD relative tolerance $10^{-7}$ with ridge $10^{-8}$ and
-relative residual stop $10^{-4}$; SAGE relative change $10^{-4}$\\
-Read-out & Fisher-weighted least-squares fusion of per-path parameters into
-common position and clock\\
-Refinement received & Its own SAGE sweeps followed by the WLS read-out\\
-Adaptation & Kronecker RIS profile replaced by the exact per-panel operator
-$\bh_k=\bOmega_k\bg_k$; EVS receive dimension added\\
-\midrule
-\multicolumn{2}{l}{\emph{Range-scaled 4-D Jones VP} (internal control)}\\
-Acquisition & Frozen baseline Phase~I, without MKSC compression,
-common-geometry fusion or anchor refresh; the matched-initializer
-control of Table~\ref{main-tab:c3_control} instead uses MKSC-GI\\
-Refinement & Explicit 4-D L-BFGS-B over $(\bp,c_0\Delta t)$, same bounds and
-tolerances ($10^{-12}$ relative objective, $10^{-8}$ projected gradient) as
-Section~\ref{sec:impl_supp}, but with an iteration cap of $80$ rather
-than $20$\\
-Adaptation & Same forward model; the native benchmark changes both
-initialization and clock treatment, whereas the dedicated C3 control
-holds initialization fixed\\
+Beam-space acquisition & $G_r=9$ trial ranges; fourfold zero padding per
+axis, capped at $512$ bins per axis; four angular peaks with a two-bin guard;
+$41$-point exact spherical range scan per retained direction.  Shortlisted
+exact projection uses six starts and an L-BFGS-B cap of $100$.  The local
+range/elevation/azimuth grid is $3\times3\times5$ over spans of $0.45$~m and
+$0.12$~rad.  The fixed-count $15\times9\times25$ dictionary is unioned only
+in the separability, panel-scaling and deployment-boundary sweeps named in the
+main paper. \\
+Association & All $K!$ permutations are ranked with cached coarse projection
+costs; the best two are re-scored by exact spherical projection. \\
+Geometry initialization & Four deterministic starts; L-BFGS-B cap $30$,
+relative-objective tolerance $10^{-10}$ and projected-gradient tolerance
+$10^{-6}$.  Selection first retains clock-spread standard deviation at most
+$0.5$~ns, then candidates within relative $10^{-3}$ of the best objective;
+$\varrho_0=1/2$ and $\varpi_{\min}=0.05$. \\
+Coupled recovery &
+$\lambda_\tau=\lambda_{\rm rel}\tr(\bD_{\rm lift}^{\mathsf T}
+\bD_{\rm lift}^{\ast})/K+\lambda_{\rm fl}$, with
+$\lambda_{\rm rel}=10^{-6}$ and $\lambda_{\rm fl}=10^{-12}$. \\
+Clock solve & $M_c=4096$; scale-aware tolerance
+$\epsilon_{\rm clk}=M\epsilon_{\rm abs}+\epsilon_{\rm rel}
+\max\{\|\by\|^2,|Q_{\rm best}|\}$ with $\epsilon_{\rm abs}=10^{-12}$ and
+$\epsilon_{\rm rel}=10^{-10}$; subdivision cap $N_{\rm cap}=2\times10^4$. \\
+Outer refinement & L-BFGS-B cap $20$, relative-objective tolerance $10^{-12}$
+and projected-gradient tolerance $10^{-8}$.  A near-tied clock branch invokes
+a Powell safeguard capped at $40$ iterations; $\lambda_k=1$. \\
 \bottomrule
+\multicolumn{2}{p{0.96\textwidth}}{\scriptsize In the controlled separability
+sweep, $\be_{\rm ref}=[1,0]^{\mathsf T}$ and
+$\be_{\rm cmp}=[o,\sqrt{1-o^2}]^{\mathsf T}$ for the prescribed overlap $o$;
+the other experiments redraw Jones states as stated in the main paper.}
 \end{tabular}
 \end{table*}
 
-\section{Computational Complexity and Runtime}
-\label{sec:complexity_supp}
-
-This section gives the term-by-term cost accounting summarized in
-Section~\ref{main-sec:analysis}. The receive projection costs $O(IrNT)$ on
-the matrices themselves and $O(IrPLT)$ when applied to the smoothed array,
-which is the form used here. Compressed factor recovery costs
-$O(rTPLK+PLK^2+K^3)$, the
-last term being the $K\times K$ solve in
-\eqref{main-eq:coupledls_short}. Beam-space acquisition requires one RIS
-adjoint pass \eqref{main-eq:adjoint_short} plus $G_r$ two-dimensional FFTs
-per panel, $G_r$ being the number of trial ranges, and common-geometry fusion
-scales with its starts, iterations, panels, training blocks, and RIS
-elements.
-
-Each of the $I_p$ Phase~II outer position evaluations costs
-\begin{align}
- C_{\rm outer}={}&O(KTM_R)+O\big(qM_r+q^2(N+T)\big)\nonumber\\
- &+O(q^2N^2+qM_c\log M_c+q^3)+C_{\rm cert},\nonumber\\
-	&q=2K,\qquad M_r=rNT,
-	\label{eq:complexity_supp}
-\end{align}
-with $M_c$ the zero-padded clock-FFT length. The $O(KTM_R)$ term generates
-the exact near-field training responses and their position derivatives
-using the dense $T\times M_R$ training matrices. The next bracket covers
-the matched filter and the factorized Gram update in
-\eqref{main-eq:gram_factorization}. The $O(q^2N^2)$ term assembles the $N$
-coefficients of \eqref{main-eq:clock_coeff} from the $O(N^2)$ tone pairs,
-each weighted through the $q\times q$ inverse Gram. The remaining terms
-cover the clock FFT and the factorization of $\bG_\lambda$. The certificate term is
-$C_{\rm cert}=O\big(N_{\rm int}(N+\log N_{\rm int})\big)$, since each of the
-$N_{\rm int}\le N_{\rm cap}$ visited intervals costs one $O(N)$ evaluation of
-the polynomial and its derivative plus one heap operation. The profiled solve
-therefore acts on $M_r$ compressed rows instead of the $M=I\,N\,T$ raw rows,
-and the exact spherical panel projection, not the certified clock profile,
-dominates the measured runtime (Section~\ref{main-subsec:res_robustness}).
-
-\begin{table}[!tb]
-\caption{Serialized single-thread cost at $-10$~dB, method-specific
-read-out:
-one process, one linear-algebra-library thread, peak resident set size
-sampled every $10$~ms, $30$ trials per row. Times are means over those
-trials. VBI/SBL is fastest, with memory usage comparable to Algebraic CPD's.}
-\label{tab:s_cost}
-\centering
-\scriptsize
-\begin{tabular}{lcc}
-\toprule
-Route & Time [s] & Peak RSS [GB]\\
-\midrule
-Algebraic CPD + mapping & $4.38$ & $1.07$\\
-VBI/SBL & $1.07$ & $1.09$\\
-Near-field RIS OMP--SAGE--WLS & $11.51$ & $1.72$\\
-Baseline-initialized 4D-JVP & $2.40$ & $1.79$\\
-\textbf{Proposed} & $3.18$ & $2.52$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\section*{Part III: Additional Numerical Results}
-
-\section{Compression Diagnostics}
-\label{sec:compdiag_supp}
-
-The aggregate Maxwell subspace attains its predicted dimension in every
-trial of the operating region: the numerical rank of $\bPsi$ is $r=2K=6$
-throughout, so the receive dimension falls from $I=96$ to $6$ with no
-observed rank deficiency. The retained energy fraction rises from the
-white-noise floor $r/I=1/16$, which is what a signal-free observation
-projects onto a $6$-of-$96$ subspace, to $0.9991$ at $30$~dB, so the
-projection discards essentially only noise once the signal dominates.
-
-The subspace-leakage ratio $\sigma_{K+1}/\sigma_K$ measures how cleanly the
-retained delay subspace separates from the noise subspace, smaller being
-better. At $-10$~dB it falls from $0.824$ in the raw EVS mode to $0.357$
-after compression, which is the margin that produces the p95 delay-error
-improvement quoted in Section~\ref{main-subsec:res_c2}.
-
-Below the operating region, the single-factor protocol changes only the
-observation used for delay subspace estimation; both arms use compression
-downstream.
-At $-15$~dB, compression lowers p95 Phase-I delay error from $29.0$ to
-$1.93$~ns, raises basin acquisition from $93.54\%$ to $97.92\%$, and
-lowers $P_{\rm cat}$ from $6.04\%$ to $1.67\%$.
-At $-20$~dB, the corresponding changes are $46.2$ to $32.2$~ns,
-$80.42\%$ to $93.54\%$, and $17.92\%$ to $4.79\%$.
-The $-10$-dB p95 reduction is $3.96$ to $0.156$~ns.
-The projection therefore improves this finite-sample delay estimator,
-but does not prevent subspace collapse: at $-20$~dB, compressed leakage
-is already $0.811$, versus $0.995$ without compression.
-
-\section{Receiver Modes}
-\label{sec:recvmodes_supp}
-
-This section reports the retained-polarization weight that
-Theorem~\ref{main-thm:split}(i) predicts and the end-to-end receiver ordering
-over the full tested SNR range.
-
-The weight $\alpha_{\bS_{\rm mode}}=\|\bS_{\rm mode}\bTheta_k\bx_k\|^2/
-\|\bTheta_k\bx_k\|^2$ of Theorem~\ref{main-thm:split}(i) quoted in the main
-paper is computed directly, without synthesizing an observation or running an
-estimator. It is a noiseless per-panel ratio in which the complex gain
-$\beta_k$ scales numerator and denominator alike and cancels, and the
-resolvability sweep fixes the Jones states of the two controlled paths
-analytically from the overlap: $\gamma_{\rm ref}=\pi/2$ and
-$\gamma_{\rm cmp}=\arcsin(\text{overlap})$ at $\eta=0$. Only $\bTheta_k$, the
-two Jones vectors and the receiver mask are therefore needed. The separation
-sweep moves the panels, so the geometry is rebuilt at every separation rather
-than evaluated once at the default one.
-
-\begin{table}[t]
-\caption{Retained-polarization weight $\alpha_{\bS_{\rm mode}}$ for the
-reference and competing panels of the controlled pair, median over $48$
-draws at $1$~ns separation.}
-\label{tab:s_alpha}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccccc}
-\toprule
-& \multicolumn{2}{c}{Scalar} & \multicolumn{2}{c}{Dual-pol.}
-& \multicolumn{2}{c}{Full EVS}\\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
-Overlap & ref. & comp. & ref. & comp. & ref. & comp.\\
-\midrule
-$0.1$ & $0.110$ & $0.002$ & $0.500$ & $0.005$ & $1.000$ & $1.000$\\
-$0.5$ & $0.110$ & $0.026$ & $0.500$ & $0.125$ & $1.000$ & $1.000$\\
-$0.9$ & $0.110$ & $0.074$ & $0.500$ & $0.405$ & $1.000$ & $1.000$\\
-$1.0$ & $0.110$ & $0.087$ & $0.500$ & $0.500$ & $1.000$ & $1.000$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Table~\ref{tab:s_alpha} is the source of the two dual-mask values quoted in
-the main text. The weight is not a single number per mode: it is $0.500$ for
-the reference panel at every overlap and falls to $0.005$ for the competing
-panel at overlap $0.1$, which is the panel dependence
-Theorem~\ref{main-thm:split}(i) predicts once a mask retains fewer than the
-full six components. Full EVS holds unity for both panels throughout, so no
-polarization energy is lost there by construction.
-
-Across the delay-separation axis the dual and full weights are constant to
-the reported precision, so the panel dependence above is an overlap effect
-and not a by-product of the panels moving; the scalar reference weight drifts
-from $0.111$ to $0.065$ between $0.1$ and $5$~ns separation. These values
-quantify retained energy only, and they are not a control that separates
-retained energy from panel separability in the resolution sweep.
-
-The end-to-end ordering persists below the operating region. At $-15$~dB
-the scalar, dual-polarized and
-full-EVS catastrophic rates are $43.75\%$, $10.63\%$ and $1.88\%$; at
-$-20$~dB they are $85.83\%$, $31.67\%$ and $5.00\%$. Only $14.17\%$ of
-scalar trials remain position inliers at $-20$~dB, so the reduced-mode
-conditional efficiencies there rest on few trials.
-
-\section{Calibration and Model Mismatch}
-\label{sec:mismatch_supp}
-
-Fig.~\ref{fig:s_robustness} gives the four mismatch sweeps at $-10$~dB with
-generation-side perturbation only; panel~(a), the binding RIS--BS
-incidence-angle boundary, is discussed in the main paper and is repeated
-here for context.
-
-\begin{figure*}[t]
-\centering
-\includegraphics[width=\textwidth]{fig_robustness.pdf}
-\caption{Robustness boundaries, $480$ paired trials per point, with
-generation-side mismatch only; (a)--(c) are measured at $-10$~dB and the
-model-order sweep of~(d) at $0$~dB. (a)~RIS--BS incidence-angle error:
-solid filled and dashed hollow curves are catastrophic and basin-acquisition
-rates. (b)~Receiver-side perturbations against sweep-normalized mismatch;
-the physical maxima are stated in the legend. (c)~Unwhitened colored-noise
-boundary. (d)~Discrete model-order mismatch; the median and p95 on the
-right-hand axis diverge by four orders of magnitude under overestimation.}
-\label{fig:s_robustness}
-\end{figure*}
-
-Each perturbation is drawn independently per trial. EVS phase errors are
-zero-mean Gaussian per panel and component; EVS gains are log-normal,
-$\exp(\sigma Z-\sigma^2/2)$ with $Z$ standard normal, so the swept level
-$\sigma$ is a log-gain standard deviation and the gain has unit mean; the
-RIS--BS direction error is an isotropic Gaussian in the tangent plane of the
-nominal unit direction, renormalized; BS sensor offsets are Gaussian and
-independent per coordinate. The colored-noise sweep draws circularly
-symmetric noise with $[\bR]_{ij}=\rho^{|i-j|}$ across the EVS index, white
-across tones and training, rescaled to the target SNR on the active
-components.
-
-\emph{Receiver-side calibration.} Table~\ref{tab:s_calib} compares the
-tested receiver perturbations with the RIS--BS angular boundary. Across
-EVS log-gain standard deviations up to $0.1$, phase errors up to $10^\circ$,
-and BS sensor-position errors up to $0.5$~mm, proposed catastrophic rates
-remain between $0.21\%$ and $0.62\%$. Conditional RMSE increases by at most
-$20\%$, from $0.416$ to $0.497$~mm, while reconstruction NMSE changes much
-more. By comparison, a $0.25^\circ$ RIS--BS angular error raises conditional
-RMSE to $31.1$~mm. These results describe the tested mismatch ranges and
-do not extend the matched-model sufficiency theorem.
-
-\begin{table}[t]
-\caption{Mismatch sweeps at $-10$~dB, $480$ paired trials per point,
-generation-side perturbation only. Each row gives the zero-mismatch
-reference and the largest tested value of one perturbation; the last two
-rows are the RIS--BS angular boundary of the main paper, on the same scale.
-c-RMSE is the inlier-conditional position RMSE.}
-\label{tab:s_calib}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{3.4pt}
-\begin{tabular}{llccc}
-\toprule
-Mismatch & Level & $P_{\rm cat}$ [\%] & c-RMSE [mm] & NMSE med.\\
-\midrule
---- (reference) & $0$ & $0.21$ & $0.416$ & $5.0\!\times\!10^{-5}$\\
-EVS log-gain std & $0.1$ & $0.42$ & $0.420$ & $5.0\!\times\!10^{-3}$\\
-EVS phase & $10^\circ$ & $0.21$ & $0.418$ & $1.5\!\times\!10^{-2}$\\
-BS sensor position & $0.5$~mm & $0.62$ & $0.497$ & $3.0\!\times\!10^{-1}$\\
-\midrule
-RIS--BS angle & $0.25^\circ$ & $0.42$ & $31.1$ & $2.7\!\times\!10^{-2}$\\
-RIS--BS angle & $1^\circ$ & $58.54$ & $73.5$ & $2.3\!\times\!10^{-1}$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\emph{RIS element-phase calibration} (Fig.~\ref{fig:s_ris_calibration})
-perturbs individual RIS phases at $0$~dB. The Phase-I-only median grows
-from $6.58$~mm at zero error to $39.6$~mm at $10^\circ$ and $77.4$~mm at
-$20^\circ$, where its catastrophic rate is $31.67\%$. The refined route's
-curves show the corresponding improvement on the shared observations, and the
-oracle-calibrated median PEB remains near $0.124$~mm.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig_ris_calibration.pdf}
-\caption{RIS element-phase calibration at $0$~dB, $480$ paired trials
-per level. Filled and hollow markers denote median and p95 position errors,
-respectively, for the refined estimator and the Phase-I-only output.}
-\label{fig:s_ris_calibration}
-\end{figure}
-
-\emph{Colored noise.} The objective is unwhitened. At correlation
-$\rho=0,0.5,0.8$, proposed catastrophic rates are $0.83\%,0.42\%,0.21\%$,
-compared with $1.04\%,1.88\%,2.71\%$ for the raw-delay control.
-Proposed conditional RMSE changes from $0.436$ to $0.310$~mm across
-the sweep. Sufficiency under colored noise would require whitening, which is
-not applied here.
-
-\emph{Model order.} At $0$~dB, $\widehat K=2$ gives a $0.705$-m median
-and $65.63\%$ catastrophic events. For $\widehat K=4$ and $5$, medians
-remain $0.150$ and $0.299$~mm but catastrophic rates are $34.79\%$ and
-$47.92\%$, with p95 errors $1.27$ and $1.73$~m. Thus small medians under
-overestimation coexist with a large failure population. The model assumes
-known panel count; these results do not support robust order selection.
-
-Section~\ref{sec:squint_supp} records that every reported experiment generates
-and estimates on the same center-frequency spatial manifold, so the neglected
-frequency dependence contributes exactly zero residual there. This section
-measures it directly instead. The observation is generated with a
-per-subcarrier manifold, $f_n=f_c+\nu_n\Delta f$ and $\lambda_n=c_0/f_n$ at
-the centered tone indices, and processed by the unchanged center-frequency
-estimator. Panel geometry, element coordinates and the physical ULA spacing
-are fixed across tones; the RIS codes, Jones states and gains are one draw
-shared by all tones; and the center-path baseband delay phase is unchanged, so
-the spatial responses add only element-relative path differences. In the
-reference configuration the mismatch carries $0.13\%$ of the signal energy,
-of which $7.5$~parts per million leave the calibrated receive subspace.
-
-Table~\ref{tab:s_wideband} reports two estimates per sample. The
-first-order prediction solves
-$\min_{\Delta\bz\in\R^4}\|\bP\boldsymbol{\delta}-\bP\bD_{\bz}\Delta\bz\|^2$ in the real
-parameters, with $\boldsymbol{\delta}=[\bA_{\rm wb}-\bA_c]\bx^\star$,
-$\bP=\bI-\bA_c\bA_c^{+}$, $\bz=[\bp^{\mathsf T},c_0\Delta t]^{\mathsf T}$ and
-$\bx^\star$ constructed from the generator rather than fitted. The nonlinear
-value is a noiseless local refinement from the true position. Both are free of
-the directional penalty; a run with the paper penalty changes them by at most
-$0.6\%$.
-
-\begin{table}[t]
-\caption{Spatial-wideband mismatch bias over nine pre-specified samples: the
-reference scene position and the median-difficulty and worst positions of the
-position sweep, each at three realizations, all fixed before any wideband
-evaluation. PEB and CEB are evaluated at that sample.}
-\label{tab:s_wideband}
+\begin{table*}[!t]
+\caption{Baseline protocol.  Grid entries give the number of candidates per
+listed axis.}
+\label{tab:s_baselines}
 \centering
 \scriptsize
 \setlength{\tabcolsep}{3pt}
-\begin{tabular}{llccccrr}
+\renewcommand{\arraystretch}{1.07}
+\begin{tabular}{@{}p{0.135\textwidth}p{0.265\textwidth}p{0.225\textwidth}p{0.325\textwidth}@{}}
 \toprule
-& & \multicolumn{2}{c}{$\|\Delta\bp\|$ [mm]} & \multicolumn{2}{c}{$\Delta t$ [ps]}
-& \multicolumn{2}{c}{ratio}\\
-\cmidrule(lr){3-4}\cmidrule(lr){5-6}\cmidrule(lr){7-8}
-Position & Real. & lin. & nonlin. & lin. & nonlin. & /PEB & /CEB\\
+Route & Acquisition & Grid/iterations & Native read-out and adaptation \\
 \midrule
-Reference & $1$ & $0.0803$ & $0.0804$ & $-0.602$ & $-0.605$ & $0.17$ & $0.18$\\
-Reference & $2$ & $0.0623$ & $0.0623$ & $1.183$ & $1.185$ & $0.16$ & $0.36$\\
-Reference & $3$ & $0.0355$ & $0.0357$ & $1.929$ & $1.926$ & $0.09$ & $0.57$\\
-Typical & $1$ & $0.0249$ & $0.0247$ & $5.375$ & $5.384$ & $0.06$ & $1.62$\\
-Typical & $2$ & $0.0064$ & $0.0064$ & $0.192$ & $0.193$ & $0.02$ & $0.06$\\
-Typical & $3$ & $0.0184$ & $0.0181$ & $5.103$ & $5.110$ & $0.05$ & $1.54$\\
-Hard & $1$ & $0.0037$ & $0.0037$ & $4.302$ & $4.305$ & $0.01$ & $1.30$\\
-Hard & $2$ & $0.0186$ & $0.0186$ & $0.533$ & $0.533$ & $0.06$ & $0.16$\\
-Hard & $3$ & $0.0071$ & $0.0072$ & $3.843$ & $3.846$ & $0.02$ & $1.19$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The linearization is accurate at every sample, the two columns agreeing to
-between $9\times10^{-5}$ and $2\times10^{-2}$ in relative terms, so no
-higher-order check is needed. The zero-mismatch controls return the true
-parameters to $2.6\times10^{-12}$~m and $2\times10^{-11}$~ps, nine orders below
-the tightest accuracy scale compared against, so the reported bias is the
-wideband mismatch and not a solver residual.
-
-Position and clock behave differently. The position bias spans
-0.0037--0.0804~mm, median 0.0186~mm, and stays at or below $0.17$ of the
-sample's own PEB throughout, so it is not visible against the noise at the
-low end of the evaluated range. The clock bias spans 0.19--5.38~ps, median
-1.93~ps, and reaches $1.6$ times the sample's own CEB, exceeding it at four
-of the nine samples. Because the bias is deterministic while the bounds scale
-with $\sigma$, both ratios grow as the SNR rises.
-
-This is a local refinement diagnostic: it does not exercise Phase-I
-acquisition, and nothing here bounds the catastrophic rate or the basin
-behavior under spatial wideband.
-
-\section{External Benchmark}
-\label{sec:benchmark_full_supp}
-
-The main paper reports the benchmark over ${\rm SNR}\in[-10,30]$~dB. This
-section adds the two points below that range. Every route is evaluated at
-its method-specific read-out, so the separation reflects each baseline's own
-acquisition and read-out rather than a shared final fit; position quantiles
-are nearest-rank order statistics.
-
-The ordering is unchanged below the operating region. Among the evaluated
-adaptations the proposed route has the lowest median, p95 and catastrophic
-position rate at both lower SNRs (Table~\ref{tab:s_benchmark}).
-At $-15$ and $-20$~dB its catastrophic rates are $1.35\%$ and $3.44\%$,
-versus $6.25\%$ and $22.40\%$ for baseline-initialized 4D-JVP,
-$60.63\%$ and $78.33\%$ for algebraic CPD,
-$18.13\%$ and $31.15\%$ for VBI/SBL, and $94.79\%$ and $96.35\%$
-for the evaluated OMP adaptation.
-The latter includes a far-field direction-acquisition stage in a
-deep-near-field scene. These results characterize this adaptation and
-scene, not the general low-SNR capability of grid-based estimation.
-
-Clock catastrophic rates at the same SNRs are $1.15\%$ and $2.71\%$
-for the proposed route, versus $4.69\%$ and $17.71\%$ for 4D-JVP.
-The native CPD, VBI/SBL and OMP rates are respectively
-$15.31/38.13\%$, $14.06/24.17\%$ and $76.35/79.90\%$.
-
-\begin{table*}[t]
-\caption{External benchmark below the operating region, $960$
-shared-realization trials per cell, method-specific read-out. $P_{\rm cat}$
-in percent, position quantiles in millimeters. Among the evaluated
-adaptations at their method-specific read-out, the proposed route holds the
-lowest median,
-p95 and catastrophic rate at both points; the evaluated near-field OMP
-adaptation no longer offers a lower-catastrophic-rate fallback at either
-point.}
-\label{tab:s_benchmark}
-\centering
-\footnotesize
-\setlength{\tabcolsep}{6pt}
-\begin{tabular}{lcccccc}
-\toprule
-& \multicolumn{3}{c}{$-20$~dB} & \multicolumn{3}{c}{$-15$~dB}\\
-\cmidrule(lr){2-4}\cmidrule(lr){5-7}
-Method & $P_{\rm cat}$ & med. & p95 & $P_{\rm cat}$ & med. & p95\\
-\midrule
-Algebraic CPD + mapping & $78.33$ & $649$ & $2.46\!\times\!10^{3}$ & $60.63$ & $177$ & $2.45\!\times\!10^{3}$\\
-VBI/SBL & $31.15$ & $29.8$ & $1.14\!\times\!10^{3}$ & $18.13$ & $26.4$ & $926$\\
-Near-field RIS OMP--SAGE--WLS & $96.35$ & $1.03\!\times\!10^{3}$ & $1.79\!\times\!10^{3}$ & $94.79$ & $1.02\!\times\!10^{3}$ & $1.81\!\times\!10^{3}$\\
-Baseline-initialized 4D-JVP & $22.40$ & $1.27$ & $1.63\!\times\!10^{3}$ & $6.25$ & $0.598$ & $731$\\
-\textbf{Proposed} & $3.44$ & $1.04$ & $3.17$ & $1.35$ & $0.582$ & $1.52$\\
-\midrule
-Free-Jones PEB (RMS) & --- & $1.4$ & --- & --- & $0.785$ & ---\\
+Algebraic CPD~\cite{lin2021tensor} & Rank-$K$ algebraic CPD of the fully
+observed EVS--tone--training tensor, followed by complex CP-ALS. & ALS cap
+$3000$, relative factor change $10^{-8}$; read-out grid $5\times5\times3$,
+four off-grid restarts, cap $60$. & CP-factor geometric mapping.  The
+reference's fiber-sampling completion is removed; mapping is extended to
+oriented panels and a common clock. \\
+VBI/SBL~\cite{li2024vbi} & Per-panel projection onto the calibrated Jones
+subspace, followed by mean-field Gamma--Gaussian ARD dictionary inference. &
+Position $9\times9\times7$, delay $121$; $40$ sweeps, evidence tolerance
+$10^{-6}$. & Closed-form WLS fusion of the per-panel posterior.  An explicit
+common clock is retained because the reference's direct-link clock
+differencing is unavailable. \\
+OMP--SAGE--WLS~\cite{yan2025ris} & Sequential rank-one CPD with orthogonal
+residual updates, then far-field direction matching and one-dimensional
+$\ell_1$ near-field range recovery. & Direction/range/delay $31/31/41$;
+CPD cap $80$, two SAGE cycles capped at $30$, WLS cap $100$. & Native SAGE
+and Fisher-weighted WLS; the regular-RIS route is used.  The adaptation adds
+the EVS dimension and relates that route's RIS-side CPD factor exactly to
+$\bOmega_k\bg_k$. \\
+4D-JVP (internal control) & Frozen baseline Phase~I without MKSC compression,
+common-geometry fusion or Jones-anchor refresh. & Explicit L-BFGS-B over
+$(\bp,c_0\Delta t)$; cap $80$, relative-objective tolerance $10^{-12}$ and
+projected-gradient tolerance $10^{-8}$. & Exact forward model with explicit
+clock coordinate; the benchmark therefore changes both acquisition and clock
+treatment, while main-paper Table~\ref{main-tab:c3_control} fixes the
+initializer to isolate Phase~II. \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-\section{Effect of a Common Exact-Model Refinement}
-\label{sec:aspub}
+\noindent\begin{minipage}{\columnwidth}
+\setlength{\parindent}{1em}
+All routes in Table~\ref{tab:s_baselines} receive the same observations and
+paired scene, code, Jones, gain and noise realizations within a cell, and all
+are supplied the known $K$.  Each external route is an adaptation to the
+blocked-LoS, polarimetric, common-clock model and is evaluated at its native
+read-out rather than at a shared post-refinement.  A run that returns no
+estimate remains in the denominator and is classified as catastrophic.
+\end{minipage}
 
-The primary benchmark evaluates each adapted baseline using its
-method-specific read-out. To distinguish acquisition error from read-out
-error, an auxiliary comparison appends the same bounded exact-model
-position--clock refinement to the outputs of VBI/SBL and Algebraic CPD. The
-auxiliary trials are independent of the primary benchmark; therefore only
-comparisons within each protocol are paired. Near-field OMP already carries
-its prescribed SAGE refinement and is unchanged by this comparison.
+\section{Focused Numerical Audits}
 
-Table~\ref{tab:s_matched_audit} collects the comparison. At $-10$~dB,
-VBI/SBL's median changes from $26.1$~mm under its method-specific read-out
-to $0.322$~mm under the common refinement, with
-catastrophic rates $9.90\%$ and $0.83\%$. Under the common refinement the
-proposed route has $0.320$~mm median and $0.42\%$ catastrophic events. The
-paired comparison shows eight discordant catastrophic events in one
-direction and four in the other ($p=0.388$, McNemar exact), so a rate
-difference is not established there. For this blocked-direct-path
-adaptation of~\cite{li2024vbi}, the gap seen in the primary benchmark is
-therefore consistent with read-out rather than acquisition error.
+Here p95 denotes the nearest-rank empirical 95th percentile.  The audits use
+the protocols of the main paper and are included only where they delimit a
+claim or make a reported comparison reproducible.
 
-Algebraic CPD's median under the common refinement is $0.664$~mm, but its
-catastrophic rate remains $42.92\%$ ($46.67\%$ under its method-specific
-read-out). Against the proposed route the discordant catastrophic events are
-$408$ to zero, so this adaptation retains a catastrophic-rate floor that the
-added refinement does not remove.
+\subsection{Compression}
 
-\begin{table*}[t]
-\caption{Effect of a common exact-model refinement at $-10$~dB, $960$
-trials per cell, independent of the primary benchmark. ``Common refinement''
-applies the same bounded exact-model refinement over $(\bp,\Delta t)$ to each
-acquisition output; it belongs to no cited method. Near-field OMP--SAGE--WLS
-is unaffected, so its two column pairs differ only by realization. Paired
-tests against the proposed route are reported in the text.}
-\label{tab:s_matched_audit}
-\centering
-\footnotesize
-\setlength{\tabcolsep}{6pt}
-\begin{tabular}{lcccc}
-\toprule
-& \multicolumn{2}{c}{Method-specific} & \multicolumn{2}{c}{Common}\\
-& \multicolumn{2}{c}{read-out} & \multicolumn{2}{c}{refinement}\\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
-Acquisition & med. & $P_{\rm cat}$ & med. & $P_{\rm cat}$\\
-& [mm] & [\%] & [mm] & [\%]\\
-\midrule
-Algebraic CPD + mapping & $1.57$ & $46.67$ & $0.664$ & $42.92$\\
-VBI/SBL & $26.1$ & $9.90$ & $0.322$ & $0.83$\\
-Near-field RIS OMP--SAGE--WLS & $1.03\!\times\!10^{3}$ & $93.96$ & $1.03\!\times\!10^{3}$ & $96.15$\\
-Baseline-initialized 4D-JVP & $0.33$ & $2.50$ & $0.321$ & $1.46$\\
-\textbf{Proposed} & $0.324$ & $0.42$ & $0.32$ & $0.42$\\
-\bottomrule
-\end{tabular}
-\end{table*}
+The calibrated aggregate subspace has numerical rank $r=2K=6$ in every
+operating-region trial.  At $-10$~dB, projecting from $I=96$ components to
+$r=6$ reduces the delay-subspace leakage
+$\sigma_{K+1}/\sigma_K$ from $0.824$ to $0.357$ and the p95 Phase-I delay
+error from $3.96$ to $0.156$~ns.  This is a finite-sample acquisition effect;
+the matched profiled likelihood itself is unchanged by the sufficient
+projection.
 
-\section{Paired Internal Comparison}
-\label{sec:paired_supp}
+As an intentionally unwhitened mismatch test at $-10$~dB, receive-noise
+correlations $[\bR]_{ij}=\rho^{|i-j|}$ across EVS components, white across
+tones and configurations, give at $\rho=0,0.5,0.8$ catastrophic rates of
+$0.83\%,0.42\%,0.21\%$ for the proposed route and
+$1.04\%,1.88\%,2.71\%$ for its raw-delay control, which estimates the delay
+subspace from the uncompressed observation while leaving all subsequent
+stages unchanged.  The criterion is not covariance weighted, so these
+results do not extend the matched-white-noise sufficiency statement.
 
-The main paper compares the proposed route with the baseline-initialized
-4D-JVP control at $-10$~dB. Table~\ref{tab:s_paired} gives the paired
-position-RMSE statistics of the internal suite at every SNR where the two
-routes differ, including the two points below the operating region.
-Comparisons are within one experiment and therefore paired, and the values
-below are specific to this suite.
+\subsection{Full-EVS Directional Weight}
 
-\begin{table}[t]
-\caption{Paired comparison against baseline-initialized 4D-JVP, $480$
-shared-realization trials per SNR. $\Delta$RMSE is the
-proposed-minus-control position-RMSE difference with a $10^4$-replicate
-bootstrap interval; the exchange column counts catastrophic events rescued
-and introduced and enters McNemar's exact test. SNRs at and above $5$~dB,
-where the two routes agree to within $10^{-7}$~m with no exchange, are
-omitted.}
-\label{tab:s_paired}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{lccc}
-\toprule
-SNR [dB] & $\Delta$RMSE [m] & Exchange & $p$\\
-\midrule
-$-20$ & $-0.334\ [-0.408,-0.261]$ & $91/11$ & $8.0\times10^{-17}$\\
-$-15$ & $-0.254\ [-0.349,-0.167]$ & $38/5$ & $2.5\times10^{-7}$\\
-$-10$ & $-0.142\ [-0.259,-0.052]$ & $8/0$ & $0.0078$\\
-$-5$ & $-0.0657\ [-0.168,0.0012]$ & $3/0$ & $0.25$\\
-$0$ & $-0.0679\ [-0.118,-3.2\!\times\!10^{-9}]$ & $1/0$ & $1.00$\\
-\bottomrule
-\end{tabular}
-\end{table}
+A paired full-EVS sweep uses $\lambda_k\in\{0,0.1,1,10\}$, five SNRs and
+$480$ common-initializer trials per cell.  Across the four weights, the
+largest position and clock movements are $6.23\times10^{-6}$~mm and
+$3.76\times10^{-5}$~ps, respectively; every catastrophic indicator is
+unchanged, and the largest penalty/data-objective ratio is
+$6.45\times10^{-6}$.  Thus the reported full-EVS results are not driven by
+the selected weight.  Algebraically, the penalty closes the Jones directions
+orthogonal to the refreshed anchors; Lemma~\ref{lem:s_glambda} states the
+remaining anchor-column rank condition for $\bG_\lambda\succ\mathbf0$.
 
-Below the operating region the degradation is concentrated in the
-delay-error tail. Median compressed subspace leakage
-$\sigma_{K+1}/\sigma_K$ rises from $0.357$ at $-10$~dB to $0.574$ and
-$0.811$ at $-15$ and $-20$~dB, and the p95 Phase-I delay error grows from
-$0.110$ to $0.711$ and $21.9$~ns against medians of $0.025$, $0.049$ and
-$0.130$~ns. The proposed catastrophic rate over the same points rises from
-$0.21\%$ to $1.25\%$ and $5.63\%$, and basin acquisition falls from
-$99.79\%$ to $98.75\%$ and $93.75\%$. These diagnostics indicate weakening
-delay-subspace separation; they do not establish that every final error
-originates in Phase~I.
+\subsection{Clock Certificates}
 
-\section{Phase II Directional-Weight Ablation}
-\label{sec:lambda_supp}
+Across the $4\,320$ operating-region trials, all $35\,696$ conditional clock
+profiles returned a certified gap at or below the prescribed tolerance, and
+none reached the subdivision cap.  The Powell safeguard is never selected,
+and panel pairing is correct in every trial; two trials are catastrophic.  Each
+certificate covers only the global clock maximization conditional on the
+tested position.  It certifies neither statistical accuracy nor globality of
+the outer position search.
 
-The main paper reads the free-Jones PEB as a reference for the unpenalized
-data model and does not claim that the penalized estimator attains it. This
-section measures the finite-SNR effect of the fixed $\lambda_k=1$ using the
-full-EVS arms of a dedicated weight sweep: four weights
-$\{0,0.1,1,10\}$, five SNRs and $480$ shared-initializer trials per cell,
-or $9\,600$ runs. No run fails. Each arm uses the same noisy observation
-and Phase-I output; $\lambda_k=0$ removes the directional penalty, with
-the common numerical loading retained.
+\subsection{Model-Boundary Diagnostics}
 
-Table~\ref{tab:s_lambda} reports conditional position and clock RMSE,
-each conditioned on its own catastrophic-event complement as in the main
-paper. The largest change over the weight range is
-$6.23\times10^{-6}$~mm in position and $3.76\times10^{-5}$~ps in clock.
-All weights produce the same catastrophic indicators in this full-EVS
-sweep. The largest penalty/data-objective ratio is $6.45\times10^{-6}$.
-Thus the penalty has little measured effect on these full-EVS results.
+\emph{Receiver calibration.}
+In a separate generation-only audit at $-10$~dB,
+$480$ paired trials per level, EVS log-gain standard deviation up to $0.1$,
+EVS phase error up to $10^\circ$, and BS sensor-coordinate error up to
+$0.5$~mm leave the conditional position RMSE at most $0.497$~mm, versus
+$0.416$~mm without mismatch.  This statement covers only the tested ranges.
 
-\begin{table}[t]
-\caption{Full-EVS directional-weight control, $480$ paired trials per
-SNR and weight. c-Pos and c-Clk use $\lambda_k=1$; $\Delta_{\max}$ is the
-largest movement over $\{0,0.1,1,10\}$.}
-\label{tab:s_lambda}
-\centering
-\scriptsize
-\setlength{\tabcolsep}{2.8pt}
-\begin{tabular}{lccccc}
-\toprule
-SNR {[dB]} & c-Pos {[mm]} & $\Delta_{\max}$ {[mm]} & c-Clk {[ps]} & $\Delta_{\max}$ {[ps]} & $P_{\rm cat}$ {[\%]}\\
-\midrule
-$-10$ & $0.41631$ & $6.23\times10^{-6}$ & $3.4491$ & $3.76\times10^{-5}$ & $0.42$\\
-$0$ & $0.13168$ & $2.36\times10^{-7}$ & $1.0991$ & $1.02\times10^{-7}$ & $0$\\
-$10$ & $0.04164$ & $7.87\times10^{-8}$ & $0.3476$ & $6.86\times10^{-7}$ & $0$\\
-$20$ & $0.01318$ & $2.13\times10^{-8}$ & $0.1099$ & $3.09\times10^{-7}$ & $0$\\
-$30$ & $0.00415$ & $9.99\times10^{-9}$ & $0.0347$ & $1.15\times10^{-7}$ & $0$\\
-\bottomrule
-\end{tabular}
-\end{table}
+\emph{Spatial wideband.}
+The spatial-wideband diagnostic generates each tone with
+$f_n=f_c+\nu_n\Delta f$ and $\lambda_n=c_0/f_n$, while holding the physical
+arrays, panel geometry and RIS codes fixed, and then applies the unchanged
+center-frequency estimator.  It uses nine prespecified noiseless samples
+(three positions and three realizations) and starts a local refinement from
+the truth; Phase~I is not exercised.  Position bias spans
+$0.0037$--$0.0804$~mm and has a maximum PEB-normalized value of $0.171$
+relative to the sample-specific
+$-10$-dB PEB.  Clock bias spans $0.19$--$5.38$~ps and exceeds the
+sample-specific $-10$-dB CEB in four of the nine samples.  These values
+diagnose deterministic spatial-wideband mismatch and do not bound capture or
+catastrophic-event rates.
 
-\section{Clock-Certificate Statistics}
-\label{sec:cert_supp}
-
-Over the $4\,320$ operating-region trials of the internal SNR suite, all
-$35\,696$ conditional clock profiles satisfy the prescribed tolerance; the
-largest $g_{\rm cert}/\epsilon_{\rm clk}$ over all visited positions is
-$0.999957$.
-
-The median outer evaluation count is $8$, no Powell safeguard is selected,
-and panel pairing is correct on all operating-region trials. Two trials
-are catastrophic. A valid conditional certificate bounds clock
-optimization error at the tested position; it does not bound statistical
-estimation error or certify the outer position search.
-
-\section{Resource Scaling}
-\label{sec:scaling_supp}
-
-Resource sweeps vary $N,T,M_A,M_R,K$ individually. Proposed conditional
-RMSE decreases from $2.02$ to $0.426$~mm as $M_R$ grows from $16^2$ to
-$64^2$, from $0.884$ to $0.360$~mm as $M_A$ grows from $4$ to $24$, and
-from $1.25$ to $0.426$~mm as $T$ grows from $32$ to $256$.
-Across the $19$ settings its catastrophic rate lies in $[0,2.71]\%$ and
-is no larger than the control's. At $K=4$ the rates are $2.71\%$ and
-$12.29\%$. These sweeps use one infrastructure layout.
-
-The serialized benchmark mean is $3.18$~s with peak RSS $2.52$~GB
-(Table~\ref{tab:s_cost}). A separate $30$-trial decomposition
-gives a sum of component medians of $3.16$~s: $0.229$~s for projection,
-$0.845$~s for common geometry, $0.086$~s for anchor refresh, $0.339$~s for
-Phase~II and $1.666$~s for the remaining Phase-I blocks, the last value
-aggregating several operations. That decomposition run peaks at $3.25$~GB,
-above the $2.52$~GB of the serialized measurement reported in
-Table~\ref{tab:s_cost}.
-
+\balance
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 

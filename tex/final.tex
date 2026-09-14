@@ -170,7 +170,8 @@ own~\cite{elzanaty2021bounds,zhu2026mixed}, and several panels add the
 spatially diverse paths a blocked direct link to the base station (BS)
 demands~\cite{xia2026nlos}. A passive RIS
 carries no timing reference, however, so the delays measured through such a
-deployment depend jointly on the user equipment (UE) as well as clock offset, and the two must be recovered together.
+deployment depend jointly on the user equipment (UE) position and clock
+offset, and the two must be recovered together.
 
 That problem sits at the intersection of three lines of work. RIS-aided
 localization and synchronization has moved from single-panel geometry to
@@ -259,15 +260,14 @@ behavior -- discarding the $90$ orthogonal receive dimensions sharpens the
 subspace separation on which acquisition depends
 (Theorem~\ref{thm:compress}; Table~\ref{tab:c2_ladder}).
 
-\textbf{C3. A nuisance that acts as a common unitary phase ramp can be
-maximized globally and removed from the outer search.} Such a nuisance leaves
-the profiled Gram matrix invariant, so once the linear coefficients are
-eliminated its conditional profile is a finite trigonometric polynomial: the
-criterion is unchanged, only its form in the nuisance is, and that form
-admits a certified global maximizer at a deterministic optimality gap. The
-shared clock is one instance -- eliminating it leaves a 3-D outer search
-invariant to the clock unit, which an explicit four-dimensional coordinate is
-not (Theorem~\ref{thm:clock}; Table~\ref{tab:c3_control}).
+\textbf{C3. The common OFDM clock can be maximized globally and removed from
+the outer search.} Over equispaced tones it acts through a finite diagonal
+phase orbit and leaves the profiled Gram matrix invariant, so after the linear
+coefficients are eliminated its conditional profile is a trigonometric
+polynomial. Its global maximizer therefore admits a deterministic optimality
+gap, leaving a 3-D outer search invariant to the clock unit, unlike an explicit
+four-dimensional coordinate (Theorem~\ref{thm:clock};
+Table~\ref{tab:c3_control}).
 
 Gaussian sufficiency for a known signal subspace, and the elimination of
 linear parameters by variable projection, are classical; what \eqref{eq:premise} adds is that calibration fixes such a
@@ -280,13 +280,13 @@ C2 supports both phases, C3 supplies Phase~II's refinement, and C1 states the
 receiver condition under which panel separability is well posed. The
 splitting behind C1 applies to any array whose response factorizes into a
 calibrated polarimetric block and a parameter-dependent geometric one. C3
-generalizes the same way: wherever a nuisance enters a separable
-least-squares problem as a common unitary phase ramp, the profiled Gram is
-invariant to it, its conditional profile is a trigonometric polynomial, and
-its global solve is certifiable rather than heuristic.
+extends to separable least-squares problems in which the nuisance follows an
+equispaced finite Fourier phase orbit and the profiled Gram is nuisance
+invariant; under those conditions the conditional profile remains a
+trigonometric polynomial with a certifiable global solve.
 
-Proofs, numerical specifications and additional experiments are provided in
-the supplementary material.
+Derivation details, implementation settings, baseline protocols and focused
+numerical audits are provided in the supplementary material.
 
 Notation: bold symbols denote vectors/matrices; $(\cdot)^{\mathsf T}$,
 $(\cdot)^{\mathsf H}$ and $(\cdot)^{\dagger}$ are transpose, Hermitian
@@ -315,7 +315,8 @@ known; Section~\ref{subsec:res_robustness} measures the cost of a wrong $K$.
 \textbf{(A2)} The BS and panel geometry is surveyed and the EVS Maxwell
 response and its per-component gains are
 calibrated~\cite{bayraktar2024risloc}; Fig.~\ref{fig:boundaries}(a)--(b)
-sweeps residual calibration error. \textbf{(A3)} Following the one-sided
+sweeps residual calibration error, while receiver-side calibration error is
+audited in the supplementary material. \textbf{(A3)} Following the one-sided
 near-field convention of~\cite{yang2024nfris,cui2022channel}, the UE--RIS hop
 is modeled with an exact spherical-wave phase over a uniform-amplitude
 aperture and the RIS--BS hop with a center-frequency plane wave;
@@ -333,8 +334,8 @@ carrier-frequency offset, phase noise and panel-dependent timing
 offsets~\cite{zhao2021timing} lie outside the model. \textbf{(A6)} UE
 position, clock, gains and Jones states are block-static over the $T$
 configurations and the noise is white with unknown variance;
-Section~\ref{subsec:res_robustness} reports the coherence budget and a
-colored-noise sweep.
+Section~\ref{subsec:res_robustness} reports the coherence budget; a
+colored-noise sweep is supplementary.
 
 The received signal is
 \begin{equation}
@@ -590,12 +591,10 @@ least-squares (WLS) solve
 \hfill\eqref{eq:coupledls_short}
 \STATE Rank-one split $\to(\tilde\ba_j,\tilde\bt_j,\varrho_j)$
 \hfill\eqref{eq:split_rank1}
-\STATE Panel labels $\hat\pi$ by two-tier permutation search
-\hfill\eqref{eq:assoc_perm}
-\FOR{$k=1,\ldots,K$}
-\STATE Dechirped 2-D DFT proposals, re-scored by $J_{\rm RIS}$
+\STATE Dechirped 2-D DFT proposals for all panel--column pairs
 \hfill\eqref{eq:fresnel},\,\eqref{eq:Jris_short}
-\ENDFOR
+\STATE Panel labels $\hat\pi$ by two-tier permutation search and exact shortlist
+\hfill\eqref{eq:assoc_perm}
 \STATE Fuse by $J_{\rm geom}$; select by clock spread
 \hfill\eqref{eq:Jgeom_short}
 \STATE Jones anchors $\{\hat\be_k\}$ refreshed at $\hat\bp_{\rm GI}$
@@ -714,6 +713,9 @@ and spherical-wave consistency:
 Here $\boldsymbol\eta_k=(d_{{\rm UR},k},u_k,v_k)$ contains range and the
 first two direction components, $\mathcal E_k$ is the panel-local search
 box, and $\bh_k$ is the exact response \eqref{eq:hk}.
+The minimization over $\mathcal E_k$ is initialized by the beam-space
+proposals of Section~\ref{subsec:beamspace} and is evaluated for all $K^2$
+panel--column pairs before a label is fixed.
 The minimizing range $\hat d_{j,k}$ implies a clock replica
 $\widehat{\Delta t}_{j,k}=\hat\tau_j-(\hat d_{j,k}+d_{{\rm RB},k})/c_0$.
 Score a permutation by
@@ -738,12 +740,10 @@ assignment problem. A deterministic two-tier search ranks all $K!$
 permutations using a cached coarse codebook, then re-scores only the best
 two, $\pi_{(1)},\pi_{(2)}$, using exact spherical projection:
 \begin{equation}
- \hat\pi=\arg\min_{\pi\in\{\pi_{(1)},\pi_{(2)}\}}C(\pi),\qquad
- m_{\rm assoc}=\frac{C_{(2)}-C_{(1)}}{C_{(1)}+\epsilon_{\rm assoc}}.
+ \hat\pi=\arg\min_{\pi\in\{\pi_{(1)},\pi_{(2)}\}}C(\pi).
  \label{eq:assoc_two_tier}
 \end{equation}
-The re-scored costs satisfy $C_{(1)}\le C_{(2)}$, and
-$\epsilon_{\rm assoc}=10^{-10}$ is the implementation's numerical guard. It returns the labeled delay--factor triples
+It returns the labeled delay--factor triples
 $\{\hat\tau_j,\tilde\ba_j,\tilde\bt_j;\hat\pi(j)\}$ for geometric acquisition.
 
 \subsection{Beam-Space Acquisition and Common-Geometry Initialization}
@@ -980,7 +980,8 @@ returns an incumbent with
 $Q(\Delta t^\star)-Q(\hat{\Delta t})\le U-Q(\hat{\Delta t})
 \triangleq g_{\rm cert}$, where $U=\max\{U_{\rm act},U_{\rm pru}\}$ is the
 largest bound over surviving and incumbent-pruned intervals; subdivision stops once $g_{\rm cert}\le\epsilon_{\rm clk}$ or a cap
-on subdivisions is reached. Every outer position therefore carries a
+on subdivisions is reached, with the scale-aware tolerance specified in the
+supplementary material. Every outer position therefore carries a
 deterministic gap certificate, $\epsilon_{\rm clk}$-optimal whenever
 termination is by tolerance, as Theorem~\ref{thm:clock}(iii) states. For a
 unique interior maximizer $\Delta t^\star(\bp)$ of $Q(\bp,\cdot)$, the exact
@@ -1065,8 +1066,7 @@ $\bPi_{\bh_k}^{\perp}[\partial\bh_k/\partial x,\partial\bh_k/\partial y,
 \partial\bh_k/\partial z]$ retain the phase slope and curvature of
 \eqref{eq:delta}. The test is local and conditions on the panel assignment, with pseudoinverse
 projectors covering the rank-deficient Jones blocks of \eqref{eq:g0rank}. The
-derivation of \eqref{eq:efim_short}, the real-rank equivalence and the
-conditions above are given in the supplementary material.
+derivation of \eqref{eq:efim_short} is given in the supplementary material.
 
 \textit{B. C1---Maxwell--Jones information splitting:}
 Both parts of C1 rest on one identity: because $\bA_k$ is a Kronecker
@@ -1289,15 +1289,15 @@ the compressed snapshot matrix has column rank $K$.
 
 Compression leaves the ML criterion unchanged but removes $I-r$ noise-only
 receive directions from the ESPRIT front end. Its finite-sample acquisition
-benefit and the snapshot-rank condition in (iv) are assessed in
-Section~\ref{sec:simulation}.
+benefit is assessed in Section~\ref{sec:simulation}.
 
 \textit{D. C3---Certified common-clock profiling:}
 \begin{theorem}[C3: Certified common-clock profiling]
 \label{thm:clock}
 Let $\mathcal P$ and $\mathcal T$ be the compact search sets of
 Section~\ref{subsec:defchain} and assume
-$\bG_\lambda(\bp)=\bG_0(\bp)+\bR_{\rm dir}(\bp)\succ\mathbf0$ on $\mathcal P$.
+$\bG_\lambda(\bp)=\bG_0(\bp)+\bR_{\rm dir}(\bp)\succ\mathbf0$ on $\mathcal P$;
+supplementary Lemma~S1 gives a checkable anchor-column condition.
 At each $\bp$, $Q(\bp,\cdot)$ is the real trigonometric polynomial
 \eqref{eq:trig_short} of degree at most $N-1$, and the certificate below
 rests on its curvature bound \eqref{eq:clock_curvature}.
@@ -1358,8 +1358,18 @@ local. Table~\ref{tab:c3_control} reports the clock-unit and certificate
 controls.
 
 \textit{E. Complexity:}
-Phase~I is dominated by the $N\times rT$ delay-subspace step and the
-factorial first tier of association. By Theorem~\ref{thm:compress}, Phase~II
+The reference delay-subspace implementation forms an $N\times N$ covariance
+and eigendecomposes it, at cost $O(N^2rT+N^3)$; a direct thin-SVD alternative
+costs $O(NrT\min\{N,rT\})$.  Let $F=F_xF_y$, and let $N_{\rm pk}$ and $N_r$
+denote the retained peaks and exact range samples.  Generating candidates for
+all $K^2$ panel--column pairs costs
+$O\!\left(K^2[TM_R+G_rF\log F+N_{\rm pk}(N_rM_R+TM_R)]\right)$; the fixed
+two-permutation shortlist adds multi-start exact spherical refinements, while
+permutation arithmetic costs $O(KK!)$.  Thus the factorial term dominates
+asymptotically in $K$, whereas at the reference $K=3$ beam-space and exact
+spherical response work carries the leading operation count.  A blockwise derivation and all
+fixed search budgets are supplementary. By
+Theorem~\ref{thm:compress}, Phase~II
 evaluates the exact forward model on the compressed observation, cutting
 residual and Jacobian rows from $M=I\,N\,T$ to $M_r=r\,N\,T$ without
 approximating the criterion. At $\Delta t=0$, the Kronecker structure gives
@@ -1383,8 +1393,7 @@ evaluation therefore costs
 with $M_c$ the zero-padded clock-FFT length and $C_{\rm cert}$ the
 branch-and-bound cost. Tightening $\epsilon_{\rm clk}$ increases interval
 work inside $C_{\rm cert}$, with $O(N)$ polynomial arithmetic per visited
-interval and no further Gram factorization. Measured runtime and memory are
-in Section~\ref{sec:simulation}.
+interval and no further Gram factorization.
 \section{Numerical Results}
 \label{sec:simulation}
 
@@ -1394,7 +1403,9 @@ in Section~\ref{sec:simulation}.
 \caption{Reference configuration. The panel frame sets its local $z$ along
 $\hat{\bm n}_k$, its local $x$ along $(\bm u_z\times\hat{\bm n}_k)$
 normalized, and its local $y$ by right-handed completion, which reconstructs
-$\bR_k$ exactly. Gains and Jones states are redrawn independently per trial.}
+$\bR_k$ exactly. Gains and Jones states are redrawn independently per trial,
+except for the analytically fixed Jones states in the controlled separability
+sweep of Fig.~\ref{fig:c1_separability}.}
 \label{tab:params}
 \centering
 \scriptsize
@@ -1460,8 +1471,8 @@ region is ${\rm SNR}\ge-10$~dB, with results at $-15$ or $-20$~dB labeled as
 below it. Every cell generates and estimates on the same center-frequency
 spatial manifold, so $\epsilon_{\rm sq}$ of Section~\ref{subsec:defchain}
 contributes no residual. A nine-sample per-subcarrier diagnostic produces instead a deterministic offset of at most
-$0.080$~mm in position, $0.17$ of that sample's PEB, but up to $5.4$~ps in
-clock, exceeding that sample's CEB at four samples.
+$0.080$~mm in position, $0.171$ of that sample's $-10$-dB PEB, but up to
+$5.4$~ps in clock, exceeding that sample's $-10$-dB CEB at four samples.
 
 Methods within a cell share the scene, RIS codes, Jones states, gains and
 noise.
@@ -1497,7 +1508,7 @@ improves in median error across the range while its catastrophic rate floors
 near $30\%$, so its failures are not a resolution limit; variational Bayesian inference with sparse
 Bayesian learning (VBI/SBL)~\cite{li2024vbi} lowers its
 catastrophic rate with SNR yet holds a $26.1$-mm median throughout, a
-native-fusion floor; and near-field orthogonal matching pursuit with
+plateau under its native fusion; and near-field orthogonal matching pursuit with
 SAGE~\cite{yan2025ris}, as adapted to the shared
 random training used here, is flat in both, its far-field
 direction acquisition not delivering a usable initializer here. At $-10$~dB the proposed
@@ -1509,14 +1520,7 @@ native output stage and characterize those adaptations, not the cited
 methods; the OMP comparison in particular uses the reference's regular-RIS
 route, its sub-RIS variant requiring orthogonal phase
 profiles~\cite{yan2025ris} that the shared random training cannot supply.
-
-A separately seeded control transplants the exact-model position--clock
-refinement onto each front end.
-Against the baseline-initialized route the paired catastrophic difference
-remains significant at $-10$~dB (McNemar exact, $p=0.0129$), and the
-evaluated algebraic-CPD adaptation still exhibits a $42.92\%$
-catastrophic-rate floor under the same polish, which the added refinement
-does not remove. Baseline specifications and adaptations are supplementary.
+Baseline specifications and adaptations are supplementary.
 
 \subsection{C2: Sufficient Compression and Acquisition}
 \label{subsec:res_c2}
@@ -1588,9 +1592,8 @@ Its outer dimension falls from four to three and median evaluations
 from $13$ to $9$.
 
 All $950$ conditional clock profiles meet the prescribed objective-gap
-tolerance, with a worst gap/tolerance ratio of $0.998$ and no subdivision-cap
-hit, which certifies the inner maximization at each visited position but
-not the outer search.
+tolerance with no subdivision-cap hit, which certifies the inner maximization
+at each visited position but not the outer search.
 
 \begin{table}[!t]
 \caption{Phase-II refinement control at $-10$~dB over $100$ shared MKSC-GI
@@ -1651,7 +1654,8 @@ returning $K$ correctly paired components with Phase-I delay error at most
 $0.5$~ns and no pole collapse -- rather than position accuracy. This sweep,
 the panel-scaling sweep and Fig.~\ref{fig:boundaries}(c) union the beam-space
 proposals with the fixed-count dictionary of
-Section~\ref{subsec:beamspace}; every other cell uses the proposals alone.
+Section~\ref{subsec:beamspace}, whose size is specified in the supplementary
+material; every other cell uses the proposals alone.
 Full-EVS resolution is flat across the four overlaps, varying by less than
 the Clopper--Pearson half-width of a single cell, whereas the
 dual-polarized and scalar modes collapse toward zero as the overlap
@@ -1691,15 +1695,14 @@ position rather than fitting a trend.}
 \label{fig:boundaries}
 \end{figure*}
 
-\subsection{Robustness, Complexity and Deployment Limits}
+\subsection{Robustness and Deployment Limits}
 \label{subsec:res_robustness}
 Three sensitivities set the deployment envelope. Calibration is the binding one
 (Fig.~\ref{fig:boundaries}(a)--(b)): RIS--BS angular error degrades
 precision long before capture,
 raising conditional RMSE from $0.416$ to $31.1$~mm at $0.25^\circ$ while
-the basin rate holds at $99.58\%$, while at $1^\circ$ the catastrophic rate reaches $58.54\%$. Receiver gain, phase and sensor-position mismatch,
-RIS element-phase error and first-order colored noise are all milder over
-their tested ranges.
+the basin rate holds at $99.58\%$, while at $1^\circ$ the catastrophic rate
+reaches $58.54\%$.
 
 Model order is a material assumption, not a tuning
 parameter. In the dedicated $0$-dB sweep, $\widehat K=2$ is structurally
@@ -1717,12 +1720,6 @@ free-Jones EFIM stays full rank at every tested position, corners included.
 Local information sufficiency therefore does not imply global acquisition
 reliability: screening needs a delay-coincidence check and a coarse global
 fallback, not a PEB map alone.
-
-On one host at $-10$~dB the proposed route requires $3.18$~s and $2.52$~GB
-on the $96$ receive chains a full EVS costs, between the
-baseline-initialized 4D-JVP ($2.40$~s) and
-Algebraic CPD ($4.38$~s). A separate decomposition gives $2.83$~s in Phase~I and
-$0.34$~s in Phase~II, so acquisition dominates the measured budget.
 
 A $25\%$ cyclic prefix at $\Delta f=5$~MHz is $50$~ns, covering the
 $19.1$-ns reference-scene delay span over the clock-search interval, so one
@@ -1742,7 +1739,8 @@ the estimator reaches sub-millimeter median position accuracy and
 picosecond-scale synchronization, and it matches the closest in-model control
 in precision while failing far less often.
 
-The gain is therefore in acquisition reliability, and the broader lesson is
+Within the matched internal control, the measured gain is concentrated in
+acquisition reliability, and the broader lesson is
 that a local information bound does not characterize it: the weight a reduced
 receiver costs is panel- and polarization-dependent, so it can leave one panel
 almost unobserved, and the free-Jones information matrix stays full rank even
@@ -1754,8 +1752,9 @@ per-subcarrier diagnostic identifies the clock, not the position, as the
 sensitive quantity. More generally, neither mechanism behind Phase~II is
 specific to a Maxwell--Jones receiver: calibration turns sufficiency into a
 property of the infrastructure whenever a terminal block of a cascade is fixed
-in advance, and any nuisance acting as a common unitary phase ramp can be
-profiled globally and removed from the outer search. Together they point to a
+in advance. Likewise, a nuisance on an equispaced finite Fourier phase orbit
+can be profiled globally when its profiled Gram is nuisance invariant. Together
+they point to a
 structured route to estimation in vector-sensor arrays, of which the shared
 clock treated here is one instance; within the calibrated, known-panel-count
 model, a polynomial-time association surrogate for larger panel counts is the
