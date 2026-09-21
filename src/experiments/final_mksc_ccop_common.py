@@ -562,6 +562,9 @@ def _stage1_for_variant(
         oracle = refresh_ccop_stage1_jones_anchor(
             cache.data["Y_noisy"], oracle, cache.data["scene"], cache.config
         )
+        oracle["_global_vp_initial_p_u"] = np.asarray(
+            cache.data["scene"]["p_u_true"], dtype=float
+        ).copy()
         oracle_times = dict(times)
         oracle_times["anchor_refresh_runtime_s"] = float(time.perf_counter() - start)
         oracle_times["stage1_runtime_s"] += oracle_times["anchor_refresh_runtime_s"]

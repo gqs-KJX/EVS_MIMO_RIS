@@ -1,0 +1,2049 @@
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 1
+Maxwell–Jones Vector-Sensor Localization and Synchronization for
+Distributed Near-Field RIS-Aided OFDM
+Qingshan Gong, Member, IEEE
+Abstract—We estimate a single-antenna user’s 3-D position
+and common clock offset from its orthogonal frequency-division
+multiplexing (OFDM) uplink, which reaches one electromagnetic
+vector-sensor (EVS) array only through distributed near-field
+reconfigurable intelligent surfaces (RISs). Jones-domain path
+coefficients and cascade-to-panel association are unknown. A per-
+panel space–frequency/Maxwell–Jones factorization shows that
+receiver-component selection rescales local information but can
+eliminate panel separability. Calibration fixes a Maxwell receive
+subspace independent of position and clock. In the reference
+scene, projection before acquisition reduces 96 receive dimensions
+to 6. Under the matched white-Gaussian model, the profiled
+maximizer and free-Jones equivalent Fisher information matrix
+are unchanged. The profiled Gram matrix is clock-invariant. At
+fixed position, the conditional clock profile is a trigonometric
+polynomial with a deterministic optimality-gap certificate; the
+outer search is 3-D. At a signal-to-noise ratio of −10 dB in
+the matched center-frequency reference scene, the estimator
+has a 0.32-mm median position error and position and clock
+catastrophic rates of 0.42% and 0.31%, 6.0- and 6.7-fold lower
+than the closest in-model control.
+Index Terms—Clock synchronization, Cramér–Rao bound,
+EVS, near-field localization, OFDM, RIS, variable projection.
+I. INTRODUCTION
+IN the near field of an electrically large reconfigurable in-
+telligent surface (RIS) panel, the phase across the aperture
+depends on the direction and propagation range of the user
+equipment (UE) relative to the panel [1], [2]. A surveyed panel
+can use this variation to constrain the UE position in three
+dimensions [3], [4]. In the blocked direct-link geometry con-
+sidered here, the base station (BS) observes cascades through
+distributed panels [5]. Each cascade combines geometric delay
+with the same UE clock offset; the passive panels supply no
+independent timing reference.
+Distributed-RIS localization combines geometric constraints
+from multiple panel paths [6]–[8], and several formulations
+jointly estimate an unknown clock offset [9]–[13]. Near-
+field estimators retain spherical-wave phase across electrically
+large apertures [14]. Multilinear methods factor the training
+tensor [15], [16]. With all cascades observed at one array,
+the factors returned by an algebraic front end still need to be
+assigned to surveyed panels before the geometric fit. Sparse
+and variational methods estimate parameters on a discretized
+manifold [17]; polar or beam-split codebooks search direction
+and range [18]–[20]. Resolving finer aperture-scale detail with
+a fixed grid increases the dictionary or search density.
+Dual-polarized RISs use polarization for beamforming
+gain [21], [22], whereas an electromagnetic vector sensor
+(EVS) measures co-located electric and magnetic fields to esti-
+mate the incident polarization together with its direction [23]–
+[25]. RIS-aided EVS radar extends this processing to joint
+departure-angle, arrival-angle and polarization estimation [26].
+Our previous EVS estimator for orthogonal frequency-division
+multiplexing (OFDM) [27] treats a direct multipath channel.
+The distributed cascades here add panel association and a
+common clock to the geometric fit.
+First, distributed-RIS methods typically resolve cascade-
+to-panel association before or during the joint fit [6], [7],
+[9]. Here all cascades reach the same EVS array within one
+observation, and an algebraic front end returns them unla-
+beled [15]. Panels with nearly coincident delays then present
+similar space–frequency evidence, making separability depend
+on the retained Maxwell structure of the receiver. Second, full-
+EVS training produces six field components over MA sensors,
+N subcarriers and T configurations; a general linear reduction
+need not preserve the delay subspace, profiled likelihood or
+localization information. Third, differencing cascaded OFDM
+delays removes the common clock but leaves only K − 1
+differences for three coordinates and is underdetermined at
+K = 3. Retaining the absolute delays gives a nonconvex 4-
+D position–clock problem. Variable projection [28] eliminates
+the linear nuisances but leaves position and clock coupled. The
+semidefinite method of [11] uses a timing model with a linear
+lifting, which the OFDM likelihood here does not admit.
+The sensing block of the kth RIS panel factorizes as
+Ak(χ) = ck(χ)
+| {z }
+space–frequency geometry
+⊗ Θ
+(mode)
+k
+| {z }
+calibrated Maxwell–Jones
+, (1)
+where χ = [pT
+, ∆t]T
+collects the unknown position and
+clock, ck depends on both, and Θ
+(mode)
+k —two columns for
+the polarization state, one row per retained field component—
+is fixed by the calibrated RIS-to-BS geometry and the selected
+receiver mode.
+C1. Receiver-mode information and panel separability.
+Component selection rescales a panel’s free-Jones EFIM (the
+Fisher information with the Jones coefficients left free) by the
+retained polarization energy without changing its eigenvectors.
+Panel separability instead depends on a residual in the retained
+Maxwell receive subspace; this residual can vanish with no
+more than two field components even when the local EFIM
+remains finite (Theorem 1; Figs. 3 and 4).
+C2. Calibrated sufficient compression. Calibration fixes
+the Maxwell receive subspace independently of χ. In the
+reference scene, projecting onto it reduces the receive dimen-
+sion from 96 to 6. For the matched white-Gaussian model,
+the projected data preserve the profiled maximizer and free-
+Jones EFIM exactly. They are sufficient when the variance
+is known; with unknown variance, sufficiency also requires
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 2
+the discarded energy. In the finite-sample test, removing the
+other 90 directions improves delay-subspace acquisition (The-
+orem 2; Table II).
+C3. Certified common-clock profiling. Over equispaced
+tones, the clock acts through a finite diagonal phase orbit and
+leaves the profiled Gram matrix invariant. After eliminating
+the linear coefficients, its conditional profile is a trigonometric
+polynomial with a deterministic optimality-gap certificate.
+Eliminating the clock leaves a unit-invariant 3-D outer search
+(Theorem 3; Table III).
+Gaussian sufficiency for a known signal subspace and elimi-
+nation of linear parameters by variable projection are classical.
+Here calibration fixes the required subspace without knowing
+χ. The delay front end reuses the asymmetric tensor folding
+of [27]; this paper adds the preceding sufficient compression
+and the following common-geometry fusion.
+The C1 split applies to any array whose response factorizes
+into a calibrated polarimetric block and a parameter-dependent
+geometric one. C3 extends to separable least-squares problems
+in which the nuisance follows an equispaced finite Fourier
+phase orbit and the profiled Gram matrix is nuisance invariant;
+under those conditions, the conditional profile remains a
+trigonometric polynomial that can be maximized globally with
+a certificate.
+Notation: bold symbols denote vectors and matrices; (·)T
+,
+(·)H
+and (·)†
+are transpose, Hermitian transpose and pseu-
+doinverse; ⊗ and ⊙ are Kronecker and Hadamard products;
+for a generic matrix X, PX = XX†
+and Π⊥
+X = I − PX are
+the orthogonal projectors onto col(X) and col(X)⊥
+; and un-
+qualified vector and matrix norms are Euclidean and spectral,
+respectively.
+II. MAXWELL–JONES CASCADED SIGNAL MODEL
+The signal from a single-antenna UE reaches the BS only
+through K distributed, arbitrarily oriented RIS panels; the line-
+of-sight (LoS) path is blocked [9], [29]. Each panel is an
+MRx × MRy planar array of MR = MRxMRy elements, and
+the BS is an MA-element EVS uniform linear array (ULA); the
+UE transmits pilots on N subcarriers spaced by ∆f (occupied
+bandwidth Bocc = (N − 1)∆f) over T known RIS phase
+configurations. The nonlinear parameters of interest are the
+UE position p and the clock offset ∆t.
+(A1) The LoS path is blocked and each of the K calibrated
+panels contributes one dominant cascade, so the model order
+is known; Section V-F quantifies the effect of an incorrect
+K. (A2) The BS and panel geometries are surveyed, and
+the EVS Maxwell response and its per-component gains
+are calibrated [30]; Fig. 5(a)–(b) sweeps residual calibration
+error, while receiver-side calibration error is audited in the
+supplementary material. (A3) Following the one-sided near-
+field convention of [18], [19], the UE–RIS hop is modeled
+with an exact spherical-wave phase over a uniform-amplitude
+aperture and the RIS–BS hop with a center-frequency plane
+wave; Table I verifies maxk dUR,k < RFF < mink dRB,k,
+where RFF = 2D2
+ap/λc is a panel’s Fraunhofer distance and
+Dap its aperture diameter, the corner-to-corner span of the
+element grid. (A4) Spatial responses are evaluated at fc and the
+wideband dependence is confined to the delay phase [31]; the
+neglected spatial-wideband phase reaches ϵsq = 0.102 rad in
+the reference scene. Section V-A diagnoses the resulting bias.
+(A5) The cyclic prefix covers the cascaded delay spread and
+one common clock offset enters every delay; residual carrier-
+frequency offset, phase noise and panel-dependent timing off-
+sets [29] lie outside the model. (A6) UE position, clock, gains
+and Jones states are block-static over the T configurations and
+the noise is white with unknown variance; Section V-F reports
+the coherence budget; a colored-noise sweep is supplementary.
+The received signal is
+y =
+K
+X
+k=1
+h
+hk(p)
+| {z }
+near field
+⊗ dk(p, ∆t)
+| {z }
+delay
+⊗ Bk
+|{z}
+calibrated
+i
+xk + n, (2)
+with y, n ∈ CM
+, M = I N T for the receive dimension I of
+Section II-A, and xk ∈ C2
+a free Jones coefficient; only hk
+and dk depend on the unknown (p, ∆t).
+A. Calibrated RIS–BS Maxwell Factor
+Calibration provides pB, the BS phase center; rk and Rk ∈
+SO(3), the center and the global-to-local rotation of panel k;
+ρk,m ∈ R3
+, its element coordinates in that frame; and the BS
+array geometry and EVS Maxwell response. The BS ULA lies
+along the global x axis of the orthonormal frame {ux, uy, uz}
+and κ = 2π/λc is the center-frequency wavenumber.
+The calibrated locations give the RIS–BS distance and
+propagation direction of panel k,
+dRB,k = ∥pB − rk∥2, sRB,k =
+pB − rk
+dRB,k
+, (3)
+and, under the far-field RIS–BS model established above, a
+plane-wave panel response and a BS steering vector,
+
+aRB,k
+
+m
+= ejκ ρT
+k,mRksRB,k
+,
+
+vB,k
+
+i
+= e−jκxi uT
+xsRB,k
+, (4)
+with xi the x coordinate of the ith BS element, aRB,k ∈ CMR
+and vB,k ∈ CMA
+.
+The same direction fixes the polarization manifold: a trans-
+verse plane wave along sRB,k has Maxwell pair (E, H) =
+(q, sRB,k × q) in impedance-normalized units, so with any
+transverse basis
+qk,1 ∈ s⊥
+RB,k, ∥qk,1∥2 = 1, qk,2 = sRB,k × qk,1, (5)
+the six-component vector-sensor manifold [23], [24] special-
+izes to the calibrated Maxwell–Jones block
+Θ
+(6)
+k =
+
+qk,1 qk,2
+qk,2 −qk,1
+
+∈ C6×2
+, (6)
+whose columns satisfy [Θ
+(6)
+k ]H
+Θ
+(6)
+k = 2I2; a rotation U ∈
+SO(2) of the transverse basis sends Θ
+(6)
+k 7→ Θ
+(6)
+k U and is
+absorbed by xk 7→ UT
+xk. A fixed selection matrix Smode ∈
+Rdevs×6
+,
+S1 =
+
+1 0
+
+, S2 =
+
+I2 0
+
+, S6 = I6, (7)
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 3
+(a) (b)
+(c)
+BS
+global frame
+UE
+RISk
+RISK
+…
+…
+RIS1
+global → local
+local frame
+UE
+EVS
+Fig. 1. Cascaded geometry and parameterization: (a) global frame, (b) local frame of panel k, and (c) six-component EVS element with the receiver modes.
+with devs ∈ {1, 2, 6} for the scalar, dual-polarized and
+full-EVS receiver modes of Fig. 1(c), gives Θ
+(mode)
+k ≜
+SmodeΘ
+(6)
+k ∈ Cdevs×2
+and the receive dimension I = devsMA.
+The calibrated receive block Bk ≜ vB,k ⊗Θ
+(mode)
+k ∈ CI×2
+is known before UE estimation and satisfies ∂Bk/∂χ = 0;
+only the Jones-domain coefficients xk ∈ C2
+of (2) remain
+unknown, each being the effective polarization state launched
+toward the BS after reflection rather than the UE antenna state.
+B. UE–RIS Near-Field and Common-Clock Factor
+The unknown nonlinear parameter collects the UE position
+and common clock offset, χ = [pT
+, ∆t]T
+= [x, y, z, ∆t]T
+∈
+R4
+, with p ∈ P a known closed service box and ∆t ∈ T ,
+where T is a known closed interval with |T | < 1/∆f,
+the unambiguous delay period. Every cascaded delay is the
+geometric propagation time plus the same offset [9], [10], [12].
+In the kth panel frame (Fig. 1(b)), ξk(p) = Rk(p − rk) and
+dUR,k(p) = ∥ξk(p)∥2 = ∥p−rk∥2, sUR,k(p) =
+ξk(p)
+dUR,k(p)
+,
+(8)
+since Rk is a rotation. Element m of panel k applies the scalar
+Jones response ejωk,t,m
+I2 at configuration t, so no polarization
+mixing occurs; with the prescribed constant-modulus training
+[Ωk]t,m = ejωk,t,m
+/
+√
+MR, Ωk ∈ CT ×MR
+[15], the near-field
+dependence is captured by the RIS response
+gk(p) = aRB,k ⊙ aNF
+UR,k(p) ∈ CMR
+,
+hk(p) = Ωk gk(p) ∈ CT
+, (9)
+where
+
+aNF
+UR,k(p)
+
+m
+= e−j 2π
+λc
+δk,m(p)
+, aNF
+UR,k ∈ CMR
+,
+δk,m(p) = ξk(p) − ρk,m 2
+− dUR,k(p). (10)
+Equation (10) retains the exact spherical-wave phase across
+the panel aperture (Fig. 1(b)); the Fresnel approximation enters
+only in Phase-I proposal generation (Section III-B).
+Combining (3) and (8), the cascaded delay and its OFDM
+phase ramp on the tone grid fn = fc + n − N−1
+2
+
+∆f, n =
+0, . . . , N − 1, are
+τk(p, ∆t) =
+dUR,k(p) + dRB,k
+c0
+| {z }
+τg,k(p)
++∆t,
+dk(p, ∆t) =
+h
+e−j2π(n− N−1
+2 )∆f τk(p,∆t)
+iN−1
+n=0
+∈ CN
+, (11)
+with c0 the speed of light and the tone-independent phase
+e−j2πfcτk
+absorbed into the path gain. In contrast to the
+frequency-dependent spatial manifold of [19], the present
+model carries the wideband dependence entirely through (11).
+For an inter-element path difference ∆L in a spatial response,
+the phase neglected in (A4) is ϵsq = πBocc max |∆L|/c0.
+The bracketed factor of (2) is the per-panel sensing block,
+which by associativity of the Kronecker product also takes the
+form (1),
+Ak(χ) = hk(p) ⊗ dk(p, ∆t) ⊗ Bk
+= ck(χ) ⊗ Θ
+(mode)
+k ∈ CM×2
+, (12)
+where ck(χ) = hk(p) ⊗ dk(p, ∆t) ⊗ vB,k ∈ CT NMA
+is the
+space–frequency factor.
+Arranging the I receive channels against the N subcarriers
+at configuration t gives
+Yt =
+K
+X
+k=1
+[hk(p)]t (Bkxk) dk(p, ∆t)T
++ Nt, (13)
+where t = 1, . . . , T, Yt ∈ CI×N
+and Nt is the noise block.
+The grouping hk ⊗dk ⊗Bk exposes the receive subspace used
+in Section III; ck ⊗ Θ
+(mode)
+k isolates receiver-mode selection
+for Section IV.
+C. Observation and Estimation Problem
+Stacking the panels as A(χ) = [A1(χ), . . . , AK(χ)] ∈
+CM×2K
+and vectorizing the Yt in the same order writes (2)
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 4
+as
+y = µ(χ, x) + n = A(χ) x + n, n ∼ CN(0, σ2
+IM ),
+(14)
+where the noise is white across receive channels, subcarriers
+and RIS configurations, and its power σ2
+is unknown to the
+estimator. The unknown Jones-domain coefficient of path k
+is xk = βkek ∈ C2
+, stacked as x = [xT
+1 , . . . , xT
+K]T
+∈ C2K
+,
+where the complex gain βk absorbs path loss, RIS efficiency
+and the center-frequency phase of the cascade and ek is a
+unit Jones state (angular parameterization in Table I). Both
+factors are flat over the occupied band and only their product
+is identifiable, so the estimator treats xk as a free C2
+nuisance.
+Profiling σ2
+out of the white-Gaussian log-likelihood gives
+b
+σ2
+= ∥y − A(χ)x∥2
+2/M, and the concentrated log-likelihood
+is strictly decreasing in the residual energy, so maximum-
+likelihood (ML) estimation of (χ, x) is the least-squares
+problem
+min
+p∈P, ∆t∈T , x∈C2K
+y − A(p, ∆t) x
+2
+2
+. (15)
+The 2K Jones coefficients enter linearly and admit closed-
+form elimination; position and clock enter nonlinearly through
+(10) and (11), leaving (15) nonconvex in four real coordinates.
+III. PROPOSED ESTIMATOR: SUFFICIENT ACQUISITION
+AND CERTIFIED CLOCK PROFILING
+Direct optimization of (15) must address panel association,
+near-field basin acquisition, the 2K linear Jones coefficients
+and the common clock simultaneously. We separate them with
+a two-phase estimator. Phase I, Maxwell–Kronecker sufficient
+compression with common-geometry initialization (MKSC-
+GI), projects onto the calibrated Maxwell receive subspace,
+recovers and associates the cascaded factors, and fuses the
+panel-local estimates into one common position initializer.
+Phase II, common-clock orbit-profiled Jones variable projec-
+tion (CCOP-JVP), eliminates the Jones coefficients analyti-
+cally and refines position and clock by certified profiling along
+the exact clock orbit. Algorithm 1 collects both phases, with
+each step citing its corresponding derivation. In the algorithm,
+ESPRIT denotes estimation of signal parameters via rotational
+invariance techniques; DFT and FFT denote the discrete and
+fast Fourier transforms, respectively.
+A. Maxwell–Kronecker Factor Recovery
+1) Sufficient compression and delay-pole recovery: The
+calibrated receive blocks in (12) span
+SR =
+K
+X
+k=1
+col(Bk) = col(Ψ), Ψ = [B1, . . . , BK], (16)
+with r = rank Ψ ≤ 2K. An orthonormal basis QS ∈ CI×r
+depends only on calibration and satisfies QSQH
+SBk = Bk for
+every panel. Projection onto this basis gives
+Yd,t = QH
+SYt =
+K
+X
+k=1
+[hk(p)]t ak dk(p, ∆t)T
++ QH
+SNt, (17)
+Algorithm 1 MKSC-GI-Initialized CCOP-JVP
+Require: {Yt}T
+t=1, calibrated infrastructure, K, P, T
+1: Phase I: MKSC-GI
+2: Compress receive index: Yd,t = QH
+SYt, I →r ≤ 2K (16)
+3: Delay poles {ẑk} by ESPRIT on the tone axis (19)
+4: Coupled factors F̂ by one loaded weighted least-squares (WLS) solve
+(21)
+5: Rank-one split → (ãj, t̃j, ϱj) (22)
+6: Dechirped 2-D DFT proposals for all panel–column pairs (30), (28)
+7: Two-tier permutation search with exact shortlist rescoring (25)
+8: Fuse by Jgeom; select by clock spread (31)
+9: Jones-state anchors {êk} refreshed at p̂GI (32)
+10: Phase II: CCOP-JVP
+11: repeat
+12: Clock-profile coefficients {γℓ(p)}; FFT-seeded candidates (44)
+13: Branch and bound over ∆t until gcert ≤ϵclk or cap (46)
+14: Update p by envelope gradient (safeguard if ambiguous) (47)
+15: until outer convergence
+16: Profiled Jones coefficients x̂ = G+
+λ b (41)
+17: return (p̂, c
+∆t, x̂) and gcert
+where ak = QH
+SBkxk. Theorem 2 establishes sufficiency. In
+the reference scene, the projection reduces the receive dimen-
+sion from I = 96 to r = 6, discarding noise-only directions
+while retaining white noise in the compressed coordinates.
+Each delay contributes the pole zk = e−j2π∆fτk
+. The
+centered tone grid adds only a nonzero column scalar:
+[dk]n = ejπ(N−1)∆fτk
+zn
+k . Rearranging the compressed
+channel–configuration pairs as snapshots gives
+Yf =
+K
+X
+k=1
+dk wT
+k + Nf ∈ CN×rT
+, wk = ak ⊗ hk(p).
+(18)
+For D = [d1, . . . , dK], removing its last or first row gives D
+or D, respectively, with
+D = D Φ, Φ = diag(z1, . . . , zK). (19)
+Distinct delays modulo 1/∆f, N ≥ K + 1 and the snapshot-
+rank condition of Theorem 2(iv) permit recovery by forward–
+backward total-least-squares ESPRIT [27], with estimated
+poles projected onto the unit circle.
+2) Coupled factor recovery: With the estimated delays fixed,
+we recover F = [w1, . . . , wK] ∈ CrT ×K
+from the rearranged
+data YrT,N by
+F̂ = arg min
+F
+(YrT,N − FDT
+)W1/2 2
+F
++ λτ ∥F∥2
+F , (20)
+or, equivalently, one K × K solve:
+F̂ = YrT,N WD∗
+(DT
+WD∗
++ λτ I)−1
+. (21)
+Here W = diag(wn), with wn = #{(p, ℓ) : p + ℓ = n} the
+anti-diagonal multiplicity of the P × L Hankel lift of the tone
+axis, P + L − 1 = N; solving in the lifted domain gives the
+same linear system. The window weights this factor recovery
+only: the poles of (19) are estimated from the full N-tone
+aperture, unsmoothed. After column j is reshaped as an r ×
+T matrix with the receive index running slowest, its leading
+singular triplet gives
+ãj =
+√
+σ1,j QSu1,j, t̃j =
+√
+σ1,j v∗
+1,j, ϱj =
+σ2,j
+σ1,j
+. (22)
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 5
+For exact poles and zero loading, the noiseless factors of the
+generating panel k satisfy
+ãj = cj Bkxk, t̃j = c′
+j hk(p), (23)
+where cj, c′
+j ̸= 0 encode a scale and phase ambiguity,
+so subsequent criteria must be scale invariant; ϱj measures
+departure from rank one and weights the common-geometry
+fit.
+3) Physical panel association: For column j and candidate
+panel k, the score combines calibrated receive-subspace and
+spherical-wave consistency:
+sj,k =
+∥Π⊥
+Bk
+ãj∥
+∥ãj∥
++ min
+η∈Ek
+∥Π⊥
+hk(η)t̃j∥
+∥t̃j∥
+. (24)
+Here ηk = (dUR,k, uk, vk) contains range and the first two
+direction cosines, Ek is the panel-local search box, and hk is
+the exact response (9). The minimization over Ek is initialized
+by the beam-space proposals of Section III-B and is evaluated
+for all K2
+panel–column pairs before an association is fixed.
+The minimizing range ˆ
+dj,k implies a clock replica c
+∆tj,k =
+τ̂j − ( ˆ
+dj,k + dRB,k)/c0. Each permutation is scored by
+C(π) =
+K
+X
+j=1
+sj,π(j) +
+wclk
+t0
+[ sd(π) + eT (π) ], (25)
+where eT is the mean excursion outside T , wclk = 1/2, t0 =
+1 ns, and
+sd(π) =
+h
+1
+K
+K
+X
+j=1
+(c
+∆tj,π(j) − ∆t(π))2
+i1/2
+,
+∆t(π) = 1
+K
+K
+X
+j=1
+c
+∆tj,π(j). (26)
+The common clock mean ∆t(π) couples the assignments, so
+this is not a linear assignment problem. A deterministic two-
+tier search ranks all K! permutations using a cached coarse
+codebook, then re-scores only the best two, π(1), π(2), using
+exact spherical projection:
+π̂ = arg min
+π∈{π(1),π(2)}
+C(π). (27)
+It returns the delay–factor triples {τ̂j, ãj, t̃j; π̂(j)} indexed by
+their associated panels for geometric acquisition.
+B. Beam-Space Acquisition and Common-Geometry Initializa-
+tion
+1) Panel-local beam-space acquisition: By (23) the factor
+t̃k that π̂ assigns to panel k is hk up to an unknown scale.
+Its geometry is recovered separately for each panel before the
+K estimates are reconciled into a common position by the
+scale-invariant fit
+JRIS(η) = ∥Π⊥
+hk(η)t̃k∥2
+= ∥t̃k∥2
+−
+|hH
+k (η)t̃k|2
+∥hk(η)∥2
+, (28)
+with hk(η) = Ωk[aRB,k ⊙ aNF
+(η)] over the panel-local
+coordinates η defined above. A fixed-count angular dictionary
+of the polar or beam-training kind [18], [20] has a step size
+set by the search box, not by the panel resolution λc/Dap, so
+the dominant angular search is moved to the element domain.
+The training code enters hk only on the left, so moving ΩH
+k
+across and splitting the Hadamard product gives
+hH
+k (η)t̃k =
+
+aRB,k ⊙ aNF
+(η)
+H
+ΩH
+k t̃k
+
+=
+
+aNF
+(η)
+H
+g̃k,
+g̃k = a∗
+RB,k ⊙ (ΩH
+k t̃k). (29)
+One adjoint pass fixes g̃k per panel and leaves aNF
+(η) as
+the only η-dependent factor in the numerator of (28); the
+denominator admits no such reduction and is evaluated exactly.
+Expanding (10) to second order about the panel center, with
+u = [u, v,
+√
+1 − u2 − v2]T
+the unit direction from that center
+to the UE in the panel frame,
+δk,m ≃ −ρT
+k,mu +
+∥ρk,m∥2
+− (ρT
+k,mu)2
+2 ˜
+d
+, (30)
+so the paraxial dechirp g̃k, ˜
+d[m] = g̃k[m]ejκ∥ρk,m∥2
+/(2 ˜
+d)
+re-
+moves the isotropic quadratic term at trial range ˜
+d and leaves
+the plane-wave phase ejκρT
+k,mu
+, up to the direction-dependent
+curvature (ρT
+k,mu)2
+/(2 ˜
+d). One zero-padded 2-D DFT then
+scores all direction-cosine pairs at once on a grid tracking
+the Rayleigh limit, requiring one transform per trial range
+rather than an atom-by-atom dictionary scan. Because of the
+residual curvature, (30) is used only to generate proposals:
+every retained angular peak receives an exact spherical range
+scan and is re-scored by the full (28), so the candidate set
+changes acquisition coverage and cost but not the forward
+model. The candidate set for each experiment is stated in
+Section V.
+2) Common-geometry fusion: Each panel-local estimate η̂k
+maps through the calibrated panel pose back to a global posi-
+tion p̂loc
+k = rk + RT
+k ξk(η̂k), inverting ξk(p) = Rk(p − rk).
+These K positions generally disagree; the common-geometry
+stage replaces them by the single position that best explains
+all K training factors at once, each up to its own unknown
+complex scale,
+Jgeom(p) = min
+α∈CK
+K
+X
+k=1
+ϖk∥t̃k − αkhk(p)∥2
+(31)
+=
+K
+X
+k=1
+ϖk
+
+∥t̃k∥2
+−
+|hH
+k (p)t̃k|2
+∥hk(p)∥2
+
+,
+the second line following from the profiled scale α̂k(p) =
+hH
+k (p)t̃k/∥hk(p)∥2
+, so only the component of t̃k orthogonal
+to col(hk) remains and the gains need not be known. The
+weights ϖk = max{e−ϱk/ϱ0
+, ϖmin} down-weight a column
+whose rank-one split is poor while keeping every panel in
+the fit. We minimize (31) with bounded L-BFGS-B [32]
+from deterministic starts around p̂0 = clipP {mediank p̂loc
+k }.
+Among the near-optimal minima, we select p̂GI as the one
+whose clock replicas τ̂k − (∥p − rk∥ + dRB,k)/c0 vary least.
+3) Jones-state anchor refresh: At the selected p̂GI, the
+λk = 0 instance of the certified clock profiler of Section III-C
+refreshes the Jones-state anchors at a fixed position,
+( ˆ
+∆tref , x̂ref ) = arg min
+∆t∈T ,x
+∥y − A(p̂GI, ∆t)x∥2
+. (32)
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 6
+With x̂ref,k the kth two-entry block of x̂ref , the anchor is
+êk = x̂ref,k/∥x̂ref,k∥2, obtained at the common position from
+a conditional clock solve with an optimality-gap certificate of
+the same form. Phase I outputs p̂GI and the anchors {êk},
+which initialize the Phase-II directional regularizer.
+C. Common-Clock Orbit-Profiled Jones Variable Projection
+1) Unitary clock orbit and directional Jones regularization:
+Phase II refines the Phase-I initializer using the exact forward
+model underlying (15) and a directional Jones penalty. Its
+2K Jones coefficients enter linearly and are eliminated in
+closed form by variable projection, leaving four nonlinear
+coordinates. By Theorem 2, the implementation evaluates the
+criterion on the compressed observation of Phase I without
+approximation. The common clock is the only nonlinear
+coordinate along which the likelihood admits an exact uni-
+tary symmetry. Let A0(p) ≜ A(p, 0) and Dclk(∆t) =
+diag([e−j2π(n− N−1
+2 )∆f∆t
+]N−1
+n=0 ). Then
+Uclk(∆t) = IT ⊗ Dclk(∆t) ⊗ II,
+A(p, ∆t) = Uclk(∆t)A0(p), (33)
+AH
+A = AH
+0 UH
+clkUclkA0
+= AH
+0 A0 ≜ G0(p). (34)
+Phase II uses the clock-independent, Gram-scaled penalty
+Rdir(p) = blkdiagk
+
+λk
+1
+2 tr G0,kk(p) Π⊥
+êk
+
+, (35)
+with λk = 1 throughout (Remark 2) and Rdir,kkêk = 0,
+leaving the anchor direction and complex gain free. The
+diagonal data blocks satisfy
+G0,kk = NMA∥hk(p)∥2
+[Θ
+(mode)
+k ]H
+Θ
+(mode)
+k . (36)
+The receiver mode determines how many Jones coordinates
+are observable,
+rank G0,kk = rank Θ
+(mode)
+k = min{devs, 2}, (37)
+for generic panel orientations. The scalar receiver mode leaves
+one Jones coordinate per panel unobserved. For the full normal
+matrix Gλ = G0 +Rdir, positive definiteness is characterized
+by
+Gλ ≻ 0 ⇐⇒ ker(G0) ∩ ker(Rdir) = {0}. (38)
+2) Jones variable projection and the trigonometric clock
+profile: Phase II accordingly minimizes the penalized exact-
+model criterion
+J(p, ∆t, x) = ∥y − A(p, ∆t)x∥2
+2 + xH
+Rdir(p)x. (39)
+Theorem 3 establishes exact nesting of this criterion, which
+reduces to (15) at λk = 0. Substituting (33) into (39) and
+using UH
+clkUclk = I makes J a quadratic in x whose Hessian
+is independent of the clock,
+J = ∥y∥2
+2 − 2 Re{xH
+b(p, ∆t)} + xH
+Gλ(p)x, (40)
+with b = AH
+0 UH
+clky. The Wirtinger stationarity condition
+∂J/∂x∗
+= Gλx − b = 0 removes all 2K Jones coefficients
+in one step; for Gλ ≻ 0,
+x̂ = G−1
+λ b, Q(p, ∆t) = bH
+G−1
+λ b,
+F(p, ∆t) ≜ min
+x∈C2K
+J = ∥y∥2
+2 − Q. (41)
+At singular positions, the implementation uses G+
+λ b as the
+minimum-norm Jones solution, without adding a ridge. Since
+b ∈ col(Gλ), this preserves the fixed-position criterion and
+the polynomial clock profile below. The 3-D outer objective
+is
+e
+F(p) = ∥y∥2
+− max
+∆t∈T
+Q(p, ∆t). (42)
+We group the sufficient-statistic correlations by tone as
+b(p, ∆t) =
+PN−1
+n=0 un(p)ej2π(n− N−1
+2 )∆f∆t
+. Because G−1
+λ is
+clock-independent, substitution into Q gives
+Q(p, ∆t) =
+N−1
+X
+n=0
+N−1
+X
+n′=0
+uH
+nG−1
+λ un′ ej2π(n′
+−n)∆f∆t
+=
+N−1
+X
+ℓ=−(N−1)
+γℓ(p)ej2πℓ∆f∆t
+, γ−ℓ = γ∗
+ℓ , (43)
+γℓ(p) =
+N−1−ℓ
+X
+n=0
+uH
+n(p)G−1
+λ (p)un+ℓ(p), (44)
+for ℓ = 0, . . . , N − 1. This representation makes Q a real
+trigonometric polynomial of degree at most N − 1. The
+factorization of Gλ at each position is reused for coefficient
+assembly and FFT-seeded clock candidates; subsequent in-
+terval tests evaluate only the polynomial and its derivatives.
+Differentiating twice gives
+|Q′′
+(t)| ≤ (2π∆f)2
+N−1
+X
+ℓ=−(N−1)
+ℓ2
+|γℓ| ≜ L2. (45)
+For an interval centered at tc with half-width rt, Taylor
+expansion yields
+Q(t) ≤ Q(tc) + |Q′
+(tc)|rt + 1
+2 L2r2
+t . (46)
+3) Certified clock maximization and outer refinement: Branch-
+and-bound maintains (46) over T and returns an incumbent
+with Q(∆t⋆
+) − Q( ˆ
+∆t) ≤ U − Q( ˆ
+∆t) ≜ gcert, where
+U = max{Uact, Upru} is the largest bound over surviving and
+incumbent-pruned intervals. Subdivision stops once gcert ≤
+ϵclk or a cap on subdivisions is reached, with the scale-aware
+tolerance specified in the supplementary material. At every
+outer position, the returned clock solution has a deterministic
+gap certificate and is ϵclk-optimal whenever termination is
+by tolerance, as Theorem 3(iii) states. For a unique interior
+maximizer ∆t⋆
+(p) of Q(p, ·), the exact outer profile satisfies
+∇p
+e
+F(p) = −∇pQ(p, ∆t) ∆t=∆t⋆(p)
+. (47)
+The bounded search starts from p̂GI and approximates the
+envelope gradient by evaluating the right-hand side of (47) at
+the computed ˆ
+∆t(p). A derivative-free safeguard is used when
+the clock solve does not meet its tolerance or the maximizing
+branch is ambiguous. Phase II outputs (p̂, c
+∆t, x̂) together with
+a gap certificate for each conditional clock solve evaluated.
+IV. STRUCTURAL ANALYSIS AND GUARANTEES
+We first state the reference free-Jones EFIM and its local
+rank condition, then establish C1–C3 under their stated con-
+ditions.
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 7
+A. Reference Information and Identifiability
+Let Dχ = [∂(Ax)/∂χi]4
+i=1. Eliminating the unknown
+complex Jones coefficients from the white-Gaussian Fisher
+information matrix gives the free-Jones equivalent Fisher
+information matrix (EFIM), the reference information of the
+unpenalized data model,
+Jfree
+χ =
+2
+σ2
+Re{DH
+χΠ⊥
+ADχ}. (48)
+The projector has a direct interpretation: a geometric per-
+turbation Dχ δχ with δχ ∈ R4
+is indistinguishable from a
+Jones perturbation exactly when it lies in col(A), that is when
+Π⊥
+ADχ δχ = 0. Stacking the real and imaginary parts of that
+map gives
+e
+Dχ =
+
+Re{Π⊥
+ADχ}
+Im{Π⊥
+ADχ}
+
+, rankR
+e
+Dχ = 4, (49)
+is the first-order condition for local position–clock identifi-
+ability. Since e
+DT
+χ
+e
+Dχ = Re{DH
+χΠ⊥
+ADχ}, this condition is
+equivalent to Jfree
+χ ≻ 0. The EFIM then yields the position
+error bound (PEB) and clock error bound (CEB), defined as
+PEB =
+q
+tr[(Jeff
+p )−1] and CEB =
+q
+[(Jfree
+χ )−1]4,4, with
+Jeff
+p = Jpp − JptJ−1
+tt Jtp. The Jacobian of the cascaded delays
+in (11) is
+Dτ (p) =
+∂[τ1, . . . , τK]T
+∂χT
+=
+
+
+
+c−1
+0 sT
+UR,1R1 1
+.
+.
+.
+.
+.
+.
+c−1
+0 sT
+UR,KRK 1
+
+
+ ∈ RK×4
+.
+(50)
+Row differencing removes the all-ones clock column. At K =
+3, rank Dτ ≤ 3 < 4, so the cascaded delays cannot identify χ
+by themselves. Additional position sensitivity comes from the
+aperture phase of (10): with sk,m = (ξk−ρk,m)/∥ξk−ρk,m∥2,
+the unit vector from element m to the UE,
+∂δk,m
+∂p
+= RT
+k
+
+sk,m(p) − sUR,k(p)
+
+, (51)
+the deviation of each element’s bearing from the panel
+bearing that (50) already carries. This tangent scales as
+O(∥ρk,m∥/dUR,k) and weakens toward the far-field limit.
+Whether it restores rank four is not settled by counting; it re-
+quires conditions on the RIS codes, wavefront curvature across
+the panel aperture and geometry. After complex-scale elimi-
+nation the projected tangents Π⊥
+hk
+[∂hk/∂x, ∂hk/∂y, ∂hk/∂z]
+retain the phase slope and curvature of (10). This rank test is
+local and conditional on the panel association. Pseudoinverse
+projectors cover the rank-deficient Jones blocks of (37). The
+derivation of (48) is given in the supplementary material.
+B. C1: Maxwell–Jones Information Splitting
+Both parts of C1 rest on one identity: because Ak is a
+Kronecker product, so is its projector, and the complement
+separates into a polarization-orthogonal component along the
+geometric factor and a geometry-orthogonal component acting
+identically on every polarization.
+Lemma 1 (Kronecker projector splitting): Let c ̸= 0 and
+Θ ̸= 0 be arbitrary, with PΘ = ΘΘ†
+. With A = c ⊗ Θ,
+Π⊥
+A = Pc ⊗ Π⊥
+Θ + Π⊥
+c ⊗ I, Pc =
+ccH
+∥c∥2
+. (52)
+Proof: AH
+A = (cH
+c)(ΘH
+Θ) and A†
+= c†
+⊗ Θ†
+, so
+PA = Pc ⊗ PΘ. Expanding I = (Pc + Π⊥
+c ) ⊗ (PΘ + Π⊥
+Θ)
+and subtracting PA gives (52). No rank assumption is used,
+so the identity also holds when a receiver mode makes the
+retained Jones block rank deficient.
+Theorem 1 (C1: Maxwell–Jones information splitting): (i)
+Information consequence. For one panel, write A = c ⊗ Θ,
+ζ = Θx, ċi = ∂c/∂χi, and ζ̇i = (∂Θ/∂χi)x. Then
+[DH
+χΠ⊥
+ADχ]ij = ∥ζ∥2
+ċH
+i Π⊥
+c ċj + ∥c∥2
+ζ̇H
+i Π⊥
+Θζ̇j. (53)
+Since calibrated infrastructure gives ∂Θ/∂χ = 0, the second
+term vanishes and
+Jfree
+χ =
+2
+σ2
+∥Θx∥2
+Re{ċH
+Π⊥
+c ċ}, (54)
+with ċ = [ċ1, . . . , ċ4]: the polarimetric block enters only
+through the scalar ∥Θx∥2
+, and all χ-dependence is confined
+to the geometric factor. Throughout C1, Θ = Θ
+(6)
+k is the full
+block of (6), and Smode is one of the selections in (7). For a
+single panel with nonzero retained signal ∥SmodeΘx∥ > 0,
+JSmode
+χ = αSmode
+Jfull
+χ , PEBSmode
+= α
+−1/2
+Smode
+PEBfull
+,
+αSmode
+=
+∥SmodeΘx∥2
+∥Θx∥2
+. (55)
+The PEB identity additionally requires Jfull
+χ ≻ 0 so that both
+bounds are finite.
+(ii) Discrimination consequence. Define A
+(S)
+k (χ) =
+ck(χ) ⊗ SmodeΘ
+(6)
+k . If a competitor block matches panel k’s
+space–frequency signature, i.e. ck′ (χ′
+) ∥ ck(χ), its free-Jones
+residual is
+∥Π⊥
+A
+(S)
+k′ (χ′)
+A
+(S)
+k (χ)xk∥ = ∥ck∥ ∥Π⊥
+SmodeΘ
+(6)
+k′
+SmodeΘ
+(6)
+k xk∥.
+(56)
+Writing Rkk′ for (56),
+Rkk′
+(
+= 0, devs ≤ 2,
+≥ ∥ck∥ ∥Θ
+(6)
+k xk∥ sin θmin, devs = 6
+. (57)
+The first line assumes that the retained competitor block
+SmodeΘ
+(6)
+k′ ∈ Cdevs×2
+has full row rank. Here θmin is the
+minimum principal angle between the two panel Maxwell
+receive subspaces, and θmin > 0 whenever they are distinct.
+Proof: (i) A Jacobian column of Ax = c ⊗ ζ is Di =
+ċi ⊗ζ +c⊗ζ̇i. Insert Lemma 1 into DH
+i Π⊥
+ADj and apply the
+mixed-product rule: every cross term carries a factor Π⊥
+c c =
+0 or Π⊥
+Θζ = 0, leaving the two terms of (53). Applying a
+receiver mode replaces Θ by SmodeΘ and leaves c untouched,
+so with ζ̇i = 0 the whole matrix scales by αSmode
+.
+(ii) Apply (52) to the competitor A
+(S)
+k′ (χ′
+) and evaluate
+it at ck ⊗ SmodeΘ
+(6)
+k xk. Under ck′ ∥ ck the term Π⊥
+ck′
+⊗ I
+annihilates its argument, leaving Pck′ ⊗Π⊥
+SmodeΘ
+(6)
+k′
+and hence
+(56). If SmodeΘ
+(6)
+k′ ∈ Cdevs×2
+has full row rank with devs ≤ 2,
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 8
+its range is all of Cdevs
+, and that projector is zero. For devs = 6,
+the two Maxwell receive subspaces are proper subspaces of
+C6
+separated by a minimum principal angle θmin > 0, so
+∥Π⊥
+Θ
+(6)
+k′
+z∥ ≥ sin θmin∥z∥ for every z ∈ col(Θ
+(6)
+k ), which is
+the stated bound.
+Remark 1 (Propagation angle and Maxwell separation): For
+the ideal six-component block (6), let cos φkk′ = sT
+RB,ksRB,k′ .
+The minimum principal angle between the two Maxwell
+receive subspaces satisfies
+cos θmin = 1
+2 [Θ
+(6)
+k ]H
+Θ
+(6)
+k′
+2
+=
+1 + cos φkk′
+2
+. (58)
+To obtain this identity, choose transverse bases with a common
+second vector. Their cross Gram is (1+cos φkk′ )I2, while each
+self Gram is 2I2; changing either basis preserves the singular
+values. Equation (58) relates the full-EVS discrimination term
+in (56) to the RIS–BS angular separation.
+The information scaling is per panel. If the panel blocks
+and their projected tangents are mutually orthogonal,
+JSmode
+χ =
+K
+X
+k=1
+αS,k Jfull
+χ,k, αS,k =
+∥SmodeΘ
+(6)
+k xk∥2
+∥Θ
+(6)
+k xk∥2
+,
+(59)
+Outside this case, no single scalar generally rescales the
+aggregate.
+Remark 2 (Scope of the free-Jones reference bound): The
+free-Jones PEB is the bound of the unpenalized data model.
+Because the fixed λk = 1 penalty does not vanish with σ, the
+penalized estimator’s departure from the free-Jones reference
+is measured rather than bounded: for the full-EVS mode,
+varying λk ∈ {0, 0.1, 1, 10} changes the conditional position
+root-mean-square error (RMSE) by less than 2 × 10−5
+in
+relative terms (supplementary).
+C. C2: Sufficient Maxwell–Kronecker Compression
+Theorem 2 (C2: Sufficient Maxwell–Kronecker compres-
+sion): Let US = INT ⊗QS be the semi-unitary lifting matrix
+in the vectorization of (14), and suppose col[A(χ)] ⊆ col(US)
+for all admissible χ, which (16) establishes from calibration
+alone. Write yc = UH
+Sy and c⊥ = ∥(I − USUH
+S)y∥2
+. Under
+the matched white-Gaussian model: (i) for known σ2
+, yc is
+sufficient for (χ, x); (ii) for unknown σ2
+, the pair (yc, c⊥)
+is sufficient for (χ, x, σ2
+), and yc alone still preserves the
+maximizer in (χ, x) of the σ2
+-profiled likelihood, because
+∥y − A(χ)x∥2
+= ∥yc − UH
+SA(χ)x∥2
++ c⊥, (60)
+and c⊥ does not depend on (χ, x); (iii) yc alone preserves the
+profiled optimizer, the derivatives of ∥y − A(χ)x∥2
+in (χ, x)
+to every order, and the free-Jones EFIM (48) exactly; (iv) the
+noiseless delay poles are preserved provided the compressed
+receive–configuration snapshot matrix [w1, . . . , wK], defined
+in (18) by wk = ak ⊗ hk and ak = βkQH
+SBkek, has rank K.
+Proof: Complete US to a unitary [US, U⊥
+S ]. The sub-
+space inclusion makes (U⊥
+S )H
+y ∼ CN(0, σ2
+I), independent
+of UH
+Sy and free of (χ, x), which gives (i). For unknown σ2
+,
+its likelihood depends on the discarded block only through
+the scalar c⊥, so the factorization theorem gives (ii). Because
+A = USUH
+SA, the cross term in the orthogonal decomposition
+of y vanishes, which is (60) with a data-only second term.
+Because US is parameter-independent, write A = USAc and
+Dχ = USDχ,c. Semi-unitarity then gives
+Π⊥
+ADχ = USΠ⊥
+Ac
+Dχ,c,
+Jfree
+χ =
+2
+σ2
+Re{DH
+χ,cΠ⊥
+Ac
+Dχ,c} = Jfree
+χ,c , (61)
+proving (iii), including rank-deficient Jones blocks. For (iv),
+QH
+S acts on the EVS mode alone and commutes with both
+Vandermonde frequency factors, so the noiseless pole set is
+unchanged and the shift-invariance argument remains valid
+whenever the compressed snapshot matrix has column rank
+K.
+Compression leaves the ML criterion unchanged but re-
+moves I − r noise-only receive directions from the ESPRIT
+front end. Its finite-sample acquisition benefit is assessed in
+Section V.
+D. C3: Certified Common-Clock Profiling
+Theorem 3 (C3: Certified common-clock profiling): Let P
+and T be the compact search sets of Section II-B and assume
+Gλ(p) = G0(p) + Rdir(p) ≻ 0 on P. At each p, Q(p, ·)
+is the real trigonometric polynomial (43) of degree at most
+N − 1, and the certificate below rests on its curvature bound
+(45).
+(i) Exact nesting. For the penalized criterion, analytic Jones
+elimination followed by global clock maximization is exact:
+F(p, ∆t) = minx J(p, ∆t, x) = ∥y∥2
+− Q(p, ∆t),
+min
+p∈P
+e
+F(p) = min
+p∈P, ∆t∈T , x∈C2K
+J(p, ∆t, x), (62)
+and the minimizer sets correspond: combining any outer mini-
+mizer p⋆
+with a global inner clock maximizer ∆t⋆
+of Q(p⋆
+, ·)
+and x⋆
+= G−1
+λ (p⋆
+)b(p⋆
+, ∆t⋆
+) recovers a joint minimizer.
+(ii) Unit invariance. The outer profile is invariant under
+every invertible affine clock-unit reparameterization with T
+transformed accordingly.
+(iii) Certified clock solution. The interval bound (46)
+guarantees at every visited position
+Q(∆t⋆
+) − Q( ˆ
+∆t) ≤ gcert = U − Q( ˆ
+∆t), (63)
+and gcert ≤ ϵclk whenever termination occurs by the prescribed
+tolerance rather than the subdivision cap.
+Proof: (i) Gλ ≻ 0 makes (40) a strictly convex quadratic
+in x, so the inner minimum ∥y∥2
+− Q of (41) is attained at
+every (p, ∆t); minimization may then be performed in any
+order, which is (62), and the correspondence of minimizer
+sets follows from the same attainment. (ii) An invertible affine
+change of clock unit is a bijection of T onto its image,
+so the range of Q(p, ·), and hence e
+F, is unchanged. (iii)
+The curvature bound L2 in (45) holds uniformly on T , so
+(46) is valid on every interval. The solver maintains a finite
+cover of T and records the upper bound for every interval it
+discards, so U dominates the bound for every interval in the
+cover and Q(∆t⋆
+) ≤ U. This proves (63) under any stopping
+rule: the gap remains valid even when the subdivision cap is
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 9
+reached; only the conclusion gcert ≤ ϵclk requires termination
+by tolerance.
+Supplementary Lemma S1 gives a checkable anchor-column
+condition for Gλ ≻ 0.
+Theorem 3 solves the conditional clock problem globally
+and removes the clock from the outer coordinates; the remain-
+ing 3-D position search is local. Table III reports the clock-unit
+and certificate controls.
+E. Complexity
+The implemented delay-subspace solver forms an N × N
+covariance and eigendecomposes it, at cost O(N2
+rT + N3
+);
+a direct thin singular value decomposition (SVD) alternative
+costs O(NrT min{N, rT}). Let F = FxFy, and let Npk
+and Nr denote the retained peaks and exact range samples.
+Generating candidates for all K2
+panel–column pairs costs
+O K2
+[TMR + GrF log F + Npk(NrMR + TMR)]
+
+; the
+fixed two-permutation shortlist adds multi-start exact spherical
+refinements, while permutation arithmetic costs O(KK!).
+The factorial term dominates asymptotically in K. For
+K = 3 in the reference scene, beam-space processing
+and exact spherical-response evaluations have the leading
+operation count. A blockwise derivation and all fixed search
+budgets are supplementary. By Theorem 2, Phase II evaluates
+the exact forward model on the compressed observation,
+cutting residual and Jacobian rows from M = I N T to
+Mr = r N T without approximating the criterion. At ∆t = 0,
+the Kronecker structure gives
+G0,kℓ = (hH
+k hℓ)(dH
+k dℓ) BH
+k Bℓ
+| {z }
+cached
+, (64)
+so the Gram update costs O(q2
+(N +T)) instead of O(q2
+Mr),
+with q = 2K. For dense training matrices, generating hk =
+Ωkgk and its position derivatives costs O(KTMR). Each
+outer position evaluation costs
+Couter = O(KTMR + qMr)
+| {z }
+responses and residual
++ O q2
+(N + T)
+
+| {z }
+Gram
++ O(q3
++ q2
+N2
+)
+| {z }
+factorization and coefficients
++ O(qMc log Mc)
+| {z }
+clock FFT
++Ccert, (65)
+with Mc the zero-padded clock-FFT length and Ccert the
+branch-and-bound cost. Tightening ϵclk increases interval work
+inside Ccert, with O(N) polynomial arithmetic per visited
+interval and no further Gram factorization.
+V. NUMERICAL RESULTS
+A. Simulation Setup
+In the reference scene of Table I, maxk dUR,k = 4.2 m <
+RFF = 19.8 m < mink dRB,k = 28.6 m, satisfying (A3) with
+Dap = 0.223 m. Writing µ = A(χ)x for the noiseless obser-
+vation and µact for its restriction to the Mact entries carried
+by the receive channels that Smode retains, the operating point
+is set by
+SNR = 10 log10
+∥µact∥2
+2
+Mactσ2
+, (66)
+TABLE I
+REFERENCE-SCENE PARAMETERS. THE PANEL FRAME SETS ITS LOCAL
+z-AXIS ALONG n̂k, ITS LOCAL x-AXIS ALONG THE NORMALIZED VECTOR
+(uz × n̂k) AND ITS LOCAL y-AXIS BY RIGHT-HANDED COMPLETION;
+THESE AXES DETERMINE Rk. GAINS AND JONES STATES ARE REDRAWN
+INDEPENDENTLY PER TRIAL, EXCEPT FOR THE ANALYTICALLY FIXED
+JONES STATES IN THE CONTROLLED SEPARABILITY SWEEP OF FIG. 4.
+Parameter Value
+Carrier fc = 60 GHz, λc = 5.00 mm
+RIS panels K = 3, MR = 64 × 64, λc/2 spacing
+BS array MA = 16 full-EVS ULA, λc/2 spacing
+OFDM N = 63, ∆f = 5 MHz, balanced Hankel lift with
+P = L = 32
+Training T = 256 configurations; block-static UE, clock, gains
+and Jones states
+UE / box [m] (1.25, 0.55, 0.75); [0.30, 2.70] × [−1.40, 1.50] ×
+[0.35, 1.45]
+BS [m] (−22.50, −12.50, 2.00)
+RIS centers rk [m] (4.20, −2.20, 1.05); (5.10, 2.10, 1.15);
+(4.80, 0, 1.25)
+RIS normals n̂k (−0.9159, 0.4005, −0.0264);
+(−0.8523, −0.5205, −0.0528);
+(−0.9940, 0.0158, −0.1084)
+Clock ∆t⋆
+= 5 ns; T = [0, 10] ns
+Gains βk
+iid
+∼ CN (0, 1/K)
+Jones states ek = [sin γkejψk , cos γk]T
+, γk ∼ U(0.35, 1.10),
+ψk ∼U(−π, π]
+Trials 480 per accuracy cell; 960 per benchmark cell
+which defines the average per-sample signal-to-noise ratio
+(SNR), with absolute path loss absorbed into the normaliza-
+tion.
+For R trials, let ep,r = ∥p̂r −p⋆
+∥2 and et,r = |c
+∆tr −∆t⋆
+|,
+and let failr denote the event that a route terminates without
+returning an estimate. The position and clock catastrophic rates
+are
+P
+(p)
+cat =
+1
+R
+R
+X
+r=1
+1{failr ∨ ep,r > 0.1 m},
+P
+(t)
+cat =
+1
+R
+R
+X
+r=1
+1{failr ∨ et,r > 1 ns}. (67)
+Position and clock conditional RMSEs are each taken over
+the complement of their own event in (67); the Phase-II
+control of Table III instead reports both on a single per-
+route non-catastrophic set, as its note states. A Phase-I basin-
+acquisition event occurs on trial r when p̂I,r is finite and
+∥p̂I,r − p⋆
+∥2 ≤ 0.1 m. The declared operating region is
+SNR ≥ −10 dB; results at −15 or −20 dB are labeled
+as below it. Every cell generates observations and performs
+estimation on the same center-frequency spatial manifold, so
+ϵsq of Section II-B contributes no residual. In contrast, a
+nine-sample per-subcarrier diagnostic produces a deterministic
+offset of at most 0.080 mm in position, 0.171 of that sample’s
+−10-dB PEB, but up to 5.4 ps in clock, exceeding the sample-
+specific −10-dB CEB in four of the nine samples. Within each
+cell, all methods share the scene, RIS codes, Jones states, gains
+and noise.
+B. End-to-End Benchmark
+Fig. 2 compares five end-to-end routes using shared re-
+alizations. The closest in-model control, baseline-initialized
+4D-JVP, pairs the same exact forward model with a frozen
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 10
+−10 0 10 20 30
+SNR [dB]
+10−2
+100
+102
+Median
+error
+[mm]
+(a) Position
+10−1
+101
+103
+Error x [mm]
+1/n
+1
+10
+100
+P(
+⋅
+>
+x)
+[%]
+2.50%
+0.42%
+(c) Position
+−10 0 10 20 30
+SNR [dB]
+10−1
+100
+101
+102
+103
+Median
+error
+[ps]
+(b) Clock
+10−1
+101
+103
+Absolute error x [ps]
+1/n
+1
+10
+100
+P(
+⋅
+>
+x)
+[%]
+2.08%
+0.31%
+(d) Clock
+Unconditional medians Tail reliability at −10 dB
+Proposed
+baseline-init. 4D-JVP
+Algebraic CPD
+VBI/SBL
+OMP-SAGE-WLS
+Free-Jones PEB
+CEB (σ-scaled)
+Fig. 2. Native-readout end-to-end benchmark on the matched center-frequency spatial manifold, with 960 trials per SNR shared across methods. Panels (a)
+and (b) show unconditional median position and clock errors versus SNR; panels (c) and (d) show the corresponding empirical complementary cumulative
+distribution functions (CCDFs) at −10 dB. Medians include catastrophic trials. The free-Jones PEB is computed as the root mean square across trials at each
+SNR; the CEB curve is anchored at the 20-draw median (3.38 ps at −10 dB) and scaled in proportion to the PEB. Both are local-information references and
+do not bound median error; vertical dashed lines mark the thresholds in (67).
+baseline Phase-I initializer and an explicit range-scaled 4-D
+Jones variable projection. The proposed route pairs MKSC-GI
+acquisition with CCOP-JVP, so this end-to-end comparison
+does not isolate C3. Their −10 dB median position errors
+differ by only 0.006 mm, but the proposed route lowers
+the position and clock catastrophic rates by 6.0× and 6.7×
+(annotated in Fig. 2(c) and (d)).
+For algebraic canonical polyadic decomposition (CPD) [15],
+the median error decreases as SNR increases, while the catas-
+trophic rate remains near 30%. Variational Bayesian inference
+with sparse Bayesian learning (VBI/SBL) [17] lowers its catas-
+trophic rate with SNR yet retains a 26.1-mm median through-
+out. The route combining near-field orthogonal matching pur-
+suit, space-alternating generalized expectation-maximization
+and weighted least squares (OMP-SAGE-WLS) [12] is flat in
+both metrics when adapted to the shared random training. At
+−10 dB the proposed route lowers both position and clock
+catastrophic rates by more than twentyfold relative to the
+best external adaptation. For the paired catastrophic indicators,
+McNemar’s exact test rejects equality with each of the four
+alternatives (p ≤ 1.91 × 10−6
+). These comparisons use each
+adaptation’s native readout and characterize the adaptations,
+not the cited methods. In particular, the OMP-SAGE-WLS
+comparison uses the cited method’s regular-RIS route; its sub-
+RIS variant requires orthogonal phase profiles [12] that the
+shared random training cannot supply. Baseline specifications
+and adaptations are supplementary.
+C. C2: Sufficient Compression and Acquisition
+The single-factor test isolates projection before delay-
+subspace estimation. At −10 dB, delay-subspace estimation
+from the raw 96-dimensional observation gives leakage ratio
+σK+1/σK = 0.824 and a 2.50% position catastrophic rate.
+After retaining six receive dimensions, the ratio is 0.357 and
+no catastrophic events are observed (0/480). At 0 dB and
+above, the compressed and uncompressed routes coincide.
+The independently seeded ladder in Table II separates the
+remaining Phase-I changes at the −10-dB operating bound-
+ary and at −20 dB, below it. At −10 dB, the raw-EVS
+TABLE II
+PHASE-I MECHANISM LADDER WITH A COMMON CCOP-JVP
+REFINEMENT, 480 PAIRED TRIALS PER SNR. Pcat IS THE POSITION
+CATASTROPHIC RATE, AND BASIN ACQ. DENOTES THE
+BASIN-ACQUISITION RATE; ALL RATES ARE IN PERCENT. ZERO OBSERVED
+EVENTS HAVE AN EXACT 95% UPPER CONFIDENCE LIMIT OF 0.77%.
+Operating: −10 dB
+Below operating
+region: −20 dB
+Phase-I route Pcat ↓ Basin acq.↑ Pcat ↓ Basin acq.↑
+Baseline (raw EVS) 2.92 96.04 20.42 63.12
++ MKSC compression 0.00 99.17 6.04 76.88
++ common-geometry
+fusion (1 start) 0.00 100.00 5.42 93.96
++ 4 det. starts 0.00 100.00 4.17 95.21
++ anchor refresh 0.00 100.00 4.17 95.21
+Oracle control 0.00 100.00 3.75 95.62
+row has Pcat = 2.92%; compression leaves no observed
+events (0/480), and common-geometry fusion brings basin
+acquisition from 99.17% to 100%. The −20-dB rows show
+20.42% catastrophic events with raw EVS and 6.04% after
+compression. Common-geometry fusion changes basin acqui-
+sition from 76.88% to 93.96%; four deterministic starts yield
+Pcat = 4.17% and 95.21% basin acquisition. At this SNR,
+anchor refresh does not change either event count but reduces
+the 95th percentile (p95) of reconstruction normalized mean-
+square error (NMSE) from 0.0953 to 0.00112.
+In the panel-size sweep, the proposed route’s conditional
+RMSE is 2.02 mm at 162
+elements per panel and 0.43 mm at
+642
+; its position catastrophic rate stays at or below 1.04%.
+Across this sixteenfold change in element count, proposed
+Phase I basin acquisition remains above 98.9%, while baseline
+Phase I rises from 14.79% to 95.83%.
+D. C3: Certified Clock Profiling
+Table III holds 100 MKSC-GI initializers fixed across
+Phase-II routes. CCOP-JVP and the range-scaled c0∆t 4D-
+JVP control have the same conditional position and clock
+RMSE to the reported precision. Profiling leaves three outer
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 11
+TABLE III
+PHASE-II REFINEMENT CONTROL AT −10 DB OVER 100 SHARED
+MKSC-GI INITIALIZERS; THE THREE MKSC-GI-INITIALIZED 4D-JVP
+COLUMNS DIFFER ONLY IN CLOCK PARAMETERIZATION.
+4D-JVP clock coordinate CCOP-JVP
+Metric Seconds ns c0∆t Profiled
+Position RMSE [mm] 0.6435 0.4845 0.4869 0.4869
+Clock RMSE [ps] 3.9926 3.5970 3.5855 3.5855
+Pcat [%] 1 0 1 1
+Outer dimension 4 4 4 3
+Median evaluations 13 18 13 9
+Unit-invariant no no no yes
+Inner clock certificate no no no yes
+Both RMSEs of a column are taken over that route’s non-catastrophic set, the trials
+triggering neither event in (67), rather than over the per-metric complements of
+Section V-A. The certificate covers 950/950 inner clock profiles, not the outer search.
+−10 0 10 20 30
+SNR [dB]
+10−2
+10−1
+100
+Conditional
+RMSE
+[mm]
+Scalar
+Dual-pol.
+Full EVS
+estimator RMSE free-Jones PEB
+Fig. 3. Conditional position RMSE against the free-Jones PEB, 480 paired
+trials per cell at a common absolute noise level.
+coordinates instead of four, with median evaluations of 9
+versus 13 for the c0∆t control. CCOP-JVP also returns bit-
+identical outputs under all three unit-scaled parameterizations,
+as Theorem 3(ii) predicts. The explicit-clock control is unit
+sensitive: expressing its clock coordinate in seconds increases
+conditional position RMSE by 32% relative to c0∆t. All 950
+conditional clock profiles meet the prescribed objective-gap
+tolerance with no subdivision-cap hit.
+E. C1: Receiver Information and Panel Separability
+The three receiver modes are compared at a common
+absolute noise level, σ2
+scalar = σ2
+dual = σ2
+full set from the full-
+EVS observation, rather than at a common post-selection SNR.
+Fig. 3 compares conditional accuracy with the matched multi-
+panel PEB: at 0 dB the scalar, dual-polarized and full-EVS
+modes reach 0.751, 0.296 and 0.131 mm, ordering exactly as
+the matched PEB predicts. Theorem 1(i) separately identifies
+the scalar information weight αSmode
+for a single panel.
+Fig. 4 sweeps the Jones overlap |eH
+k ek′ | of the closest-delay
+panel pair against cascaded-delay separation and scores reso-
+lution probability—the fraction of trials returning K correctly
+associated components with Phase-I delay error at most 0.5 ns
+and no pole collapse—rather than position accuracy. For this
+sweep, the panel-scaling sweep and Fig. 5(c), the candidate
+set is the union of the beam-space proposals and the fixed-
+count dictionary of Section III-B, whose size is specified in
+the supplementary material; every other cell uses the proposals
+alone. Full-EVS resolution is flat across the four overlaps,
+varying by less than the Clopper–Pearson half-width of a sin-
+gle cell. The dual-polarized and scalar modes collapse toward
+zero as the overlap shrinks, with maximum spreads across
+overlaps of 82.9 and 63.5 percentage points. As the competing
+panel’s Jones state rotates away from that of the reference
+panel, it projects increasingly onto a weakly retained Maxwell
+direction, so the scalar weight of Theorem 1(i) becomes panel-
+dependent: under the dual-polarized mode αSmode
+remains at
+0.50 for the reference panel while falling to 0.005 for the
+competing one at the smallest overlap; under the full-EVS
+mode, it equals one for both panels at every overlap. With
+devs ≤ 2 the competing Jones block spans Cdevs
+, so by (57)
+the residual separating two panels can vanish outright; with
+six components it is bounded below by sin θmin. Resolution
+as scored here is a joint event: over the 34 560 sweep trials,
+8 351 of the 8 429 association failures coincide with a Phase-I
+delay failure, so the sweep measures how a reduced receiver
+degrades acquisition and association together. At −10 dB,
+the three receiver modes have position catastrophic rates of
+13.33%, 1.88% and 0.83%.
+F. Robustness and Deployment Limits
+Among the tested ranges, RIS–BS calibration is the most
+restrictive (Fig. 5(a)–(b)): angular error degrades precision
+before it degrades acquisition reliability, raising conditional
+RMSE from 0.416 to 31.1 mm at 0.25◦
+even though the
+basin-acquisition rate remains 99.58%; at 1◦
+, the position
+catastrophic rate reaches 58.54%.
+In the dedicated 0-dB model-order sweep, underestimating
+K with b
+K = 2 gives a 0.705-m median and Pcat = 65.6%;
+overestimating it with b
+K = 4 or 5 preserves submillimeter
+medians but yields position catastrophic rates above one third.
+Delay coincidence limits acquisition even where the local
+EFIM remains nonsingular (Fig. 5(c)). Across a 5 × 5 × 2
+position grid, the proposed median per-position catastrophic
+rate is 0.62% against 2.71% for baseline-initialized 4D-JVP.
+The two worst grid corners lie near a cascaded-delay co-
+incidence surface; the worst reaches 29.58% at a minimum
+separation of 0.062/Bocc (0.197 ns), while the free-Jones
+EFIM remains full rank at every tested position, including
+those corners. Deployment screening should include a delay-
+coincidence check and a coarse global fallback in addition to
+a PEB map.
+A 25% cyclic prefix at ∆f = 5 MHz lasts 50 ns and
+covers the 19.1-ns delay span over the clock-search interval.
+With one configuration per 250-ns OFDM symbol, T = 256
+configurations span about 64 µs, the block-static interval
+required by (A6).
+VI. CONCLUSION
+Receiver-mode selection and cascaded-delay coincidence
+expose acquisition risks that the free-Jones EFIM does not
+exclude. A reduced receiver can make a panel pair difficult to
+resolve even when a single-panel free-Jones EFIM remains
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 12
+0.1 0.2 0.5 1 2 5
+Delay separation Δτ [ns]
+0
+25
+50
+75
+100
+Resolution
+prob.
+[%]
+Max overlap spread: 63.5 pp
+(a) Scalar
+0.1 0.2 0.5 1 2 5
+Delay separation Δτ [ns]
+Max overlap spread: 82.9 pp
+(b) Dual-polarized
+0.1 0.2 0.5 1 2 5
+Delay separation Δτ [ns]
+Max overlap spread: 1.5 pp
+(c) Full EVS
+Jones overlap: 0.1 0.5 0.9 1 Reference scene: 3.28 ns
+Fig. 4. Panel separability at −10 dB: resolution probability against cascaded-delay separation, one curve per Jones overlap |eH
+k ek′ | of the closest-delay pair,
+480 trials per cell with exact 95% Clopper–Pearson bands.
+0.0 0.5 1.0
+RIS--BS angle error [deg]
+100
+101
+102
+103
+Error
+[mm]
+31.1 mm
+(a) Calibration: precision
+conditional RMSE
+p95 (all trials)
+0.0 0.5 1.0
+RIS--BS angle error [deg]
+0
+25
+50
+75
+100
+Rate
+[%]
+99.58% basin
+(b) Calibration: capture
+Pcat
+basin acquisition
+0 2 4 6
+Minimum true delay separation [ns]
+0
+10
+20
+30
+P
+cat
+[%]
+EFIM full rank:
+24,000/24,000 trials
+Reference
+3.28 ns
+(c) Delay coincidence: paired routes
+Proposed (color)
+baseline-init. 4D-JVP
+60
+80
+100
+120
+140
+Median
+EFIM
+condition
+no.
+Fig. 5. Operating boundaries at −10 dB, 480 trials per cell: (a) conditional position RMSE and all-trial 95th percentile (p95) versus RIS–BS angle error;
+(b) position catastrophic and basin-acquisition rates; and (c) position catastrophic rate versus the minimum cascaded-delay separation. In (c), the shaded strip
+is the delay-coincidence region, color denotes the median free-Jones EFIM condition number, and thin segments connect the proposed and baseline-initialized
+4D-JVP routes at the same position rather than fitting a trend.
+finite. At the worst tested position-grid point, the multi-
+panel EFIM is full rank but the position catastrophic rate
+is 29.58%. Deployment checks need receiver-separability and
+delay-coincidence assessments alongside a PEB map.
+MKSC-GI projects out noise-only receive directions before
+delay acquisition and fits a common panel geometry. CCOP-
+JVP profiles the clock at fixed position and uses a deterministic
+objective-gap certificate for its inner solution. In the controlled
+Phase-II comparison, it matches the explicit-clock route’s
+RMSE while reducing the outer dimension from four to three.
+For the calibrated reference scene with known K and the
+matched center-frequency spatial model, the −10-dB end-to-
+end median position error is 0.32 mm; position and clock
+catastrophic rates are 0.42% and 0.31%. Scaling to larger
+panel counts calls for association without factorial permutation
+search.
+REFERENCES
+[1] H. Wymeersch, J. He, B. Denis, A. Clemente, and M. Juntti, “Radio
+localization and mapping with reconfigurable intelligent surfaces: Chal-
+lenges, opportunities, and research directions,” IEEE Veh. Technol. Mag.,
+vol. 15, no. 4, pp. 52–61, 2020.
+[2] M. Cui, Z. Wu, Y. Lu, X. Wei, and L. Dai, “Near-field MIMO
+communications for 6G: Fundamentals, challenges, potentials, and future
+directions,” IEEE Commun. Mag., vol. 61, no. 1, pp. 40–46, 2023.
+[3] A. Elzanaty, A. Guerra, F. Guidi, and M.-S. Alouini, “Reconfigurable in-
+telligent surfaces for localization: Position and orientation error bounds,”
+IEEE Trans. Signal Process., vol. 69, pp. 5386–5402, 2021.
+[4] W. Zhu, Q. Wang, S. Zhang, B. Di, L. Liu, and Y. C. Eldar, “Intelligent
+reflecting surface-based localization of mixed near-field and far-field
+targets,” IEEE Trans. Wireless Commun., vol. 25, pp. 10 145–10 160,
+2026.
+[5] L. Xia, R. Wang, X. Yuan, B. Teng, and J. Rodrı́guez-Piñeiro, “Near-
+field localization for reconfigurable intelligent surface aided XL-MIMO
+systems harnessing the NLoS components,” IEEE Trans. Wireless Com-
+mun., vol. 25, pp. 1857–1874, 2026.
+[6] T. Ma, Y. Xiao, X. Lei, W. Xiong, and M. Xiao, “Distributed recon-
+figurable intelligent surfaces assisted indoor positioning,” IEEE Trans.
+Wireless Commun., vol. 22, no. 1, pp. 47–58, 2023.
+[7] H. Liu, Y. Lin, Y. Hu, X. Li, H. Xu, and S. Jin, “Channel estimation,
+blockage processing, and localization for multi-RIS assisted OFDM
+systems,” IEEE Trans. Commun., vol. 73, no. 12, pp. 15 175–15 189,
+2025.
+[8] W. Zhu, M. Cao, Y. Yang, H. Zhang, W. Hao, X. Jia, and H. Zhang,
+“Hybrid near-field and far-field localization with multiple reconfigurable
+intelligent surfaces,” IEEE Commun. Lett., vol. 29, no. 10, pp. 2278–
+2282, 2025.
+[9] A. Fascista, M. F. Keskin, A. Coluccia, H. Wymeersch, and G. Seco-
+Granados, “RIS-aided joint localization and synchronization with a
+single-antenna receiver: Beamforming design and low-complexity es-
+timation,” IEEE J. Sel. Topics Signal Process., vol. 16, no. 5, pp. 1141–
+1156, 2022.
+[10] Z. Gong, L. Wu, Z. Zhang, J. Dang, Y. Wu, and J. Wang, “Asynchronous
+RIS-assisted localization: A comprehensive analysis of fundamental
+limits,” IEEE Trans. Wireless Commun., vol. 23, no. 9, pp. 10 974–
+10 989, 2024.
+[11] Y. Peng, N. Guo, S. Zhao, C. Jiang, and Z. Feng, “New semidefinite
+programming joint localization and synchronization using sequential
+one-way TOAs and Doppler shifts,” IEEE Sensors J., vol. 25, no. 11,
+pp. 19 957–19 969, 2025.
+[12] H. Yan, H. Chen, W. Liu, S. Yang, G. Wang, and C. Yuen, “RIS-enabled
+joint near-field 3D localization and synchronization in SISO multipath
+environments,” IEEE Trans. Green Commun. Netw., vol. 9, no. 1, pp.
+367–379, 2025.
+IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. XX, NO. XX, 2026 13
+[13] A. Fadakar, M. Sabbaghian, and H. Wymeersch, “Multi-RIS-assisted
+3D localization and synchronization via deep learning,” IEEE Open J.
+Commun. Soc., vol. 5, pp. 3299–3314, 2024.
+[14] Z. Liu, B. Zheng, Q. Wu, C. You, W. Mei, K. Chen, and J. Tang,
+“Reconfigurable intelligent surface-aided near-field localization with
+array spatial correlation,” IEEE Wireless Commun. Lett., vol. 14, no. 7,
+pp. 2194–2198, 2025.
+[15] Y. Lin, S. Jin, M. Matthaiou, and X. You, “Tensor-based algebraic
+channel estimation for hybrid IRS-assisted MIMO-OFDM,” IEEE Trans.
+Wireless Commun., vol. 20, no. 6, pp. 3770–3784, 2021.
+[16] Y. Cao, C. Xing, N. Wei, S. Gong, N. Zhao, and D. Niyato, “Tensor-
+based joint channel estimation and activity detection for reconfigurable
+intelligent surface-assisted massive connectivity,” IEEE Trans. Commun.,
+vol. 73, no. 11, pp. 11 870–11 885, 2025.
+[17] Y. Li, Y. Luo, X. Wu, Z. Shi, S. Ma, and G. Yang, “Variational Bayesian
+learning based localization and channel reconstruction in RIS-aided
+systems,” IEEE Trans. Wireless Commun., vol. 23, no. 9, pp. 11 309–
+11 324, 2024.
+[18] X. Wei and L. Dai, “Channel estimation for extremely large-scale
+massive MIMO: Far-field, near-field, or hybrid-field?” IEEE Commun.
+Lett., vol. 26, no. 1, pp. 177–181, 2022.
+[19] S. Yang, C. Xie, W. Lyu, B. Ning, Z. Zhang, and C. Yuen, “Near-field
+channel estimation for extremely large-scale reconfigurable intelligent
+surface (XL-RIS)-aided wideband mmWave systems,” IEEE J. Sel. Areas
+Commun., vol. 42, no. 6, pp. 1567–1582, 2024.
+[20] T. Zheng, M. Cui, Z. Wu, and L. Dai, “Near-field wideband beam
+training based on distance-dependent beam split,” IEEE Trans. Wireless
+Commun., vol. 24, no. 2, pp. 1278–1292, 2025.
+[21] Y. Han, X. Li, W. Tang, S. Jin, Q. Cheng, and T. J. Cui, “Dual-polarized
+RIS-assisted mobile communications,” IEEE Trans. Wireless Commun.,
+vol. 21, no. 1, pp. 591–606, 2022.
+[22] Z. Zheng, H. Huang, H. Zhang, and A. L. Swindlehurst, “RIS-aided
+dual-polarized MIMO: How large a surface is needed to beat single
+polarization?” IEEE Commun. Lett., vol. 29, no. 1, pp. 150–154, 2025.
+[23] A. Nehorai and E. Paldi, “Vector-sensor array processing for electromag-
+netic source localization,” IEEE Trans. Signal Process., vol. 42, no. 2,
+pp. 376–398, 1994.
+[24] S. Khan and K. T. Wong, “A six-component vector sensor comprising
+electrically long dipoles and large loops— to simultaneously estimate
+incident sources’ directions-of-arrival and polarizations,” IEEE Trans.
+Antennas Propag., vol. 68, no. 8, pp. 6355–6363, 2020.
+[25] X. Lan, J. Li, Y. Tian, and S. Ma, “Joint DOA and polarization estimation
+based on tensor train decomposition and coupled tensor decomposition
+for cylindrical vector conformal array,” IEEE Trans. Aerosp. Electron.
+Syst., vol. 62, pp. 7303–7325, 2026.
+[26] Z. Yu, H. Chen, T. Wu, W. Liu, and M. C. Valenti, “RIS-aided far-field
+NLOS target localization in bistatic EMVS-MIMO radar,” in Proc. IEEE
+Int. Conf. Commun. Workshops (ICC Workshops), Glasgow, U.K., May
+2026, pp. 1–6.
+[27] Q. Gong, J. Du, L. Jiang, Y. Guan, and X. Li, “Low-complexity mul-
+tidimensional parameter estimation for multipath channel in wideband
+EVS-OFDM systems via asymmetric tensor folding,” IEEE Commun.
+Lett., vol. 30, pp. 2465–2469, 2026.
+[28] G. H. Golub and V. Pereyra, “The differentiation of pseudo-inverses
+and nonlinear least squares problems whose variables separate,” SIAM
+J. Numer. Anal., vol. 10, no. 2, pp. 413–432, Apr. 1973.
+[29] Y. Zhao, W. Xu, H. Sun, D. W. K. Ng, and X. You, “Cooperative
+reflection design with timing offsets in distributed multi-RIS communi-
+cations,” IEEE Wireless Commun. Lett., vol. 10, no. 11, pp. 2379–2383,
+2021.
+[30] M. Bayraktar, N. González-Prelcic, G. C. Alexandropoulos, and
+H. Chen, “RIS-aided joint channel estimation and localization at
+mmWave under hardware impairments: A dictionary learning-based
+approach,” IEEE Trans. Wireless Commun., vol. 23, no. 12, pp. 19 696–
+19 712, 2024.
+[31] Z. Wang, X. Mu, and Y. Liu, “Performance analysis of near-field sensing
+in wideband MIMO systems,” IEEE Trans. Wireless Commun., vol. 24,
+no. 10, pp. 8236–8251, 2025.
+[32] R. H. Byrd, P. Lu, J. Nocedal, and C. Zhu, “A limited memory algorithm
+for bound constrained optimization,” SIAM J. Sci. Comput., vol. 16,
+no. 5, pp. 1190–1208, Sep. 1995.
+
